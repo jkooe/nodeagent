@@ -108,6 +108,20 @@ CI 工作流见 [`.github/workflows/windows-e2e.yml`](./.github/workflows/window
 node scripts/verify.mjs --host 192.168.1.100 --port 8765 --key <密钥> --insecure --with-install jqlang.jq --report verify-report.md
 ```
 
+### 成本
+
+三层验证里 **②③ 完全免费**（本机运行），**① 走 GitHub Actions 免费额度**：
+
+| 账户 | 免费额度（Linux 等效分钟/月） | 实际可用 Windows 分钟（2x 计费） |
+|---|---|---|
+| Free | 2,000 | ≈ 1,000 |
+| Pro / Team | 3,000 | ≈ 1,500 |
+
+单次 CI 约 5 分钟（含 winget 真实下载安装），按 Windows 2x 计 ≈ 10 计费分钟/次 → **Free 账户每月约可跑 200 次**，个人项目用不完。
+
+> 默认支出限额为 **$0**：额度用尽时作业只是停止运行，**不会自动扣费**。若想彻底无限免费，把仓库改为公开（标准 runner 对公开仓库不限量）；或改用自托管 runner（同样免费，但需自备机器）。
+
+
 
 ### 工程结构
 
