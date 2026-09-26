@@ -116,7 +116,9 @@ export function execCommand(opts: ExecOptions): Promise<ExecResult> {
     const finish = (code: number | null): void => {
       clearTimeout(timer);
       resolve({
-        exit_code: code ?? (killed ? 124 : -1),
+        // 被超时强杀时统一语义：exit_code = 124（与 Unix timeout(1) 惯例一致）
+        // 注：Windows 上 taskkill /F 会让子进程以 code=1 退出（Unix 为 null），需在此归一
+        exit_code: killed ? 124 : (code ?? -1),
         stdout: stdout.trimEnd(),
         stderr: stderr.trimEnd(),
         duration_ms: Date.now() - startedAt,
