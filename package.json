@@ -1,0 +1,23 @@
+{
+  "name": "nodeagent",
+  "private": true,
+  "version": "0.1.0",
+  "description": "跨机 AI 接管框架 —— 让 Mac 上的 AI 无缝接管 Windows，装软件、查状态",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "clean": "pnpm -r clean",
+    "typecheck": "pnpm -r typecheck",
+    "agent": "pnpm --filter @nodeagent/agent start",
+    "cli": "pnpm --filter @nodeagent/cli start",
+    "mcp": "pnpm --filter @nodeagent/mcp start",
+    "test:e2e": "node tests/e2e/run.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

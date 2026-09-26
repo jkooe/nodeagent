@@ -1,0 +1,20 @@
+{
+  "name": "@nodeagent/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "nodeagent": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@nodeagent/client": "workspace:*",
+    "@nodeagent/protocol": "workspace:*"
+  }
+}
