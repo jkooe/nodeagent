@@ -1,0 +1,114 @@
+name: Windows E2E
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'packages/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/windows-e2e.yml'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-e2e:
+    name: Windows 真机验证
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 构建
+        run: pnpm -r build
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: E2E — 协议与跨平台能力
+        run: node tests/e2e/run.mjs
+
+      - name: E2E — Windows 专属能力（服务 / 软件 / winget）
+        run: node tests/e2e/windows.mjs
+
+      - name: 冒烟 — install.ps1 安装链路
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/install.ps1 -Port 18769 -NodeId ci_win
+
+          $task = Get-ScheduledTask -TaskName "nodeagent" -ErrorAction Stop
+          Write-Host "计划任务状态: $($task.State)"
+
+          $cfg = Get-Content "$env:USERPROFILE\.nodeagent\agent.json" -Raw | ConvertFrom-Json
+          if ($cfg.port -ne 18769) { throw "端口配置错误: $($cfg.port)" }
+          if (-not $cfg.key)       { throw "预共享密钥缺失" }
+          if (-not $cfg.tls)       { throw "TLS 默认应开启" }
+
+          $rule = Get-NetFirewallRule -DisplayName "nodeagent (TCP 18769)" -ErrorAction Stop
+          if (-not $rule) { throw "防火墙规则未创建" }
+
+          Write-Host "OK — 计划任务 / 配置 / 防火墙均已就位"
+
+      - name: 冒烟 — 被控端监听
+        shell: pwsh
+        run: |
+          Start-Process -FilePath "node" -ArgumentList "apps/agent/dist/index.js" -NoNewWindow
+          Start-Sleep -Seconds 4
+          $ok = (Test-NetConnection 127.0.0.1 -Port 18769 -WarningAction SilentlyContinue).TcpTestSucceeded
+          if (-not $ok) { throw "agent 未监听 18769" }
+          Write-Host "agent 已在 18769 监听"
+
+      - name: 冒烟 — CLI 连入（wss + 自签证书 + HMAC 鉴权）
+        shell: pwsh
+        run: |
+          $cfg = Get-Content "$env:USERPROFILE\.nodeagent\agent.json" -Raw | ConvertFrom-Json
+          node apps/cli/dist/index.js connect 127.0.0.1 --port 18769 --key $cfg.key --insecure
+          Write-Host "--- status ---"
+          node apps/cli/dist/index.js status
+          Write-Host "--- services ---"
+          node apps/cli/dist/index.js services --limit 5
+
+      - name: 冒烟 — MCP 工具列表
+        shell: pwsh
+        run: |
+          $cfg = Get-Content "$env:USERPROFILE\.nodeagent\agent.json" -Raw | ConvertFrom-Json
+          @{ client_id="ci"; host="127.0.0.1"; port=18769; tls=$true; insecure=$true; key=$cfg.key } |
+            ConvertTo-Json | Set-Content "$env:USERPROFILE\.nodeagent\config.json" -Encoding UTF8
+          $req = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1.0"}}}',
+            '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+          ) -join "`n"
+          ($req + "`n") | node apps/mcp/dist/index.js 2>$null | Select-String "na_status"
+
+      - name: 清理
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          ./scripts/uninstall.ps1 -Port 18769 -Purge
