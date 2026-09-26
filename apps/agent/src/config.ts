@@ -13,8 +13,9 @@ export interface AgentConfig {
   log_level: 'debug' | 'info' | 'warn';
 }
 
+/** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */
 export function agentDir(): string {
-  return join(homedir(), '.nodeagent');
+  return process.env['NODEAGENT_HOME'] ?? join(homedir(), '.nodeagent');
 }
 
 export function agentConfigPath(): string {

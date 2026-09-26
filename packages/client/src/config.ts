@@ -14,8 +14,9 @@ export interface ClientConfig {
   key: string;
 }
 
+/** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */
 export function configDir(): string {
-  return join(homedir(), '.nodeagent');
+  return process.env['NODEAGENT_HOME'] ?? join(homedir(), '.nodeagent');
 }
 
 export function configPath(): string {

@@ -7,7 +7,7 @@
  * 运行：node tests/e2e/run.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,10 +38,10 @@ async function test(name, fn) {
 
 /** 启动被控端 Agent（独立 HOME，避免污染真实配置）。 */
 function startAgent() {
-  const home = mkdtempSync(join(tmpdir(), 'nodeagent-e2e-'));
-  mkdirSync(join(home, '.nodeagent'), { recursive: true });
+  // NODEAGENT_HOME 直接作为数据目录（等价于 ~/.nodeagent）
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-e2e-'));
   writeFileSync(
-    join(home, '.nodeagent', 'agent.json'),
+    join(dataDir, 'agent.json'),
     JSON.stringify({
       node_id: 'e2e_win',
       host: '127.0.0.1',
@@ -52,18 +52,28 @@ function startAgent() {
     }),
   );
   const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
-    env: { ...process.env, HOME: home },
+    // NODEAGENT_HOME 为准（跨平台一致）；HOME/USERPROFILE 兜底
+    // 注：Windows 的 os.homedir() 认 USERPROFILE 不认 HOME，漏设会导致被控端回落到默认端口
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', () => {});
-  child.stderr.on('data', (d) => process.stderr.write(`[agent] ${d}`));
+  // 完整转发被控端输出，便于定位启动问题
+  child.stdout.on('data', (d) => process.stdout.write(`[agent] ${d}`));
+  child.stderr.on('data', (d) => process.stderr.write(`[agent:err] ${d}`));
+  child.on('error', (err) => console.error(`\n⚠️  [agent spawn 失败] ${err.message}\n`));
+  child.on('exit', (code, signal) => {
+    console.log(`\n⚠️  [agent 进程退出] code=${code} signal=${signal}\n`);
+  });
   return child;
 }
 
-/** 等待被控端可连接（重试）。 */
-async function waitReady(timeoutMs = 15_000) {
+/** 等待被控端可连接（重试）；被控端若提前退出则立即失败。 */
+async function waitReady(timeoutMs = 30_000, child = null) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`被控端进程已退出 (code=${child.exitCode})，请查看上方 agent 输出`);
+    }
     try {
       const c = new NodeAgentClient({ url: URL, key: KEY, clientId: 'probe' });
       await c.connect();
@@ -87,7 +97,7 @@ async function main() {
   const agent = startAgent();
 
   try {
-    await waitReady();
+    await waitReady(30_000, agent);
     console.log(`  被控端已就绪 ${URL}\n`);
 
     // ---------- 握手 ----------

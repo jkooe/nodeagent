@@ -7,7 +7,7 @@
  * 运行：node tests/e2e/windows.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,24 +43,32 @@ async function test(name, fn) {
 }
 
 function startAgent() {
-  const home = mkdtempSync(join(tmpdir(), 'nodeagent-win-e2e-'));
-  mkdirSync(join(home, '.nodeagent'), { recursive: true });
+  // NODEAGENT_HOME 直接作为数据目录（等价于 ~/.nodeagent）
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-win-e2e-'));
   writeFileSync(
-    join(home, '.nodeagent', 'agent.json'),
+    join(dataDir, 'agent.json'),
     JSON.stringify({ node_id: 'win_e2e', host: '127.0.0.1', port: PORT, tls: false, key: KEY, log_level: 'warn' }),
   );
   const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
-    // Windows 上 os.homedir() 读 USERPROFILE
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    // NODEAGENT_HOME 为准（跨平台一致）；HOME/USERPROFILE 兜底
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stderr.on('data', (d) => process.stderr.write(`[agent] ${d}`));
+  child.stdout.on('data', (d) => process.stdout.write(`[agent] ${d}`));
+  child.stderr.on('data', (d) => process.stderr.write(`[agent:err] ${d}`));
+  child.on('error', (err) => console.error(`\n⚠️  [agent spawn 失败] ${err.message}\n`));
+  child.on('exit', (code, signal) => {
+    console.log(`\n⚠️  [agent 进程退出] code=${code} signal=${signal}\n`);
+  });
   return child;
 }
 
-async function waitReady(timeoutMs = 20_000) {
+async function waitReady(timeoutMs = 30_000, child = null) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`被控端进程已退出 (code=${child.exitCode})，请查看上方 agent 输出`);
+    }
     try {
       const c = new NodeAgentClient({ url: URL, key: KEY, clientId: 'probe' });
       await c.connect();
@@ -89,7 +97,7 @@ async function main() {
   const agent = startAgent();
 
   try {
-    await waitReady();
+    await waitReady(30_000, agent);
     console.log(`  被控端已就绪 ${URL}\n`);
 
     await test('system.info 报告 Windows 平台', async () => {
