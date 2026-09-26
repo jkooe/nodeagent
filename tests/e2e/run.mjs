@@ -18,6 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '../..');
 
 const PORT = 18765;
+const TLS_PORT = 18772;
 const KEY = 'e2e-test-key-0123456789abcdef0123456789abcdef';
 const URL = `ws://127.0.0.1:${PORT}`;
 
@@ -90,6 +91,45 @@ async function connect(key = KEY) {
   const c = new NodeAgentClient({ url: URL, key, clientId: 'e2e_mac' });
   await c.connect();
   return c;
+}
+
+/** TLS 场景：被控端以 wss 启动，控制端以自签证书 + insecure 连接。 */
+async function testTlsMode() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-tls-'));
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({ node_id: 'tls_probe', host: '127.0.0.1', port: TLS_PORT, tls: true, key: KEY, log_level: 'info' }),
+  );
+  const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stdout.on('data', (d) => process.stdout.write(`[tls-agent] ${d}`));
+  child.stderr.on('data', (d) => process.stderr.write(`[tls-agent:err] ${d}`));
+
+  const url = `wss://127.0.0.1:${TLS_PORT}`;
+  try {
+    const deadline = Date.now() + 25_000;
+    let lastErr = null;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`TLS 被控端已退出 (code=${child.exitCode})`);
+      try {
+        const c = new NodeAgentClient({ url, key: KEY, clientId: 'tls_probe', insecure: true });
+        await c.connect();
+        const r = await c.invoke('system.info');
+        c.close();
+        assert.equal(r.status, 'ok', 'TLS 模式下 system.info 应成功');
+        return;
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    throw new Error(`TLS 模式下无法连接 ${url}：${lastErr?.message ?? '未知错误'}`);
+  } finally {
+    child.kill();
+    await new Promise((r) => setTimeout(r, 300));
+  }
 }
 
 async function main() {
@@ -244,6 +284,8 @@ async function main() {
       ws.close();
       assert.equal(resp.error.code, -32402);
     });
+
+    await test('TLS 模式：被控端以 wss 启动并可连接（自签证书 + insecure）', testTlsMode);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

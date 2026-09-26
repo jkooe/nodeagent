@@ -1,3 +1,5 @@
+import { createServer as createHttpServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import {
   Methods,
@@ -46,11 +48,12 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     }
   };
 
-  const wss = new WebSocketServer({
-    host: cfg.host,
-    port: cfg.port,
-    ...(tls ? { cert: tls.cert, key: tls.key } : {}),
-  });
+  // TLS 必须由 https server 承载：ws 的 WebSocketServer 不识别 cert/key 选项，
+  // 直接传入会被静默忽略，导致「自称 wss、实为明文」的降级。
+  const httpServer = tls
+    ? createHttpsServer({ cert: tls.cert, key: tls.key })
+    : createHttpServer();
+  const wss = new WebSocketServer({ server: httpServer });
 
   const states = new WeakMap<WebSocket, ConnState>();
 
@@ -208,7 +211,7 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
   const url = `${scheme}://${cfg.host === '0.0.0.0' ? '<本机IP>' : cfg.host}:${cfg.port}`;
 
   return new Promise<AgentServer>((resolve, reject) => {
-    wss.once('listening', () => {
+    httpServer.once('listening', () => {
       log('info', `Agent 已监听 ${scheme}://${cfg.host}:${cfg.port}`);
       resolve({
         url,
@@ -216,10 +219,11 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
           new Promise<void>((res) => {
             clearInterval(heartbeat);
             for (const ws of wss.clients) ws.terminate();
-            wss.close(() => res());
+            wss.close(() => httpServer.close(() => res()));
           }),
       });
     });
-    wss.once('error', reject);
+    httpServer.once('error', reject);
+    httpServer.listen(cfg.port, cfg.host);
   });
 }
