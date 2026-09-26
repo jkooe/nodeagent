@@ -9,6 +9,14 @@ export const CapabilityNames = {
   ShellExec: 'system.shell.exec',
   AppList: 'app.list',
   AppInstall: 'app.install',
+  // v2 图形接管
+  ScreenInfo: 'screen.info',
+  ScreenCapture: 'screen.capture',
+  MouseMove: 'input.mouse.move',
+  MouseClick: 'input.mouse.click',
+  MouseScroll: 'input.mouse.scroll',
+  KeyType: 'input.key.type',
+  KeyPress: 'input.key.press',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -252,6 +260,182 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         source: { type: 'string' },
         detail: { type: 'string' },
       },
+    },
+  },
+
+  // ---------- v2 图形接管：屏幕感知 ----------
+  {
+    name: CapabilityNames.ScreenInfo,
+    version: '1.0',
+    description: '获取显示器信息（分辨率、缩放、主屏标识）',
+    risk: 'low',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        displays: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer' },
+              name: { type: 'string' },
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+              is_primary: { type: 'boolean' },
+              scale: { type: 'number' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.ScreenCapture,
+    version: '1.0',
+    description: '截取屏幕，返回 base64 图片（支持区域与缩放）',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: {
+        display_id: { type: 'integer', default: 0, minimum: 0, description: '0 = 主屏' },
+        format: { type: 'string', enum: ['png', 'jpeg'], default: 'jpeg' },
+        quality: { type: 'integer', default: 85, minimum: 1, maximum: 100, description: '仅 jpeg 生效' },
+        scale: { type: 'number', default: 1, minimum: 0.1, maximum: 1 },
+        region: {
+          type: 'object',
+          properties: {
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            width: { type: 'integer', minimum: 1 },
+            height: { type: 'integer', minimum: 1 },
+          },
+          required: ['x', 'y', 'width', 'height'],
+          additionalProperties: false,
+        },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        image: { type: 'string', description: 'base64 编码的图片' },
+        format: { type: 'string' },
+        width: { type: 'integer' },
+        height: { type: 'integer' },
+        bytes: { type: 'integer' },
+        captured_at: { type: 'integer' },
+      },
+    },
+  },
+
+  // ---------- v2 图形接管：输入控制（默认关闭，需被控端显式开启） ----------
+  {
+    name: CapabilityNames.MouseMove,
+    version: '1.0',
+    description: '移动鼠标到指定屏幕坐标',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        x: { type: 'integer', minimum: 0 },
+        y: { type: 'integer', minimum: 0 },
+        duration_ms: { type: 'integer', default: 0, minimum: 0, maximum: 5000, description: '平滑移动耗时' },
+      },
+      required: ['x', 'y'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { moved: { type: 'boolean' }, x: { type: 'integer' }, y: { type: 'integer' } },
+    },
+  },
+  {
+    name: CapabilityNames.MouseClick,
+    version: '1.0',
+    description: '鼠标点击（可选先移动到指定坐标）',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        x: { type: 'integer', minimum: 0 },
+        y: { type: 'integer', minimum: 0 },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], default: 'left' },
+        count: { type: 'integer', default: 1, minimum: 1, maximum: 3 },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        clicked: { type: 'boolean' },
+        x: { type: 'integer' },
+        y: { type: 'integer' },
+        button: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.MouseScroll,
+    version: '1.0',
+    description: '滚动鼠标滚轮（正数向上、负数向下）',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        delta: { type: 'integer', description: '滚动格数' },
+        x: { type: 'integer', minimum: 0 },
+        y: { type: 'integer', minimum: 0 },
+      },
+      required: ['delta'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { scrolled: { type: 'boolean' }, delta: { type: 'integer' } },
+    },
+  },
+  {
+    name: CapabilityNames.KeyType,
+    version: '1.0',
+    description: '输入一段文本（逐字符模拟键盘）',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', minLength: 1, maxLength: 4096 },
+        interval_ms: { type: 'integer', default: 10, minimum: 0, maximum: 1000 },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { typed: { type: 'boolean' }, length: { type: 'integer' } },
+    },
+  },
+  {
+    name: CapabilityNames.KeyPress,
+    version: '1.0',
+    description: '按下按键或组合键（如 ["ctrl","c"]）',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        keys: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          maxItems: 4,
+          description: '按键列表，如 ["ctrl","shift","esc"]',
+        },
+      },
+      required: ['keys'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { pressed: { type: 'boolean' }, keys: { type: 'array', items: { type: 'string' } } },
     },
   },
 ];

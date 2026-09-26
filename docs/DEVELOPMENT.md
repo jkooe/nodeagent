@@ -279,22 +279,33 @@
 | 等级 | 默认策略 | 说明 |
 |---|---|---|
 | 🟢 `low` | 允许 | 只读、无副作用 |
-| 🟡 `medium` | 允许（v1 简化） | 可能读敏感数据 |
-| 🔴 `high` | 允许（v1 简化） | 可改变系统状态 |
+| 🟡 `medium` | 允许 | 可能读敏感数据（如截屏） |
+| 🔴 `high` | 分类处理 | 可改变系统状态；**`input.*` 另受 `allow_input` 开关管控，默认禁用** |
 
-> **v1 简化**：点对点直连 + 预共享密钥下，两端的信任关系由「持有同一密钥」确立，故不区分能力级授权。**v2 引入 ACL 后**恢复「高危默认拒绝」策略。
+> **v2 安全开关**：`input.*`（鼠标 / 键盘控制）是高危能力，由被控端配置项 **`allow_input`** 统一管控，**默认 `false`**。未开启时调用返回 `E_CAPABILITY_DISABLED`（附开启指引）。这是「先简化后强化」路线下、完整 ACL（v3）之前的过渡措施。
 
 ### 5.2 能力总览
 
-| # | 能力名 | 风险 | 说明 | 对应 PRD |
+| # | 能力名 | 风险 | 说明 | 阶段 |
 |---|---|---|---|---|
-| 1 | `system.info` | 🟢 | 系统基本信息 | FR-04 |
-| 2 | `system.status` | 🟢 | 资源状态（CPU/内存/磁盘/网络） | FR-04 |
-| 3 | `system.process.list` | 🟢 | 进程列表 | FR-04 |
-| 4 | `system.service.list` | 🟢 | 服务列表 | FR-04 |
-| 5 | `system.shell.exec` | 🔴 | 执行 PowerShell 命令 | FR-02 |
-| 6 | `app.list` | 🟢 | 已安装软件列表 | FR-03 |
-| 7 | `app.install` | 🔴 | 装软件（winget 优先） | FR-03 |
+| 1 | `system.info` | 🟢 | 系统基本信息 | v1 |
+| 2 | `system.status` | 🟢 | 资源状态（CPU/内存/磁盘/网络） | v1 |
+| 3 | `system.process.list` | 🟢 | 进程列表 | v1 |
+| 4 | `system.service.list` | 🟢 | 服务列表 | v1 |
+| 5 | `system.shell.exec` | 🔴 | 执行 PowerShell 命令 | v1 |
+| 6 | `app.list` | 🟢 | 已安装软件列表 | v1 |
+| 7 | `app.install` | 🔴 | 装软件（winget 优先） | v1 |
+| 8 | `screen.info` | 🟢 | 显示器信息（分辨率/缩放/主屏） | v2 |
+| 9 | `screen.capture` | 🟡 | 截屏，返回 base64（支持 region/scale/format） | v2 |
+| 10 | `input.mouse.move` | 🔴🔒 | 移动鼠标（支持平滑移动） | v2 |
+| 11 | `input.mouse.click` | 🔴🔒 | 鼠标点击（左/中/右键，可先移动） | v2 |
+| 12 | `input.mouse.scroll` | 🔴🔒 | 滚轮滚动 | v2 |
+| 13 | `input.key.type` | 🔴🔒 | 输入文本（Unicode 逐字符） | v2 |
+| 14 | `input.key.press` | 🔴🔒 | 按下按键/组合键 | v2 |
+
+> 🔒 = 受 `allow_input` 开关管控，默认禁用。
+>
+> **实现方式**：v2 图形能力全部基于 Windows 原生 API（`System.Drawing` 截屏 + `user32.dll` 的 `SendInput` 输入注入），**无需原生编译、无第三方依赖**；文本输入经 Base64 传参后再在 PowerShell 侧解码，杜绝内容注入。
 
 ### 5.3 能力明细
 

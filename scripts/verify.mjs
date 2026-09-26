@@ -252,6 +252,36 @@ async function main() {
     console.log('  - FR-03.2 app.install 安装软件  [跳过：需 --with-install <包名>]');
   }
 
+  console.log('\n[v2] 图形接管');
+  await check('v2.1', 'screen.info 显示器信息', async () => {
+    const c = await connect();
+    const r = await c.invoke('screen.info');
+    c.close();
+    assertOk(r, 'screen.info');
+    if (!Array.isArray(r.data.displays) || r.data.displays.length === 0) throw new Error('未返回显示器');
+    const d = r.data.displays[0];
+    return `${r.data.displays.length} 个显示器，主屏 ${d.width}x${d.height}`;
+  });
+  await check('v2.2', 'screen.capture 截屏', async () => {
+    const c = await connect();
+    const r = await c.invoke('screen.capture', { scale: 0.4, format: 'jpeg' }, 60_000);
+    c.close();
+    if (r.status !== 'ok') {
+      if (r.error?.name === 'E_UNSUPPORTED_PLATFORM') return 'skip';
+      throw new Error(`截屏失败: ${r.error?.name}: ${r.error?.message}`);
+    }
+    if (!r.data.image || r.data.image.length < 1000) throw new Error('图片数据异常');
+    return `${r.data.width}x${r.data.height} ${(r.data.bytes / 1024).toFixed(1)}KB`;
+  });
+  await check('v2.3', 'input.* 高危能力受开关管控', async () => {
+    const c = await connect();
+    const r = await c.invoke('input.mouse.move', { x: 1, y: 1 });
+    c.close();
+    if (r.status === 'ok') return '已开启输入控制';
+    if (r.error?.name === 'E_CAPABILITY_DISABLED') return '默认禁用（安全）';
+    throw new Error(`异常响应: ${JSON.stringify(r.error)}`);
+  });
+
   // ---------- 汇总 ----------
   const pass = results.filter((r) => r.status === 'pass').length;
   const fail = results.filter((r) => r.status === 'fail').length;

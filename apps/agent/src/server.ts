@@ -19,7 +19,7 @@ import {
   type AuthParams,
   type InvokeParams,
 } from '@nodeagent/protocol';
-import { capabilityRegistry } from './capabilities/index.js';
+import { createCapabilityRegistry } from './capabilities/index.js';
 import type { AgentConfig } from './config.js';
 import type { TlsMaterial } from './certs.js';
 
@@ -41,6 +41,7 @@ type LogLevel = 'debug' | 'info' | 'warn';
 
 /** 创建并启动被控端 WebSocket 服务。 */
 export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Promise<AgentServer> {
+  const capabilityRegistry = createCapabilityRegistry(cfg);
   const levelOrder: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2 };
   const log = (level: LogLevel, msg: string): void => {
     if (levelOrder[level] >= levelOrder[cfg.log_level]) {

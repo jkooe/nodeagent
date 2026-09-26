@@ -25,7 +25,7 @@ nodeagent 让 Mac 上的 AI（WorkBuddy）通过统一协议接管局域网内�
 |---|---|
 | 协议 | JSON-RPC 2.0 over WebSocket，握手 `hello → challenge → auth → auth_ok` |
 | 鉴权 | 预共享密钥 + HMAC-SHA256 挑战-应答（防重放） |
-| 能力 | `system.*`（info / status / process.list / service.list / shell.exec）+ `app.*`（list / install） |
+| 能力 | `system.*`(5) + `app.*`(2) + `screen.*`(2) + `input.*`(5，**默认禁用**) |
 | 接入 | CLI（调试底座）+ MCP（AI 落点） |
 
 ## 快速开始
@@ -60,6 +60,14 @@ node apps/cli/dist/index.js exec "Get-Service Spooler"
 node apps/cli/dist/index.js install Microsoft.VisualStudioCode
 node apps/cli/dist/index.js apps                    # 已安装软件
 node apps/cli/dist/index.js list                    # 被控端可用能力
+
+# 图形接管（v2）
+node apps/cli/dist/index.js screen                  # 显示器信息
+node apps/cli/dist/index.js screenshot --out s.jpg --scale 0.5   # 截屏存盘
+node apps/cli/dist/index.js mouse move 500 300      # 移动鼠标（需被控端开 allow_input）
+node apps/cli/dist/index.js mouse click 500 300
+node apps/cli/dist/index.js key type "hello world"  # 输入文本
+node apps/cli/dist/index.js key press ctrl s        # 组合键
 ```
 
 ### 3. 接入 WorkBuddy（MCP）
@@ -79,7 +87,7 @@ node apps/cli/dist/index.js list                    # 被控端可用能力
 
 随后即可用自然语言调度，例如「Windows 上装个 VSCode」「看看 Windows 内存够不够」。
 
-MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list`
+MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`**
 
 ## 开发
 
@@ -151,8 +159,10 @@ nodeagent/
 | 阶段 | 目标 | 状态 |
 |---|---|---|
 | **v1** | 命令级接管 + 装软件 + 查状态 + 基本鉴权 + CLI + MCP | ✅ 已实现 |
-| **v2** | 图形接管（截屏 + 键鼠模拟）+ 能力级 ACL | 规划中 |
-| **v3** | 无感体验 + 零信任 + 多端扩展 | 规划中 |
+| **v2** | 图形接管（`screen.*` 截屏 + `input.*` 键鼠）+ 输入控制开关 | 🟡 开发中（能力已就绪） |
+| **v3** | 无感体验 + 零信任（Ed25519 + 能力级 ACL） | 规划中 |
+
+> **输入控制安全默认**：`input.*` 为高危能力，**默认禁用**。需在被控端 `agent.json` 设 `"allow_input": true` 重启后生效，或用 `install.ps1 -AllowInput` 安装。
 
 ## 关键决策速览
 

@@ -118,6 +118,53 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'na_screenshot',
+    description:
+      '截取被控端 Windows 屏幕并直接返回图片。当用户问"Windows 现在画面是什么样""帮我看下屏幕"，或需要视觉确认操作结果时使用。屏幕较大时建议 scale 设 0.5 以减小体积。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        scale: { type: 'number', description: '缩放比例 0.1~1.0，默认 1' },
+        format: { type: 'string', enum: ['png', 'jpeg'], description: '默认 jpeg' },
+        region: { type: 'string', description: '可选截取区域，格式 "x,y,width,height"' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_mouse',
+    description:
+      '控制被控端鼠标（需被控端已开启输入控制）。action: move 移动到 (x,y)；click 点击（给了 x/y 则先移动，否则点当前位置）；scroll 滚动 delta 格。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['move', 'click', 'scroll'], description: '操作类型' },
+        x: { type: 'integer', description: 'X 坐标' },
+        y: { type: 'integer', description: 'Y 坐标' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], description: 'click 的按钮，默认 left' },
+        delta: { type: 'integer', description: 'scroll 的滚动格数（正数向上）' },
+        duration_ms: { type: 'integer', description: 'move 的平滑移动耗时（毫秒）' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_key',
+    description:
+      '控制被控端键盘（需被控端已开启输入控制）。action: type 输入一段文本；press 按下组合键（如 ["ctrl","c"]）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['type', 'press'], description: '操作类型' },
+        text: { type: 'string', description: 'type 时输入的文本' },
+        keys: { type: 'array', items: { type: 'string' }, description: 'press 时的按键列表' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /** MCP 工具入参 → 能力 args。 */
@@ -156,7 +203,71 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_app_list: CapabilityNames.AppList,
   na_process_list: CapabilityNames.ProcessList,
   na_service_list: CapabilityNames.ServiceList,
+  na_screenshot: CapabilityNames.ScreenCapture,
 };
+
+type Resolved = { capability: string; args: Record<string, unknown> } | { error: string };
+
+/** MCP 工具调用 → 能力名 + 参数（多动作工具在此分发）。 */
+function resolveToolCall(toolName: string, input: Record<string, unknown>): Resolved {
+  switch (toolName) {
+    case 'na_screenshot': {
+      const args: Record<string, unknown> = {};
+      if (input['scale'] !== undefined) args['scale'] = input['scale'];
+      if (input['format'] !== undefined) args['format'] = input['format'];
+      if (input['region'] !== undefined) {
+        const n = String(input['region']).split(',').map(Number);
+        if (n.length !== 4 || n.some((v) => !Number.isFinite(v))) {
+          return { error: 'region 格式应为 "x,y,width,height"' };
+        }
+        args['region'] = { x: n[0], y: n[1], width: n[2], height: n[3] };
+      }
+      return { capability: CapabilityNames.ScreenCapture, args };
+    }
+    case 'na_mouse': {
+      const action = input['action'];
+      if (action === 'move') {
+        if (input['x'] === undefined || input['y'] === undefined) return { error: 'move 需要 x 与 y' };
+        const args: Record<string, unknown> = { x: input['x'], y: input['y'] };
+        if (input['duration_ms'] !== undefined) args['duration_ms'] = input['duration_ms'];
+        return { capability: CapabilityNames.MouseMove, args };
+      }
+      if (action === 'click') {
+        const args: Record<string, unknown> = {};
+        if (input['x'] !== undefined && input['y'] !== undefined) {
+          args['x'] = input['x'];
+          args['y'] = input['y'];
+        }
+        if (input['button'] !== undefined) args['button'] = input['button'];
+        return { capability: CapabilityNames.MouseClick, args };
+      }
+      if (action === 'scroll') {
+        if (input['delta'] === undefined) return { error: 'scroll 需要 delta' };
+        return { capability: CapabilityNames.MouseScroll, args: { delta: input['delta'] } };
+      }
+      return { error: `不支持的 action: ${String(action)}` };
+    }
+    case 'na_key': {
+      const action = input['action'];
+      if (action === 'type') {
+        if (!input['text']) return { error: 'type 需要 text' };
+        return { capability: CapabilityNames.KeyType, args: { text: input['text'] } };
+      }
+      if (action === 'press') {
+        if (!Array.isArray(input['keys']) || input['keys'].length === 0) {
+          return { error: 'press 需要非空 keys 数组' };
+        }
+        return { capability: CapabilityNames.KeyPress, args: { keys: input['keys'] } };
+      }
+      return { error: `不支持的 action: ${String(action)}` };
+    }
+    default: {
+      const capability = TOOL_TO_CAPABILITY[toolName];
+      if (!capability) return { error: `未知工具: ${toolName}` };
+      return { capability, args: toArgs(toolName, input) };
+    }
+  }
+}
 
 // ---------- 服务 ----------
 
@@ -169,14 +280,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as 
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const name = request.params.name;
-  const capability = TOOL_TO_CAPABILITY[name];
-  if (!capability) {
-    return { isError: true, content: [{ type: 'text', text: `未知工具: ${name}` }] };
+  const input = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+  const resolved = resolveToolCall(name, input);
+  if ('error' in resolved) {
+    return { isError: true, content: [{ type: 'text', text: resolved.error }] };
   }
 
-  const input = (request.params.arguments ?? {}) as Record<string, unknown>;
   try {
-    const result = await call(capability, toArgs(name, input));
+    const result = await call(resolved.capability, resolved.args);
     if (result.status === 'failed') {
       const err = result.error;
       return {
@@ -184,6 +296,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         content: [{ type: 'text', text: `${err?.name ?? 'E_EXECUTION_FAILED'}: ${err?.message ?? '执行失败'}` }],
       };
     }
+
+    // 截屏：直接返回图像内容，便于 AI 观察
+    if (name === 'na_screenshot') {
+      const d = result.data as { image: string; format: string; width: number; height: number; bytes: number };
+      return {
+        content: [
+          { type: 'image', data: d.image, mimeType: d.format === 'png' ? 'image/png' : 'image/jpeg' },
+          { type: 'text', text: `截图 ${d.width}x${d.height}（${(d.bytes / 1024).toFixed(1)} KB，${d.format}）` },
+        ],
+      };
+    }
+
     return { content: [{ type: 'text', text: JSON.stringify(result.data, null, 2) }] };
   } catch (err) {
     if (err instanceof ClientError) {

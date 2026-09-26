@@ -195,6 +195,34 @@ async function main() {
       if (!r.data.apps.some((a) => /jq/i.test(a.name))) return 'skip';
       assert.ok(true);
     });
+
+    // ---------- v2 图形接管（Windows 真机） ----------
+    await test('v2 screen.info 返回 Windows 显示器', async () => {
+      const c = await connect();
+      const r = await c.invoke('screen.info');
+      c.close();
+      assert.equal(r.status, 'ok');
+      assert.ok(r.data.displays.length > 0, '应有显示器');
+      assert.ok(r.data.displays[0].width > 0, '宽度应大于 0');
+    });
+
+    await test('v2 screen.capture 真实截屏返回图片', async () => {
+      const c = await connect();
+      const r = await c.invoke('screen.capture', { scale: 0.5, format: 'jpeg' }, 60_000);
+      c.close();
+      assert.equal(r.status, 'ok', `截屏失败: ${JSON.stringify(r.error)}`);
+      assert.ok(typeof r.data.image === 'string' && r.data.image.length > 1000, '图片数据过小');
+      assert.ok(r.data.width > 0 && r.data.height > 0, '尺寸无效');
+      return `${r.data.width}x${r.data.height} ${(r.data.bytes / 1024).toFixed(1)}KB`;
+    });
+
+    await test('v2 输入控制默认禁用（E_CAPABILITY_DISABLED）', async () => {
+      const c = await connect();
+      const r = await c.invoke('input.mouse.move', { x: 1, y: 1 });
+      c.close();
+      assert.equal(r.status, 'failed');
+      assert.equal(r.error.name, 'E_CAPABILITY_DISABLED');
+    });
   } finally {
     agent.kill();
     await new Promise((r) => setTimeout(r, 300));

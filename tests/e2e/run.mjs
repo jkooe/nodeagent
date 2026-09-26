@@ -144,9 +144,14 @@ async function main() {
     await test('FR-01 正确密钥可完成握手并拿到能力清单', async () => {
       const c = await connect();
       const caps = c.listCapabilities();
-      assert.equal(caps.length, 7, `期望 7 项能力，实际 ${caps.length}`);
-      assert.ok(caps.some((x) => x.name === 'system.shell.exec'));
       c.close();
+      assert.ok(caps.length >= 14, `期望至少 14 项能力，实际 ${caps.length}`);
+      for (const name of ['system.shell.exec', 'app.install', 'screen.capture', 'input.mouse.click']) {
+        assert.ok(
+          caps.some((x) => x.name === name),
+          `能力清单缺少: ${name}`,
+        );
+      }
     });
 
     await test('FR-01 错误密钥被拒绝（E_AUTH_FAILED）', async () => {
@@ -286,6 +291,29 @@ async function main() {
     });
 
     await test('TLS 模式：被控端以 wss 启动并可连接（自签证书 + insecure）', testTlsMode);
+
+    // ---------- v2 图形接管 ----------
+    await test('v2 screen.info 返回显示器列表', async () => {
+      const c = await connect();
+      const r = await c.invoke('screen.info');
+      c.close();
+      assert.equal(r.status, 'ok');
+      assert.ok(Array.isArray(r.data.displays), 'displays 应为数组');
+      assert.ok(r.data.displays.length > 0, '至少应有一个显示器');
+    });
+
+    await test('v2 input.* 默认禁用并返回 E_CAPABILITY_DISABLED', async () => {
+      const c = await connect();
+      const [move, type] = await Promise.all([
+        c.invoke('input.mouse.move', { x: 1, y: 1 }),
+        c.invoke('input.key.type', { text: 'x' }),
+      ]);
+      c.close();
+      for (const r of [move, type]) {
+        assert.equal(r.status, 'failed', '未开启输入控制时应为 failed');
+        assert.equal(r.error.name, 'E_CAPABILITY_DISABLED');
+      }
+    });
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

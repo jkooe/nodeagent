@@ -11,6 +11,11 @@ export interface AgentConfig {
   /** v1 简化：预共享密钥存于 600 权限文件；v2 升级 DPAPI */
   key: string;
   log_level: 'debug' | 'info' | 'warn';
+  /**
+   * v2：是否允许输入控制（鼠标 / 键盘）。
+   * 高危能力，默认 false —— 需被控端显式开启后才可被远程操作。
+   */
+  allow_input?: boolean;
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */

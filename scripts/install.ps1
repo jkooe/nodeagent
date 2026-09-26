@@ -24,6 +24,7 @@ param(
     [string]$NodeId = $env:COMPUTERNAME,
     [string]$Key = "",
     [switch]$NoTls,
+    [switch]$AllowInput,
     [string]$ProjectRoot = ""
 )
 
@@ -92,12 +93,13 @@ if (-not $Key) {
 }
 
 @{
-    node_id   = $NodeId
-    host      = "0.0.0.0"
-    port      = $Port
-    tls       = (-not $NoTls)
-    key       = $Key
-    log_level = "info"
+    node_id     = $NodeId
+    host        = "0.0.0.0"
+    port        = $Port
+    tls         = (-not $NoTls)
+    key         = $Key
+    log_level   = "info"
+    allow_input = [bool]$AllowInput
 } | ConvertTo-Json | Set-Content -Path $cfgPath -Encoding UTF8
 Write-Ok "Config written: $cfgPath"
 
@@ -152,6 +154,8 @@ Write-Host "  Listen    : 0.0.0.0:$Port ($scheme)"
 Write-Host "  Local IP  : $($ips -join ', ')"
 Write-Host "  Node.js   : $nodeExe"
 Write-Host "  Config    : $cfgPath"
+$ctlLabel = if ($AllowInput) { "ENABLED (mouse/keyboard control)" } else { "disabled (default)" }
+Write-Host "  Input ctl : $ctlLabel"
 Write-Host ""
 Write-Host "  Pre-shared key (copy this to the Mac side):" -ForegroundColor Yellow
 Write-Host "  $Key" -ForegroundColor White

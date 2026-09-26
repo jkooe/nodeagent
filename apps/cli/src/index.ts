@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { NodeAgentClient, ClientError, loadConfig, saveConfig, configPath, toWsUrl, type ClientConfig } from '@nodeagent/client';
 import { CapabilityNames, type CapabilityDescriptor, type InvokeResult } from '@nodeagent/protocol';
@@ -18,6 +19,16 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent list                      列出被控端可用能力
   nodeagent invoke <capability> [--args '<json>']   通用调用
 
+图形操作 (v2，输入控制需被控端开启 allow_input):
+  nodeagent screen                    显示器信息 (screen.info)
+  nodeagent screenshot [--out f.jpg] [--scale 0.5] [--region x,y,w,h] [--format jpeg]
+                                      截屏并保存 (screen.capture)
+  nodeagent mouse move <x> <y> [--duration 300]
+  nodeagent mouse click [<x> <y>] [--button left|right|middle]
+  nodeagent mouse scroll <delta>
+  nodeagent key type "<文本>" [--interval 10]
+  nodeagent key press <键1> [键2] ...  （组合键，如 ctrl c）
+
 通用选项:
   --json      以原始 JSON 输出
   --config    显示当前配置路径
@@ -32,6 +43,14 @@ interface Options {
   id?: string;
   limit?: string;
   args?: string;
+  // v2 图形操作
+  out?: string;
+  format?: string;
+  scale?: string;
+  region?: string;
+  button?: string;
+  duration?: string;
+  interval?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -247,6 +266,119 @@ async function cmdInvoke(capability: string, opts: Options): Promise<void> {
   });
 }
 
+// ---------- v2 图形操作 ----------
+
+async function cmdScreen(opts: Options): Promise<void> {
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.ScreenInfo, {}, opts.json, (data) => {
+      const rows = (
+        data as { displays: Array<{ id: number; name: string; width: number; height: number; is_primary: boolean }> }
+      ).displays;
+      for (const d of rows) {
+        console.log(
+          `  #${d.id}  ${String(d.width).padStart(5)}x${String(d.height).padEnd(5)} ${d.is_primary ? '[主屏]' : '      '}  ${d.name}`,
+        );
+      }
+    }),
+  );
+}
+
+async function cmdScreenshot(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.format) args['format'] = opts.format;
+  if (opts.scale) args['scale'] = Number(opts.scale);
+  if (opts.region) {
+    const nums = opts.region.split(',').map(Number);
+    if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n))) fail('--region 格式应为 x,y,width,height');
+    args['region'] = { x: nums[0], y: nums[1], width: nums[2], height: nums[3] };
+  }
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.ScreenCapture, args, opts.json, (data) => {
+      const d = data as { image: string; format: string; width: number; height: number; bytes: number };
+      const out = opts.out ?? `screenshot.${d.format === 'png' ? 'png' : 'jpg'}`;
+      writeFileSync(out, Buffer.from(d.image, 'base64'));
+      console.log(`✓ 已保存 ${out}  ${d.width}x${d.height}  ${humanSize(d.bytes)}`);
+    }),
+  );
+}
+
+async function cmdMouse(action: string | undefined, positionals: string[], opts: Options): Promise<void> {
+  const [a, b] = positionals;
+  switch (action) {
+    case 'move': {
+      if (!a || !b) fail('用法: nodeagent mouse move <x> <y> [--duration 300]');
+      const args: Record<string, unknown> = { x: Number(a), y: Number(b) };
+      if (opts.duration) args['duration_ms'] = Number(opts.duration);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseMove, args, opts.json, (d) => {
+          const r = d as { x: number; y: number };
+          console.log(`✓ 鼠标已移动到 (${r.x}, ${r.y})`);
+        }),
+      );
+      return;
+    }
+    case 'click': {
+      const args: Record<string, unknown> = {};
+      if (a && b) {
+        args['x'] = Number(a);
+        args['y'] = Number(b);
+      }
+      if (opts.button) args['button'] = opts.button;
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseClick, args, opts.json, (d) => {
+          const r = d as { x: number; y: number; button: string };
+          console.log(`✓ 已${r.button}键点击 (${r.x}, ${r.y})`);
+        }),
+      );
+      return;
+    }
+    case 'scroll': {
+      if (!a) fail('用法: nodeagent mouse scroll <delta> [y]');
+      const args: Record<string, unknown> = { delta: Number(a) };
+      if (b) args['y'] = Number(b);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseScroll, args, opts.json, (d) => {
+          const r = d as { delta: number };
+          console.log(`✓ 已滚动 ${r.delta} 格`);
+        }),
+      );
+      return;
+    }
+    default:
+      fail('用法: nodeagent mouse <move|click|scroll> ...');
+  }
+}
+
+async function cmdKey(action: string | undefined, positionals: string[], opts: Options): Promise<void> {
+  switch (action) {
+    case 'type': {
+      const text = positionals.join(' ');
+      if (!text) fail('用法: nodeagent key type "<文本>"');
+      const args: Record<string, unknown> = { text };
+      if (opts.interval) args['interval_ms'] = Number(opts.interval);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.KeyType, args, opts.json, (d) => {
+          const r = d as { length: number };
+          console.log(`✓ 已输入 ${r.length} 个字符`);
+        }),
+      );
+      return;
+    }
+    case 'press': {
+      if (positionals.length === 0) fail('用法: nodeagent key press <键1> [键2] ...（如 ctrl c）');
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.KeyPress, { keys: positionals }, opts.json, (d) => {
+          const r = d as { keys: string[] };
+          console.log(`✓ 已按下 ${r.keys.join('+')}`);
+        }),
+      );
+      return;
+    }
+    default:
+      fail('用法: nodeagent key <type|press> ...');
+  }
+}
+
 function parseOptions(rest: string[]): { opts: Options; positionals: string[] } {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -259,6 +391,14 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       limit: { type: 'string' },
       args: { type: 'string' },
       config: { type: 'boolean', default: false },
+      // v2 图形操作
+      out: { type: 'string' },
+      format: { type: 'string' },
+      scale: { type: 'string' },
+      region: { type: 'string' },
+      button: { type: 'string' },
+      duration: { type: 'string' },
+      interval: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -272,6 +412,13 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       id: values['id'] as string | undefined,
       limit: values['limit'] as string | undefined,
       args: values['args'] as string | undefined,
+      out: values['out'] as string | undefined,
+      format: values['format'] as string | undefined,
+      scale: values['scale'] as string | undefined,
+      region: values['region'] as string | undefined,
+      button: values['button'] as string | undefined,
+      duration: values['duration'] as string | undefined,
+      interval: values['interval'] as string | undefined,
     },
     positionals,
   };
@@ -327,6 +474,22 @@ async function main(): Promise<void> {
       const cap = positionals[0];
       if (!cap) fail('用法: nodeagent invoke <capability> [--args \'<json>\']');
       await cmdInvoke(cap, opts);
+      return;
+    }
+    case 'screen':
+      await cmdScreen(opts);
+      return;
+    case 'screenshot':
+      await cmdScreenshot(opts);
+      return;
+    case 'mouse': {
+      const [action, ...rest2] = positionals;
+      await cmdMouse(action, rest2, opts);
+      return;
+    }
+    case 'key': {
+      const [action, ...rest2] = positionals;
+      await cmdKey(action, rest2, opts);
       return;
     }
     case undefined:
