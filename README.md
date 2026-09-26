@@ -13,6 +13,7 @@ nodeagent 让 Mac 上的 AI（WorkBuddy）通过统一协议接管局域网内�
 ## 文档
 
 - [产品需求文档（PRD）](./PRD.md)
+- [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md)
 
 ## 分阶段路线
 
