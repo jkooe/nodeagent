@@ -87,7 +87,27 @@ MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na
 pnpm build        # 构建全部包
 pnpm typecheck    # 类型检查
 pnpm test:e2e     # 端到端测试（本机起 Agent，跑通握手 + 能力调用 + 异常路径）
+pnpm test:windows # Windows 专属能力测试（服务 / 软件 / winget 装软件）
+pnpm verify       # 对本机配置的被控端跑全套验收并输出报告
 ```
+
+## 自动化真机验证
+
+三层验证体系，无需手工点测：
+
+| 层次 | 方式 | 覆盖 |
+|---|---|---|
+| **CI（推荐）** | GitHub Actions `windows-latest` | 真实 Windows 上跑协议 E2E、Windows 专属能力（`Get-Service`/注册表/winget 装软件）、`install.ps1` 安装链路、CLI 连入、MCP 工具列表 |
+| **远程验收** | `node scripts/verify.mjs --host <IP> --key <密钥> [--insecure]` | 对齐 PRD FR-01~FR-08 的逐条验收，输出终端报告 + `--report report.md` |
+| **本地测试** | `pnpm test:e2e` / `pnpm test:windows` | 单机自举：起一个 Agent 当被控端，自测协议与能力 |
+
+CI 工作流见 [`.github/workflows/windows-e2e.yml`](./.github/workflows/windows-e2e.yml)，每次 push 到 `main` 或手动触发即运行。
+
+```bash
+# 对皇上自己的 Windows 机器验收（含真实装软件）
+node scripts/verify.mjs --host 192.168.1.100 --port 8765 --key <密钥> --insecure --with-install jqlang.jq --report verify-report.md
+```
+
 
 ### 工程结构
 

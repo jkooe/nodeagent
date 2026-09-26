@@ -14,7 +14,9 @@
     "agent": "pnpm --filter @nodeagent/agent start",
     "cli": "pnpm --filter @nodeagent/cli start",
     "mcp": "pnpm --filter @nodeagent/mcp start",
-    "test:e2e": "node tests/e2e/run.mjs"
+    "test:e2e": "node tests/e2e/run.mjs",
+    "test:windows": "node tests/e2e/windows.mjs",
+    "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

@@ -204,12 +204,18 @@ async function main() {
       c.close();
     });
 
-    await test('平台不支持的能力返回 status=failed + E_UNSUPPORTED_PLATFORM', async () => {
+    await test('平台相关能力：Windows 成功 / 非 Windows 报 E_UNSUPPORTED_PLATFORM', async () => {
       const c = await connect();
       const r = await c.invoke('system.service.list');
       c.close();
-      assert.equal(r.status, 'failed');
-      assert.equal(r.error.name, 'E_UNSUPPORTED_PLATFORM');
+      if (process.platform === 'win32') {
+        assert.equal(r.status, 'ok', 'Windows 上 service.list 应成功');
+        assert.ok(Array.isArray(r.data.services), 'services 应为数组');
+        assert.ok(r.data.services.length > 0, 'Windows 上应有服务');
+      } else {
+        assert.equal(r.status, 'failed');
+        assert.equal(r.error.name, 'E_UNSUPPORTED_PLATFORM');
+      }
     });
 
     await test('未认证调用返回 E_AUTH_REQUIRED', async () => {
