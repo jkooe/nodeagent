@@ -66,20 +66,45 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 
 ### 2. Mac 侧（控制端）
 
+> Mac 作为控制端，**不需要**上面的 Windows 安装包；只需本机 Node.js 22+（`brew install node`）。
+
+**方式 A：装成全局命令（推荐，随处可用）**
+
 ```bash
-# 局域网内先自动发现有哪些 Windows（免手抄 IP）
-node apps/cli/dist/index.js discover --wait 5
-
-# 连接并命名设备（自签证书需 --insecure）
-node apps/cli/dist/index.js connect 192.168.1.100 --port 8765 --key <密钥> --insecure --name win_a
-
-# 开始使用
-node apps/cli/dist/index.js info                    # 系统信息
-node apps/cli/dist/index.js status                  # CPU / 内存 / 磁盘 / 网络
-node apps/cli/dist/index.js exec "Get-Service Spooler"
-node apps/cli/dist/index.js install Microsoft.VisualStudioCode
-node apps/cli/dist/index.js screenshot --out s.jpg --scale 0.5
+cd <项目目录>
+pnpm pack:mac                        # 打包为单文件（约 1MB，免 node_modules）
+bash scripts/install-macos.sh        # 安装到 ~/.local/bin 并打印 MCP 配置
 ```
+
+装好后命令行直接可用：
+
+```bash
+nodeagent discover --wait 5          # 局域网内有哪些 Windows（免手抄 IP）
+nodeagent connect 192.168.1.100 --key <密钥> --insecure --name win_a
+nodeagent info
+```
+
+**方式 B：仓库内直接调用（开发调试）**
+
+```bash
+node apps/cli/dist/index.js discover --wait 5
+node apps/cli/dist/index.js info
+```
+
+**常用命令**
+
+```bash
+nodeagent info | status | ps | services              # 系统与资源
+nodeagent exec "Get-Service Spooler"                 # 执行命令
+nodeagent install Microsoft.VisualStudioCode         # 装软件
+nodeagent apps                                       # 已安装软件
+nodeagent screen                                     # 显示器信息
+nodeagent screenshot --out s.jpg --scale 0.5         # 截屏
+nodeagent ls "C:\Users\me\Desktop" --recursive       # 列目录
+nodeagent pull "C:\big.iso" --out ./big.iso          # 下载（大文件自动分块）
+```
+
+> 完整命令见下方「命令速查」。
 
 ### 3. 接入 AI（MCP）
 
