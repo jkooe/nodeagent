@@ -39,13 +39,19 @@ pnpm build
 
 ### 1. Windows 侧（被控端）
 
-在 Windows 上以**管理员权限**运行：
+**方式 A：安装包（推荐，免装 Node.js）**
+
+1. 在控制端构建安装包：`pnpm pack:win`（产物：`release/nodeagent-win-x64.zip`）
+2. 把 zip 拷到 Windows 并解压
+3. 右键以**管理员**运行其中的 `install.ps1`
+
+安装脚本会使用**包内自带的 Node.js 运行时**，自动：生成预共享密钥 → 写配置 → 放行防火墙 → 注册开机自启 → 启动 Agent，并打印**密钥**与**连接命令**。
+
+**方式 B：开发模式（本仓库）**
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
-
-脚本会：生成预共享密钥 → 写配置 → 放行防火墙 → 注册开机自启 → 启动 Agent，并打印**密钥**与**连接命令**。
 
 ### 2. Mac 侧（控制端）
 

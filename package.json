@@ -17,10 +17,17 @@
     "test:unit": "node --test \"tests/unit/**/*.test.mjs\"",
     "test:e2e": "node tests/e2e/run.mjs",
     "test:windows": "node tests/e2e/windows.mjs",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "pack:win": "node scripts/pack.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

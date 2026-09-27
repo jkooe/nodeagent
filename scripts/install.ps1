@@ -48,29 +48,42 @@ if (-not $isAdmin) {
     exit 1
 }
 
-# 2. Check Node.js
-Write-Step "Checking Node.js..."
-$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
-if (-not $nodeCmd) {
-    Write-Err "Node.js not found. Install Node.js 22+ from https://nodejs.org"
-    exit 1
+# 2. Locate runtime (bundled portable package first, else system Node.js + repo build)
+Write-Step "Locating runtime..."
+$bundledNode  = Join-Path $PSScriptRoot "node.exe"
+$bundledAgent = Join-Path $PSScriptRoot "agent.mjs"
+
+if ((Test-Path $bundledNode) -and (Test-Path $bundledAgent)) {
+    # 便携包：使用包内运行时与被打包好的被控端，无需本机安装 Node.js
+    $nodeExe = $bundledNode
+    $agentJs = $bundledAgent
+    if (-not $ProjectRoot) { $ProjectRoot = $PSScriptRoot }
+    Write-Ok "Using bundled runtime (portable package)"
+} else {
+    # 开发模式：系统 Node.js + 仓库代码
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $nodeCmd) {
+        Write-Err "Node.js not found. Install Node.js 22+ from https://nodejs.org"
+        exit 1
+    }
+    $nodeExe = $nodeCmd.Source
+    if (-not $ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
+    $agentJs = Join-Path $ProjectRoot "apps\agent\dist\index.js"
+    if (-not (Test-Path $agentJs)) {
+        Write-Err "Agent build not found: $agentJs"
+        Write-Warn "Run 'pnpm install' and 'pnpm build' in the repo root first."
+        exit 1
+    }
+    Write-Ok "Using system Node.js"
 }
-$ver = (& node --version).TrimStart('v')
+
+$ver = (& $nodeExe --version).TrimStart('v')
 $major = [int]($ver.Split('.')[0])
 if ($major -lt 22) {
     Write-Err "Node.js 22+ required, found v$ver"
     exit 1
 }
 Write-Ok "Node.js v$ver"
-
-# 3. Locate the built agent
-if (-not $ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
-$agentJs = Join-Path $ProjectRoot "apps\agent\dist\index.js"
-if (-not (Test-Path $agentJs)) {
-    Write-Err "Agent build not found: $agentJs"
-    Write-Warn "Run 'pnpm install' and 'pnpm build' in the repo root first."
-    exit 1
-}
 Write-Ok "Agent entry: $agentJs"
 
 # 4. Config + pre-shared key
@@ -116,7 +129,6 @@ Write-Ok "Inbound rule allowed on TCP $Port"
 # 6. Scheduled task (auto start on logon, highest privileges)
 Write-Step "Registering scheduled task..."
 $taskName = "nodeagent"
-$nodeExe  = $nodeCmd.Source
 $action   = New-ScheduledTaskAction -Execute $nodeExe -Argument "`"$agentJs`"" -WorkingDirectory $ProjectRoot
 $trigger  = New-ScheduledTaskTrigger -AtLogOn
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

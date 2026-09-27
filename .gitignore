@@ -29,3 +29,6 @@ Thumbs.db
 
 # Coverage
 coverage/
+
+# 安装包构建产物（体积大，不入库）
+release/
