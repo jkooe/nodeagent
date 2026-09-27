@@ -48,7 +48,13 @@ export interface AgentServer {
 type LogLevel = 'debug' | 'info' | 'warn';
 
 /** 创建并启动被控端 WebSocket 服务。 */
-export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Promise<AgentServer> {
+/** 连接级 RPC 处理 —— 监听模式与 Hub 模式共用同一套鉴权 / ACL / 能力分发。 */
+export interface AgentCore {
+  /** 在给定连接上提供被控端服务（连接已建立）。 */
+  attach(ws: WebSocket, remote: string): void;
+}
+
+export function createAgentCore(cfg: AgentConfig): AgentCore {
   const capabilityRegistry = createCapabilityRegistry(cfg);
   /** v3：本次实例采用的认证模式（psk 向后兼容 / ed25519 零信任） */
   const authMode: 'psk' | 'ed25519' = cfg.auth_mode === 'ed25519' ? 'ed25519' : 'psk';
@@ -75,13 +81,6 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     }
   };
 
-  // TLS 必须由 https server 承载：ws 的 WebSocketServer 不识别 cert/key 选项，
-  // 直接传入会被静默忽略，导致「自称 wss、实为明文」的降级。
-  const httpServer = tls
-    ? createHttpsServer({ cert: tls.cert, key: tls.key })
-    : createHttpServer();
-  const wss = new WebSocketServer({ server: httpServer });
-
   const states = new WeakMap<WebSocket, ConnState>();
 
   const send = (ws: WebSocket, msg: unknown): void => {
@@ -102,6 +101,10 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     state.nonce = generateNonce();
     state.nonceExpiresAt = Date.now() + NONCE_TTL_MS;
     state.clientId = params?.client_id ?? null;
+    // 新一轮握手开始：清除上一轮的认证态与授权
+    // （Hub 模式下同一连接会被不同控制端先后复用，必须重置，否则存在越权风险）
+    state.authenticated = false;
+    state.authorized = null;
     sendResult(ws, req.id, { nonce: state.nonce, expires_at: state.nonceExpiresAt });
   }
 
@@ -318,8 +321,7 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     }
   }
 
-  wss.on('connection', (ws, req) => {
-    const remote = req.socket.remoteAddress ?? '?';
+  function attachConnection(ws: WebSocket, remote: string): void {
     log('info', `新连接: ${remote}`);
     states.set(ws, {
       authenticated: false,
@@ -334,7 +336,29 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     });
     ws.on('close', () => log('info', `连接关闭: ${remote}`));
     ws.on('error', (err: Error) => log('warn', `连接错误: ${err.message}`));
-  });
+  }
+
+  return { attach: attachConnection };
+}
+
+/** 监听模式：被控端在本地起 HTTP(S) + WebSocket 服务。 */
+export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Promise<AgentServer> {
+  const core = createAgentCore(cfg);
+  const levelOrder: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2 };
+  const log = (level: LogLevel, msg: string): void => {
+    if (levelOrder[level] >= levelOrder[cfg.log_level]) {
+      console.log(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`);
+    }
+  };
+
+  // TLS 必须由 https server 承载：ws 的 WebSocketServer 不识别 cert/key 选项，
+  // 直接传入会被静默忽略，导致「自称 wss、实为明文」的降级。
+  const httpServer = tls
+    ? createHttpsServer({ cert: tls.cert, key: tls.key })
+    : createHttpServer();
+  const wss = new WebSocketServer({ server: httpServer });
+
+  wss.on('connection', (ws, req) => core.attach(ws, req.socket.remoteAddress ?? '?'));
 
   // WebSocket 层保活：30s ping，探测死连接
   const heartbeat = setInterval(() => {

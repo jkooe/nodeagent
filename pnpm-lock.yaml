@@ -40,6 +40,19 @@ importers:
         specifier: workspace:*
         version: link:../../packages/protocol
 
+  apps/hub:
+    dependencies:
+      '@nodeagent/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      ws:
+        specifier: ^8.18.0
+        version: 8.21.3
+    devDependencies:
+      '@types/ws':
+        specifier: ^8.5.13
+        version: 8.18.1
+
   apps/mcp:
     dependencies:
       '@modelcontextprotocol/sdk':

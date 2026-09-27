@@ -5,6 +5,7 @@ import { ensureCert } from './certs.js';
 import { createAgentServer } from './server.js';
 import { initAudit, audit, auditFilePath } from './audit.js';
 import { startBeacon, DEFAULT_DISCOVERY_PORT, type Beacon } from './discovery.js';
+import { startHubClient, type HubClient } from './hub-mode.js';
 
 function listLocalIps(): string[] {
   const out: string[] = [];
@@ -24,8 +25,19 @@ async function main(): Promise<void> {
     maxFiles: config.audit?.max_files,
     logArgs: config.audit?.log_args,
   });
-  const tls = config.tls ? ensureCert() : null;
-  const server = await createAgentServer(config, tls);
+  // v6：Hub 模式下不监听本地端口，改为主动外连 Hub（穿 NAT）
+  const useHub = config.hub?.enabled === true;
+  const tls = !useHub && config.tls ? ensureCert() : null;
+  const server = useHub ? null : await createAgentServer(config, tls);
+
+  let hubClient: HubClient | null = null;
+  if (useHub && config.hub) {
+    hubClient = startHubClient(
+      config,
+      { url: config.hub.url, token: config.hub.token, insecure: config.hub.insecure },
+      (level, msg) => console.log(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`),
+    );
+  }
 
   const auditMode = config.auth_mode ?? 'psk';
   audit({
@@ -38,7 +50,7 @@ async function main(): Promise<void> {
   // v4：局域网心跳广播（报文不含任何凭据）
   const beacon: Beacon | null = startBeacon(
     {
-      enabled: config.discovery?.enabled !== false,
+      enabled: !useHub && config.discovery?.enabled !== false,
       port: config.discovery?.port ?? DEFAULT_DISCOVERY_PORT,
       broadcast: config.discovery?.broadcast ?? '255.255.255.255',
       intervalMs: config.discovery?.interval_ms ?? 5000,
@@ -58,7 +70,13 @@ async function main(): Promise<void> {
   console.log('  nodeagent 被控端已启动');
   console.log('  ─────────────────────────────────────────────');
   console.log(`  节点 ID    : ${config.node_id}`);
-  console.log(`  监听地址   : ${config.host}:${config.port} (${config.tls ? 'wss / TLS' : 'ws / 明文'})`);
+  console.log(
+    `  接入方式   : ${
+      useHub
+        ? `Hub 中转 → ${config.hub?.url ?? ''}`
+        : `本地监听 ${config.host}:${config.port} (${config.tls ? 'wss / TLS' : 'ws / 明文'})`
+    }`,
+  );
   console.log(`  本机 IP    : ${ips.join(', ') || '未检测到'}`);
   console.log(`  能力       : ${CAPABILITY_MANIFEST.length} 项`);
   console.log(`  认证模式   : ${auditMode}${auditMode === 'ed25519' ? `（已登记 ${config.acl?.clients.length ?? 0} 个调用方）` : ''}`);
@@ -80,8 +98,9 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     console.log('\n正在关闭...');
     beacon?.stop();
+    hubClient?.stop();
     audit({ type: 'agent.stop', reason: 'signal' });
-    await server.close();
+    if (server) await server.close();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown());

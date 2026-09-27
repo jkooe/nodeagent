@@ -15,6 +15,16 @@ export interface NodeProfile {
   auth_mode?: 'psk' | 'ed25519';
   /** 覆盖全局 client_id（同一控制端接入多台时可区分身份） */
   client_id?: string;
+  /**
+   * v6：经 Hub 中转接入。填写后连接走 `/hub/client`，
+   * 并在握手前完成 Hub 配对（Hub 只透传，端到端安全不受影响）。
+   */
+  hub?: {
+    /** Hub 令牌 */
+    token: string;
+    /** 目标被控端的 node_id */
+    node_id: string;
+  };
   /** 备注，便于识别 */
   note?: string;
 }
@@ -105,10 +115,11 @@ export function resolveTarget(cfg: ClientConfig, name?: string): ResolvedTarget 
   return { name: target, profile, clientId: profile.client_id ?? cfg.client_id };
 }
 
-/** 解析连接目标为 WebSocket URL。 */
-export function toWsUrl(profile: { host: string; port: number; tls: boolean }): string {
+/** 解析连接目标为 WebSocket URL（经 Hub 时附上 /hub/client 路径）。 */
+export function toWsUrl(profile: { host: string; port: number; tls: boolean; hub?: unknown }): string {
   const scheme = profile.tls ? 'wss' : 'ws';
-  return `${scheme}://${profile.host}:${profile.port}`;
+  const path = profile.hub ? '/hub/client' : '';
+  return `${scheme}://${profile.host}:${profile.port}${path}`;
 }
 
 export function emptyConfig(clientId = 'mac_01'): ClientConfig {

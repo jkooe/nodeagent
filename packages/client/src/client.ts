@@ -52,6 +52,8 @@ export interface ClientOptions {
   maxReconnectDelayMs?: number;
   /** v4：连接状态变化回调 */
   onStateChange?: (state: 'connected' | 'reconnecting' | 'closed') => void;
+  /** v6：经 Hub 中转（URL 需指向 `/hub/client`） */
+  hub?: { token: string; nodeId: string };
   /** 日志回调 */
   onLog?: (msg: string) => void;
 }
@@ -96,7 +98,19 @@ export class NodeAgentClient {
       ws.once('open', () => {
         clearTimeout(timer);
         onLog?.(`已连接 ${url}`);
-        resolve();
+        // Hub 模式下先完成配对，再挂 RPC 处理器（否则控制面消息会被误当响应）
+        const ready: Promise<void> = this.opts.hub
+          ? this.pairViaHub(ws, this.opts.hub, handshakeTimeoutMs)
+          : Promise.resolve();
+        ready
+          .then(() => {
+            ws.on('message', (raw: WebSocket.RawData) => this.handleMessage(raw.toString()));
+            resolve();
+          })
+          .catch((err: unknown) => {
+            ws.terminate();
+            reject(err instanceof Error ? err : new Error(String(err)));
+          });
       });
       ws.once('error', (err: Error) => {
         clearTimeout(timer);
@@ -108,7 +122,6 @@ export class NodeAgentClient {
         }
       });
 
-      ws.on('message', (raw: WebSocket.RawData) => this.handleMessage(raw.toString()));
       ws.on('close', () => this.handleClose());
     });
 
@@ -214,6 +227,42 @@ export class NodeAgentClient {
     } else {
       pending.resolve((msg as RpcResponse).result);
     }
+  }
+
+  /** v6：Hub 配对（控制面消息，非 JSON-RPC）。配对后该连接即为到被控端的透明通道。 */
+  private pairViaHub(ws: WebSocket, hub: { token: string; nodeId: string }, timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const onMessage = (raw: WebSocket.RawData): void => {
+        let msg: { type?: string; code?: string; message?: string };
+        try {
+          msg = JSON.parse(raw.toString()) as { type?: string; code?: string; message?: string };
+        } catch {
+          return;
+        }
+        if (msg.type === 'paired') {
+          clearTimeout(timer);
+          ws.off('message', onMessage);
+          this.opts.onLog?.(`Hub 配对成功（node_id=${hub.nodeId}）`);
+          resolve();
+          return;
+        }
+        if (msg.type === 'error') {
+          clearTimeout(timer);
+          ws.off('message', onMessage);
+          // Hub 令牌错误属鉴权问题，其余（离线/占用）归为不可达
+          const code = msg.code === 'E_HUB_AUTH' ? ErrorCodes.AUTH_FAILED : ErrorCodes.NODE_OFFLINE;
+          reject(new ClientError(code, msg.code ?? 'E_HUB', msg.message ?? 'Hub 拒绝接入'));
+        }
+      };
+
+      const timer = setTimeout(() => {
+        ws.off('message', onMessage);
+        reject(new ClientError(ErrorCodes.TIMEOUT, 'E_TIMEOUT', 'Hub 配对超时'));
+      }, timeoutMs);
+
+      ws.on('message', onMessage);
+      ws.send(JSON.stringify({ type: 'connect', node_id: hub.nodeId, token: hub.token }));
+    });
   }
 
   private handleClose(): void {

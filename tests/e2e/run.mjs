@@ -28,6 +28,10 @@ const RECONNECT_PORT = 18798;
 const RECONNECT_KEY = 'reconnect-key-0123456789abcdef0123456789';
 const FS_PORT = 18799;
 const FS_KEY = 'fs-key-0123456789abcdef0123456789abcdef';
+const HUB_PORT = 18800;
+const HUB_AGENT_PORT = 18801;
+const HUB_TOKEN = 'hub-e2e-token-0123456789abcdef';
+const HUB_AGENT_KEY = 'hub-agent-key-0123456789abcdef0123';
 const KEY = 'e2e-test-key-0123456789abcdef0123456789abcdef';
 const URL = `ws://127.0.0.1:${PORT}`;
 
@@ -524,6 +528,86 @@ async function testFileTransfer() {
   }
 }
 
+/** v6 场景：Hub 中转 —— 被控端主动注册，控制端经 Hub 配对后跑端到端握手。 */
+async function testHubMode() {
+  const hubHome = mkdtempSync(join(tmpdir(), 'nodeagent-hub-'));
+  const agentHome = mkdtempSync(join(tmpdir(), 'nodeagent-hubagent-'));
+  const spawnWith = (home, script) =>
+    spawn(process.execPath, [join(root, script)], {
+      env: { ...process.env, NODEAGENT_HOME: home, HOME: home, USERPROFILE: home },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+  writeFileSync(
+    join(hubHome, 'hub.json'),
+    JSON.stringify({ node_id: 'hub_e2e', host: '127.0.0.1', port: HUB_PORT, token: HUB_TOKEN, log_level: 'warn' }),
+  );
+  writeFileSync(
+    join(agentHome, 'agent.json'),
+    JSON.stringify({
+      node_id: 'hub_node',
+      host: '127.0.0.1',
+      port: HUB_AGENT_PORT,
+      tls: false,
+      key: HUB_AGENT_KEY,
+      log_level: 'warn',
+      discovery: { enabled: false },
+      hub: { enabled: true, url: `ws://127.0.0.1:${HUB_PORT}/hub/agent`, token: HUB_TOKEN },
+    }),
+  );
+
+  const hubProc = spawnWith(hubHome, 'apps/hub/dist/index.js');
+  const agentProc = spawnWith(agentHome, 'apps/agent/dist/index.js');
+  hubProc.stderr.on('data', (d) => process.stderr.write(`[hub] ${d}`));
+  agentProc.stderr.on('data', (d) => process.stderr.write(`[hub-agent] ${d}`));
+
+  const url = `ws://127.0.0.1:${HUB_PORT}/hub/client`;
+  const mk = (token, nodeId) =>
+    new NodeAgentClient({ url, key: HUB_AGENT_KEY, clientId: 'hub_test', hub: { token, nodeId } });
+
+  try {
+    // 等被控端注册到 Hub
+    await new Promise((r) => setTimeout(r, 2500));
+
+    // 1. 正常链路：经 Hub 握手并调用
+    const c = mk(HUB_TOKEN, 'hub_node');
+    const caps = await c.connect();
+    assert.ok(caps.length >= 19, `经 Hub 应拿到完整能力清单，实际 ${caps.length}`);
+    const info = await c.invoke('system.info');
+    assert.equal(info.status, 'ok', '经 Hub 的调用应成功');
+    c.close();
+
+    // 2. Hub 令牌错误 → 鉴权失败
+    await assert.rejects(
+      () => mk('wrong-token', 'hub_node').connect(),
+      (e) => {
+        assert.equal(e.code, -32401, `期望 -32401（鉴权失败），实际 ${e.code}`);
+        return true;
+      },
+    );
+
+    // 3. 目标设备不存在 → 不可达
+    await assert.rejects(
+      () => mk(HUB_TOKEN, 'ghost_node').connect(),
+      (e) => {
+        assert.equal(e.code, -32405, `期望 -32405（设备离线），实际 ${e.code}`);
+        return true;
+      },
+    );
+
+    // 4. 被控端应保持在线（前一次控制端断开不应把它踢下线）
+    const c2 = mk(HUB_TOKEN, 'hub_node');
+    await c2.connect();
+    const st = await c2.invoke('system.status');
+    assert.equal(st.status, 'ok', '被控端应仍在线可再次接入');
+    c2.close();
+  } finally {
+    hubProc.kill();
+    agentProc.kill();
+    await new Promise((r) => setTimeout(r, 400));
+  }
+}
+
 async function main() {
   console.log('\nnodeagent 端到端测试\n');
   const agent = startAgent();
@@ -716,6 +800,9 @@ async function main() {
 
     // ---------- v5 文件传输 ----------
     await test('v5 文件传输：写入→读回→列表→分块重组→append→白名单', testFileTransfer);
+
+    // ---------- v6 Hub 中转 ----------
+    await test('v6 Hub 中转：注册→配对→端到端握手→多次接入', testHubMode);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

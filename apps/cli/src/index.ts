@@ -107,6 +107,9 @@ interface Options {
   recursive?: boolean;
   pattern?: string;
   createDirs?: boolean;
+  /** v6 Hub */
+  hubToken?: string;
+  hubNode?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -137,6 +140,7 @@ async function withClient<T>(fn: (client: NodeAgentClient) => Promise<T>, nodeNa
     insecure: profile.insecure,
     authMode: profile.auth_mode,
     privateKey: keys?.privateKey,
+    hub: profile.hub ? { token: profile.hub.token, nodeId: profile.hub.node_id } : undefined,
   });
   try {
     await client.connect();
@@ -206,6 +210,8 @@ async function cmdConnect(host: string, opts: Options): Promise<void> {
     auth_mode: authMode,
   };
   if (opts.note) profile.note = opts.note;
+  // v6：经 Hub 中转
+  if (opts.hubToken) profile.hub = { token: opts.hubToken, node_id: opts.hubNode ?? name };
 
   const keys = authMode === 'ed25519' ? loadKeys() : null;
   if (authMode === 'ed25519' && !keys) {
@@ -219,6 +225,7 @@ async function cmdConnect(host: string, opts: Options): Promise<void> {
     insecure: profile.insecure,
     authMode,
     privateKey: keys?.privateKey,
+    hub: profile.hub ? { token: profile.hub.token, nodeId: profile.hub.node_id } : undefined,
   });
   try {
     const caps = await client.connect();
@@ -231,8 +238,9 @@ async function cmdConnect(host: string, opts: Options): Promise<void> {
     cfg.current = name;
     saveConfig(cfg);
 
+    const via = profile.hub ? `经 Hub ${profile.host}:${profile.port}` : `${profile.host}:${profile.port}`;
     console.log(
-      `✓ 已连接并保存设备「${name}」${profile.host}:${profile.port}（${profile.tls ? 'wss' : 'ws'}，${authMode}）`,
+      `✓ 已连接并保存设备「${name}」${via}（${profile.tls ? 'wss' : 'ws'}，${authMode}）`,
     );
     console.log(`  配置: ${configPath()}（当前设备 ${name}，共 ${Object.keys(cfg.nodes).length} 台）`);
 
@@ -802,6 +810,8 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       recursive: { type: 'boolean', default: false },
       pattern: { type: 'string' },
       'create-dirs': { type: 'boolean', default: false },
+      'hub-token': { type: 'string' },
+      'hub-node': { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -834,6 +844,8 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       recursive: Boolean(values['recursive']),
       pattern: values['pattern'] as string | undefined,
       createDirs: Boolean(values['create-dirs']),
+      hubToken: values['hub-token'] as string | undefined,
+      hubNode: values['hub-node'] as string | undefined,
     },
     positionals,
   };

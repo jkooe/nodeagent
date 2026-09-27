@@ -52,6 +52,19 @@ export interface AgentConfig {
    * 非空 = 只允许读写这些目录之下的路径。
    */
   fs_roots?: string[];
+  /**
+   * v6：Hub 模式。启用后**不再监听本地端口**，改为主动外连 Hub 注册，
+   * 适用于被控端位于 NAT / 无公网 IP 的环境。
+   */
+  hub?: {
+    enabled: boolean;
+    /** Hub 地址，例如 wss://hub.example.com/hub/agent */
+    url: string;
+    /** Hub 令牌 */
+    token: string;
+    /** 跳过 Hub 证书校验（自签证书场景） */
+    insecure?: boolean;
+  };
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */

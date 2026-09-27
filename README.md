@@ -184,8 +184,34 @@ nodeagent/
 | **v3+** | **审计日志**（谁在何时调了什么 + 查询能力）+ **限速** | ✅ 已实现 |
 | **v4** | 无感体验：**局域网自动发现** + **断线自动重连** | ✅ 已实现 |
 | **v5** | **多设备管理** + **文件传输**（分块 / 大文件 / 原子写） | ✅ 已实现 |
+| **v6** | **Hub 中转**：跨网段 / 公网接入（被控端主动外连，穿 NAT） | ✅ 已实现 |
 
 > **输入控制安全默认**：`input.*` 为高危能力，**默认禁用**。需在被控端 `agent.json` 设 `"allow_input": true` 重启后生效，或用 `install.ps1 -AllowInput` 安装。
+
+## Hub 中转（v6，跨网段 / 公网）
+
+被控端与 Mac 不在同一局域网时，用 Hub 中转：
+
+```
+Mac ──► Hub（VPS / 公网）──► Windows（NAT 后也可）
+           ↑ 只透传，不解密
+```
+
+```bash
+# 1) 在 VPS 上启动 Hub
+node apps/hub/dist/index.js
+#    输出 Hub 令牌（首次启动自动生成，存于 ~/.nodeagent/hub.json）
+
+# 2) 被控端 agent.json 增加：
+#    "hub": { "enabled": true, "url": "ws://<VPS>:9443/hub/agent", "token": "<Hub 令牌>" }
+#    启动后 agent 会主动外连 Hub 注册 —— 无需公网 IP、无需开放入站端口
+
+# 3) Mac 侧经 Hub 接入
+node apps/cli/dist/index.js connect <VPS> --port 9443 --hub-token <Hub 令牌> \
+     --hub-node win_01 --key <设备密钥> --name win_01
+```
+
+**安全模型**：Hub **只做字节透传**，不解析内容、不持有设备密钥 —— 控制端与被控端之间仍执行 Ed25519/PSK 端到端握手，因此 **Hub 无法窃听也无法伪造**。生产环境建议在 Hub 前挂 Caddy/Nginx 终止 TLS。
 
 ## 关键决策速览
 
