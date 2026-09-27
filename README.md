@@ -1,33 +1,32 @@
 # nodeagent
 
-> **跨机 AI 接管框架** —— 让 MacBook 上的 AI 无缝接管 Windows，装软件、查状态，如同操作同一台电脑
+> **让 Mac 上的 AI 接管 Windows** —— 跨机能力框架：装软件、查状态、截屏、操作键鼠、传文件，如同操作同一台电脑。
 
 ## 这是什么
 
-nodeagent 让 Mac 上的 AI（WorkBuddy）通过统一协议接管局域网内的 Windows 机器——执行命令、装软件、查状态。
+nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可审计的能力**，让 Mac 上的 AI（WorkBuddy）按需调用。
 
-**核心不是「远程控制」，而是把被控端能力标准化、可授权、可被 AI 调用。**
+它**不是远程桌面**，而是「能力层」：
 
-## 当前状态
-
-🟢 **v1 已实现**（命令级接管）—— Mac 控制端 + Windows 被控端点对点直连，握手鉴权、7 项能力、CLI、MCP 全部打通。
-
-## 架构
-
-```
-┌──────────────────────┐        wss:// (TLS 1.3)        ┌──────────────────────┐
-│  控制端 (macOS)       │ ◄────────────────────────────► │  被控端 (Windows)     │
-│  CLI · MCP Server    │        局域网点对点直连          │  Agent（开机自启）    │
-└──────────────────────┘                                └──────────────────────┘
-```
-
-| 层 | 内容 |
+| 特性 | 含义 |
 |---|---|
-| 协议 | JSON-RPC 2.0 over WebSocket，握手 `hello → challenge → auth → auth_ok` |
-| 鉴权 | 预共享密钥 + HMAC-SHA256 挑战-应答（防重放） |
-| 能力 | `system.*`(6) + `app.*`(2) + `screen.*`(2) + `fs.*`(4) + `input.*`(5，**默认禁用**) |
-| 接入 | CLI（调试底座）+ MCP（AI 落点） |
-| 多设备 | 一台 Mac 可接管多台 Windows（`nodes` 设备表 + `--node` 切换） |
+| **结构化** | 每项能力都有明确的参数 schema 与返回结构，AI 无需猜命令行 |
+| **可授权** | 零信任模式下按调用方 × 按能力精细授权，默认拒绝 |
+| **可审计** | 谁在何时调了什么、结果如何、耗时多少，全部本地留痕 |
+| **可穿透** | 局域网直连 / 自动发现 / 经 Hub 中转跨网段与公网 |
+| **零依赖部署** | 被控端只需 Node.js，全部能力用原生 API 实现，无原生模块编译 |
+
+## 能力总览
+
+| 分组 | 能力 | 说明 |
+|---|---|---|
+| **系统** | `system.info` · `system.status` · `system.process.list` · `system.service.list` · `system.shell.exec` · `system.audit.list` | 信息 / 资源 / 进程 / 服务 / 命令 / 审计 |
+| **软件** | `app.list` · `app.install` | 已装软件（注册表 + winget）、winget 静默安装 |
+| **屏幕** | `screen.info` · `screen.capture` | 显示器信息、截屏（支持区域与缩放） |
+| **文件** | `fs.list` · `fs.stat` · `fs.read` · `fs.write` | 列目录 / 元信息 / 分块读 / 原子写 |
+| **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**） |
+
+**19 项能力** · **15 个 MCP 工具** · **21 项端到端用例**（CI 在真实 Windows 上验证）
 
 ## 快速开始
 
@@ -38,60 +37,35 @@ pnpm install
 pnpm build
 ```
 
-### 1. Windows 被控端
+### 1. Windows 侧（被控端）
 
-在 Windows 上（**管理员权限**）运行：
+在 Windows 上以**管理员权限**运行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-脚本会：生成预共享密钥 → 写配置 → 放行防火墙端口 → 注册开机自启任务 → 启动 Agent，并打印**密钥**与**连接命令**。
+脚本会：生成预共享密钥 → 写配置 → 放行防火墙 → 注册开机自启 → 启动 Agent，并打印**密钥**与**连接命令**。
 
-### 2. Mac 控制端
+### 2. Mac 侧（控制端）
 
 ```bash
-# 连接被控端（首次需 --key <密钥>；自签证书需加 --insecure）
-node apps/cli/dist/index.js connect 192.168.1.100 --port 8765 --key <密钥> --insecure
+# 局域网内先自动发现有哪些 Windows（免手抄 IP）
+node apps/cli/dist/index.js discover --wait 5
 
-# 常用命令
-node apps/cli/dist/index.js status                  # 资源状态（CPU/内存/磁盘/网络）
+# 连接并命名设备（自签证书需 --insecure）
+node apps/cli/dist/index.js connect 192.168.1.100 --port 8765 --key <密钥> --insecure --name win_a
+
+# 开始使用
 node apps/cli/dist/index.js info                    # 系统信息
+node apps/cli/dist/index.js status                  # CPU / 内存 / 磁盘 / 网络
 node apps/cli/dist/index.js exec "Get-Service Spooler"
 node apps/cli/dist/index.js install Microsoft.VisualStudioCode
-node apps/cli/dist/index.js apps                    # 已安装软件
-node apps/cli/dist/index.js list                    # 被控端可用能力
-
-# 图形接管（v2）
-node apps/cli/dist/index.js screen                  # 显示器信息
-node apps/cli/dist/index.js screenshot --out s.jpg --scale 0.5   # 截屏存盘
-node apps/cli/dist/index.js mouse move 500 300      # 移动鼠标（需被控端开 allow_input）
-node apps/cli/dist/index.js mouse click 500 300
-node apps/cli/dist/index.js key type "hello world"  # 输入文本
-node apps/cli/dist/index.js key press ctrl s        # 组合键
-
-# 审计（v3+）
-node apps/cli/dist/index.js audit --limit 20                        # 最近 20 条操作记录
-node apps/cli/dist/index.js audit --type invoke --client-id mac_01  # 按类别/调用方筛选
-
-# 自动发现（v4，免手抄 IP）
-node apps/cli/dist/index.js discover --wait 5                       # 局域网内有哪些 Windows
-
-# 多设备（v5）
-node apps/cli/dist/index.js connect 192.168.1.100 --key <K> --name win_a   # 添加并命名
-node apps/cli/dist/index.js connect 192.168.1.101 --key <K> --name win_b
-node apps/cli/dist/index.js nodes                                   # 列出所有设备
-node apps/cli/dist/index.js use win_a                               # 切换当前设备
-node apps/cli/dist/index.js info --node win_b                       # 临时指定目标设备
-
-# 文件传输（v5，自动分块，支持大文件）
-node apps/cli/dist/index.js ls "C:\Users\me\Desktop" --recursive
-node apps/cli/dist/index.js cat "C:\logs\app.log"
-node apps/cli/dist/index.js pull "C:\big.iso" --out ./big.iso       # 下载（原子落盘）
-node apps/cli/dist/index.js push ./script.ps1 "C:\tools\script.ps1" --create-dirs
+node apps/cli/dist/index.js screenshot --out s.jpg --scale 0.5
 ```
 
-### 3. 接入 WorkBuddy（MCP）
+### 3. 接入 AI（MCP）
+
 在 `~/.workbuddy/mcp.json` 中加入：
 
 ```json
@@ -105,90 +79,122 @@ node apps/cli/dist/index.js push ./script.ps1 "C:\tools\script.ps1" --create-dir
 }
 ```
 
-随后即可用自然语言调度，例如「Windows 上装个 VSCode」「看看 Windows 内存够不够」。
+之后即可用自然语言调度，例如：
 
-MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`** · **`na_audit`** · **`na_discover`** · **`na_fs_list`** · **`na_fs_read`** · **`na_fs_write`**
+- 「看看 Windows 内存够不够」
+- 「Windows 上装个 VSCode」
+- 「截个图看看当前画面」
+- 「最近谁在操作这台 Windows」
 
-## 开发
+## 架构
+
+```
+┌────────────────────┐                          ┌────────────────────┐
+│  控制端 (macOS)     │ ◄──── JSON-RPC 2.0 ────► │  被控端 (Windows)   │
+│  CLI · MCP Server  │        over WebSocket    │  Agent（开机自启）  │
+└────────────────────┘                          └────────────────────┘
+         │                                                │
+         └──────────── 三种链路可选 ──────────────────────┘
+          ① 局域网直连     ② UDP 广播自动发现     ③ Hub 中转（跨网段/公网）
+```
+
+| 层 | 内容 |
+|---|---|
+| 协议 | JSON-RPC 2.0 over WebSocket，握手 `hello → challenge → auth → auth_ok` |
+| 鉴权 | `psk`（HMAC 挑战-应答，默认）或 `ed25519`（签名挑战-应答） |
+| 授权 | 能力级 ACL：`deny` → `allow` → 默认拒绝 |
+| 审计 | JSONL 落盘 + 轮转 + 参数脱敏 + 查询能力 |
+| 传输 | TLS（自签证书可用 `--insecure` 跳过校验，鉴权另有保障） |
+
+## 安全模型
+
+三层防护，逐层收窄权限：
+
+| 层 | 机制 | 解决什么 |
+|---|---|---|
+| **认证** | `psk` / `ed25519` 挑战-应答 | 只有持有凭据的人能接入 |
+| **授权** | 能力级 ACL（默认拒绝）、`allow_input` 高危开关 | 接入了也不代表什么都能做 |
+| **审计** | 操作留痕 + 调用限速 | 做过什么可追溯、异常频率可拦截 |
+
+### 启用零信任（Ed25519 + ACL）
 
 ```bash
-pnpm build        # 构建全部包
-pnpm typecheck    # 类型检查
-pnpm test:e2e     # 端到端测试（本机起 Agent，跑通握手 + 能力调用 + 异常路径）
-pnpm test:windows # Windows 专属能力测试（服务 / 软件 / winget 装软件）
-pnpm verify       # 对本机配置的被控端跑全套验收并输出报告
+# 1. Mac 侧生成密钥对（私钥 600 权限落盘，永不外传），并打印被控端 ACL 片段
+node apps/cli/dist/index.js keygen --id mac_01
+
+# 2. 把打印的片段加入被控端 agent.json 的 acl.clients，并设 "auth_mode": "ed25519"
+#    { "client_id": "mac_01", "pubkey": "...", "allow": ["system.*", "screen.*"], "deny": ["input.*"] }
+
+# 3. 以零信任模式连接（无需预共享密钥）
+node apps/cli/dist/index.js connect 192.168.1.100 --port 8765 --auth-mode ed25519 --insecure
 ```
 
-## 自动化真机验证
+握手后 CLI 会展示**授权矩阵**（🟢 已授权 / 🚫 未授权），调用未授权能力返回 `E_ACL_DENIED`。
 
-三层验证体系，无需手工点测：
+### 其他安全默认
 
-| 层次 | 方式 | 覆盖 |
-|---|---|---|
-| **CI（推荐）** | GitHub Actions `windows-latest` | 真实 Windows 上跑协议 E2E、Windows 专属能力（`Get-Service`/注册表/winget 装软件）、`install.ps1` 安装链路、CLI 连入、MCP 工具列表 |
-| **远程验收** | `node scripts/verify.mjs --host <IP> --key <密钥> [--insecure]` | 对齐 PRD FR-01~FR-08 的逐条验收，输出终端报告 + `--report report.md` |
-| **本地测试** | `pnpm test:e2e` / `pnpm test:windows` | 单机自举：起一个 Agent 当被控端，自测协议与能力 |
+- `input.*`（键鼠控制）**默认禁用**，需被控端 `"allow_input": true` 或 `install.ps1 -AllowInput`
+- 键盘文本经 Base64 传参、PowerShell 侧解码，**杜绝内容注入**；按键名走白名单映射
+- 文件能力支持 `fs_roots` 路径白名单，越界返回 `E_ACL_DENIED`
+- 私钥 / 预共享密钥不明文外传、不写日志；审计中敏感字段自动替换为 `***`
 
-CI 工作流见 [`.github/workflows/windows-e2e.yml`](./.github/workflows/windows-e2e.yml)，每次 push 到 `main` 或手动触发即运行。
+## 命令速查
+
+### 连接与设备
 
 ```bash
-# 对皇上自己的 Windows 机器验收（含真实装软件）
-node scripts/verify.mjs --host 192.168.1.100 --port 8765 --key <密钥> --insecure --with-install jqlang.jq --report verify-report.md
+nodeagent discover --wait 5                        # 局域网发现（UDP 广播）
+nodeagent connect <host> --key <K> --name win_a    # 连接并命名（自签证书加 --insecure）
+nodeagent nodes                                    # 列出设备（● 标记当前）
+nodeagent use win_a                                # 切换默认设备
+nodeagent remove win_a                             # 移除设备
+nodeagent info --node win_b                        # 临时指定目标（不改 current）
 ```
 
-### 成本
+### 系统与软件
 
-三层验证里 **②③ 完全免费**（本机运行），**① 走 GitHub Actions 免费额度**：
-
-| 账户 | 免费额度（Linux 等效分钟/月） | 实际可用 Windows 分钟（2x 计费） |
-|---|---|---|
-| Free | 2,000 | ≈ 1,000 |
-| Pro / Team | 3,000 | ≈ 1,500 |
-
-单次 CI 约 5 分钟（含 winget 真实下载安装），按 Windows 2x 计 ≈ 10 计费分钟/次 → **Free 账户每月约可跑 200 次**，个人项目用不完。
-
-> 默认支出限额为 **$0**：额度用尽时作业只是停止运行，**不会自动扣费**。若想彻底无限免费，把仓库改为公开（标准 runner 对公开仓库不限量）；或改用自托管 runner（同样免费，但需自备机器）。
-
-
-
-### 工程结构
-
-```
-nodeagent/
-├── packages/
-│   ├── protocol/          # 协议定义：信封 / 方法 / 错误码 / 能力 schema / 校验 / HMAC
-│   └── client/            # 控制端客户端库（连接、握手、调用、超时）
-├── apps/
-│   ├── agent/             # Windows 被控端（监听、认证、能力分发、进程执行）
-│   ├── cli/               # macOS 控制端 CLI
-│   └── mcp/               # MCP server（接入 WorkBuddy）
-├── scripts/               # install.ps1 / uninstall.ps1
-├── tests/e2e/             # 端到端测试
-├── docs/                  # 开发文档
-├── PRD.md                 # 产品需求文档
-└── README.md
+```bash
+nodeagent info | status | ps [--limit 20] | services [--limit 20]
+nodeagent exec "<命令>"                             # 执行命令，返回退出码与输出
+nodeagent apps                                      # 已安装软件
+nodeagent install <包名|ID>                          # winget 静默安装
+nodeagent list                                      # 被控端能力清单（含授权矩阵）
 ```
 
-## 文档
+### 图形与文件
 
-- [产品需求文档（PRD）](./PRD.md)
-- [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md)
+```bash
+nodeagent screen                                    # 显示器信息
+nodeagent screenshot --out s.jpg [--scale 0.5] [--region x,y,w,h]
+nodeagent mouse move <x> <y> [--duration 300]
+nodeagent mouse click [<x> <y>] [--button left|right|middle]
+nodeagent key type "<文本>" | key press ctrl c
 
-## 路线图
+nodeagent ls <远端路径> [--recursive] [--pattern "*.log"]
+nodeagent stat <远端路径> | cat <远端路径> [--out 本地文件]
+nodeagent pull <远端路径> [--out 本地文件]           # 下载（自动分块 + 原子落盘）
+nodeagent push <本地文件> <远端路径> [--create-dirs]  # 上传（自动分块）
+```
 
-| 阶段 | 目标 | 状态 |
-|---|---|---|
-| **v1** | 命令级接管 + 装软件 + 查状态 + 基本鉴权 + CLI + MCP | ✅ 已实现 |
-| **v2** | 图形接管（`screen.*` 截屏 + `input.*` 键鼠）+ 输入控制开关 | ✅ 已实现 |
-| **v3** | 零信任：Ed25519 身份认证 + **能力级 ACL** | ✅ 已实现 |
-| **v3+** | **审计日志**（谁在何时调了什么 + 查询能力）+ **限速** | ✅ 已实现 |
-| **v4** | 无感体验：**局域网自动发现** + **断线自动重连** | ✅ 已实现 |
-| **v5** | **多设备管理** + **文件传输**（分块 / 大文件 / 原子写） | ✅ 已实现 |
-| **v6** | **Hub 中转**：跨网段 / 公网接入（被控端主动外连，穿 NAT） | ✅ 已实现 |
+### 审计与密钥
 
-> **输入控制安全默认**：`input.*` 为高危能力，**默认禁用**。需在被控端 `agent.json` 设 `"allow_input": true` 重启后生效，或用 `install.ps1 -AllowInput` 安装。
+```bash
+nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
+nodeagent keygen [--id mac_01]                      # 生成 Ed25519 密钥 + ACL 配置片段
+```
 
-## Hub 中转（v6，跨网段 / 公网）
+## MCP 工具
+
+| 工具 | 说明 |
+|---|---|
+| `na_system_info` · `na_status` · `na_process_list` · `na_service_list` | 系统信息与状态 |
+| `na_exec` · `na_install` · `na_app_list` | 执行命令、装软件、列软件 |
+| `na_screenshot` | 截屏，**直接返回图片**给 AI 看 |
+| `na_mouse` · `na_key` | 键鼠控制（需被控端开启） |
+| `na_fs_list` · `na_fs_read` · `na_fs_write` | 读目录 / 读文件 / 写文件 |
+| `na_audit` · `na_discover` | 查审计、发现设备 |
+
+## Hub 中转（跨网段 / 公网）
 
 被控端与 Mac 不在同一局域网时，用 Hub 中转：
 
@@ -198,59 +204,92 @@ Mac ──► Hub（VPS / 公网）──► Windows（NAT 后也可）
 ```
 
 ```bash
-# 1) 在 VPS 上启动 Hub
+# 1) VPS 上启动 Hub（首次启动自动生成令牌，存于 ~/.nodeagent/hub.json）
 node apps/hub/dist/index.js
-#    输出 Hub 令牌（首次启动自动生成，存于 ~/.nodeagent/hub.json）
 
-# 2) 被控端 agent.json 增加：
-#    "hub": { "enabled": true, "url": "ws://<VPS>:9443/hub/agent", "token": "<Hub 令牌>" }
-#    启动后 agent 会主动外连 Hub 注册 —— 无需公网 IP、无需开放入站端口
+# 2) 被控端 agent.json 增加 —— agent 会主动外连注册，免公网 IP、免入站放行
+#    "hub": { "enabled": true, "url": "wss://hub.example.com/hub/agent", "token": "<Hub 令牌>" }
 
 # 3) Mac 侧经 Hub 接入
-node apps/cli/dist/index.js connect <VPS> --port 9443 --hub-token <Hub 令牌> \
+node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 令牌> \
      --hub-node win_01 --key <设备密钥> --name win_01
 ```
 
-**安全模型**：Hub **只做字节透传**，不解析内容、不持有设备密钥 —— 控制端与被控端之间仍执行 Ed25519/PSK 端到端握手，因此 **Hub 无法窃听也无法伪造**。生产环境建议在 Hub 前挂 Caddy/Nginx 终止 TLS。
+**安全边界**：Hub **只做字节透传**，不解析内容、不持有设备密钥 —— 控制端与被控端之间仍执行端到端握手，因此 **Hub 无法窃听也无法伪造**（Hub 被攻陷也不等于设备被接管）。生产环境建议在 Hub 前挂 Caddy / Nginx 终止 TLS。
 
-## 关键决策速览
+## 开发
+
+```bash
+pnpm build        # 构建全部包
+pnpm typecheck    # 类型检查
+pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
+pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
+pnpm verify       # 对已配置的被控端跑全套验收并输出报告
+```
+
+### 三层自动化真机验证
+
+无需手工点测：
+
+| 层次 | 方式 | 覆盖 |
+|---|---|---|
+| **CI（推荐）** | GitHub Actions `windows-latest` | 真实 Windows 上跑协议 E2E、专属能力（`Get-Service` / 注册表 / winget 装软件）、`install.ps1` 链路、CLI 连入、MCP 工具列表 |
+| **远程验收** | `node scripts/verify.mjs --host <IP> --key <密钥> [--insecure]` | 逐条验收并输出终端报告（`--report report.md`） |
+| **本地测试** | `pnpm test:e2e` / `pnpm test:windows` | 单机自举：本机起 Agent 当被控端自测 |
+
+工作流见 [`.github/workflows/windows-e2e.yml`](./.github/workflows/windows-e2e.yml)，push 到 `main` 或手动触发即运行。
+
+```bash
+# 对自己真实的 Windows 机器验收（含真实装软件）
+node scripts/verify.mjs --host 192.168.1.100 --port 8765 --key <密钥> --insecure \
+     --with-install jqlang.jq --report verify-report.md
+```
+
+**成本**：②③ 完全免费（本机运行）；① 走 GitHub Actions 免费额度 —— 单次约 5 分钟，按 Windows 2x 计约 10 计费分钟，Free 账户每月约可跑 200 次。默认支出限额为 `$0`，额度用尽只会停跑、**不会自动扣费**。
+
+### 工程结构
+
+```
+nodeagent/
+├── packages/
+│   ├── protocol/          # 协议定义：信封 / 方法 / 错误码 / 能力 schema / 校验 / HMAC / Ed25519 / ACL
+│   └── client/            # 控制端库：连接、握手、调用、超时、重连、密钥、发现
+├── apps/
+│   ├── agent/             # Windows 被控端：监听或 Hub 外连、认证、授权、审计、能力分发
+│   ├── hub/               # 中转节点：设备注册、控制端配对、字节透传（跨网段/公网）
+│   ├── cli/               # macOS 控制端 CLI
+│   └── mcp/               # MCP server（接入 WorkBuddy）
+├── scripts/               # install.ps1 / uninstall.ps1 / verify.mjs
+├── tests/e2e/             # 端到端测试
+├── docs/                  # 开发文档
+├── PRD.md                 # 产品需求文档
+└── README.md
+```
+
+## 路线图
+
+| 阶段 | 目标 | 状态 |
+|---|---|---|
+| **v1** | 命令级接管 + 装软件 + 查状态 + 基本鉴权 + CLI + MCP | ✅ |
+| **v2** | 图形接管（`screen.*` 截屏 + `input.*` 键鼠）+ 输入控制开关 | ✅ |
+| **v3** | 零信任：Ed25519 身份认证 + 能力级 ACL | ✅ |
+| **v3+** | 审计日志（留痕 + 查询）+ 调用限速 | ✅ |
+| **v4** | 无感体验：局域网自动发现 + 断线自动重连 | ✅ |
+| **v5** | 多设备管理 + 文件传输（分块 / 大文件 / 原子写） | ✅ |
+| **v6** | Hub 中转：跨网段 / 公网接入（被控端主动外连，穿 NAT） | ✅ |
+
+## 文档
+
+- [产品需求文档（PRD）](./PRD.md)
+- [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md) —— 协议细节、能力 schema、安全模型、各端实现指南
+
+## 关键决策
 
 | 决策点 | 结论 |
 |---|---|
-| 架构拓扑 | 点对点直连（Mac ↔ Windows，无中枢） |
-| 端 | Mac + Windows 同时 |
-| 安全 | 先简化（预共享密钥 + HMAC）→ 后强化（Ed25519 + ACL） |
-| AI 接入 | 核心能力 → CLI → MCP |
+| 拓扑 | 局域网点对点直连为主；跨网段时经 Hub 中转（Hub 仅透传，端到端安全不受影响） |
+| 安全演进 | 先简化（预共享密钥 + HMAC）→ 后强化（Ed25519 + 能力级 ACL + 审计） |
+| AI 接入 | 核心能力 → CLI（调试底座）→ MCP（AI 落点） |
 | 装软件 | 优先 winget 静默安装 |
 | Windows 部署 | 一键 `install.ps1` + 开机自启 |
-
-## 安全说明
-
-### 认证模式
-
-| 模式 | 机制 | 适用场景 |
-|---|---|---|
-| **`psk`**（默认） | 预共享密钥 + HMAC-SHA256 挑战-应答 | 单人自用 / 可信内网，开箱即用 |
-| **`ed25519`** | Ed25519 签名挑战-应答 + **能力级 ACL** | 零信任：每调用方独立密钥、按能力精细授权、可单独吊销 |
-
-**启用零信任（v3）**：
-
-```bash
-# 1. Mac 侧生成密钥对（私钥 600 权限落盘，永不外传），并打印被控端 ACL 片段
-node apps/cli/dist/index.js keygen --id mac_01
-
-# 2. 把打印的片段加入被控端 agent.json 的 acl.clients，并设 "auth_mode": "ed25519"
-#    ACL 规则：deny 优先 → allow → 默认拒绝
-#    { "client_id": "mac_01", "pubkey": "...", "allow": ["system.*", "screen.*"], "deny": ["input.*"] }
-
-# 3. 以零信任模式连接（无需预共享密钥）
-node apps/cli/dist/index.js connect 192.168.1.100 --port 8765 --auth-mode ed25519 --insecure
-```
-
-握手后 CLI 会展示**授权矩阵**（🟢 已授权 / 🚫 未授权），调用未授权能力返回 `E_ACL_DENIED`。
-
-### 其他
-
-- 私钥 / 预共享密钥**不明文外传、不写日志**；传输支持 TLS（自签证书，控制端 `--insecure` 跳过校验，鉴权另由 HMAC / Ed25519 保障）
-- `input.*` 高危能力**默认禁用**（`allow_input` 开关）；键盘文本经 Base64 传参，杜绝内容注入
-- **当前简化**：密钥存于本机 600 权限文件，后续将升级 OS 密钥链（Keychain / DPAPI）
+| 依赖策略 | 被控端零原生编译；能力全部基于系统原生 API 实现 |

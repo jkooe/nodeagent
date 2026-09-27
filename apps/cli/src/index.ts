@@ -30,6 +30,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
 用法:
   nodeagent connect <host> [--port 8765] [--key <key>] [--insecure] [--id mac_01] [--auth-mode ed25519]
       配置并连接被控端（握手成功后打印能力清单）
+      经 Hub 中转: 追加 --hub-token <Hub 令牌> --hub-node <被控端 node_id> (v6)
 
   nodeagent keygen [--id mac_01]      生成 Ed25519 密钥对并输出被控端 ACL 配置片段 (v3 零信任)
   nodeagent nodes                     列出已配置的被控端设备 (v5 多设备)
