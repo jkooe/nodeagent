@@ -92,7 +92,10 @@ export function defaultAgentConfig(): AgentConfig {
 export function loadAgentConfig(): { config: AgentConfig; isNew: boolean } {
   const p = agentConfigPath();
   if (existsSync(p)) {
-    const cfg = JSON.parse(readFileSync(p, 'utf8')) as AgentConfig;
+    // 剥离 UTF-8 BOM：Windows 上由 PowerShell 写出的 JSON 可能带 BOM，
+    // 直接 JSON.parse 会报 "Unexpected token ''"
+    const text = readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+    const cfg = JSON.parse(text) as AgentConfig;
     const envKey = process.env['NODEAGENT_KEY'];
     if (envKey) cfg.key = envKey;
     return { config: cfg, isNew: false };

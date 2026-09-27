@@ -85,7 +85,9 @@ function migrate(raw: Record<string, unknown>): ClientConfig {
 export function loadConfig(): ClientConfig | null {
   const p = configPath();
   if (!existsSync(p)) return null;
-  const raw = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>;
+  // 剥离 UTF-8 BOM（跨平台健壮：某些编辑器 / PowerShell 会写入 BOM）
+  const text = readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+  const raw = JSON.parse(text) as Record<string, unknown>;
   const cfg = migrate(raw);
   const envKey = process.env['NODEAGENT_KEY'];
   const cur = cfg.nodes[cfg.current];

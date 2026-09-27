@@ -105,7 +105,7 @@ if (-not $Key) {
     Write-Ok "Generated a new pre-shared key"
 }
 
-@{
+$cfgJson = @{
     node_id     = $NodeId
     host        = "0.0.0.0"
     port        = $Port
@@ -114,7 +114,10 @@ if (-not $Key) {
     log_level   = "info"
     allow_input = [bool]$AllowInput
     auth_mode   = "psk"
-} | ConvertTo-Json | Set-Content -Path $cfgPath -Encoding UTF8
+} | ConvertTo-Json
+# 必须写「无 BOM」的 UTF-8：Windows PowerShell 5.1 的 `Set-Content -Encoding UTF8`
+# 会写入 BOM（U+FEFF），导致 Node 侧 JSON.parse 报 "Unexpected token ''"
+[System.IO.File]::WriteAllText($cfgPath, $cfgJson, (New-Object System.Text.UTF8Encoding($false)))
 Write-Ok "Config written: $cfgPath"
 
 # 5. Firewall (inbound, agent listens)
