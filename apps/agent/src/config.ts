@@ -1,7 +1,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { generateSharedKey } from '@nodeagent/protocol';
+import { generateSharedKey, type AclPolicy } from '@nodeagent/protocol';
 
 export interface AgentConfig {
   node_id: string;
@@ -16,6 +16,14 @@ export interface AgentConfig {
    * 高危能力，默认 false —— 需被控端显式开启后才可被远程操作。
    */
   allow_input?: boolean;
+  /**
+   * v3：认证模式。
+   * - `psk`（默认）：预共享密钥 + HMAC 挑战-应答，向后兼容
+   * - `ed25519`：Ed25519 签名挑战-应答，每个调用方独立密钥，配合 ACL 精细授权
+   */
+  auth_mode?: 'psk' | 'ed25519';
+  /** v3：ed25519 模式下的能力级授权策略（默认拒绝） */
+  acl?: AclPolicy;
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */
@@ -35,6 +43,7 @@ export function defaultAgentConfig(): AgentConfig {
     tls: true,
     key: generateSharedKey(),
     log_level: 'info',
+    auth_mode: 'psk',
   };
 }
 

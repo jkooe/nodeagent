@@ -6,6 +6,9 @@ import {
   PROTOCOL_VERSION,
   generateNonce,
   verifyHmac,
+  verifyNonce,
+  authorize,
+  authorizedCapabilities,
   ErrorCodes,
   ErrorNames,
   makeError,
@@ -30,6 +33,8 @@ interface ConnState {
   nonce: string | null;
   nonceExpiresAt: number;
   clientId: string | null;
+  /** ed25519 模式：本次调用方被授权的能力清单；psk 模式为 null（不限制） */
+  authorized: string[] | null;
 }
 
 export interface AgentServer {
@@ -42,6 +47,9 @@ type LogLevel = 'debug' | 'info' | 'warn';
 /** 创建并启动被控端 WebSocket 服务。 */
 export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Promise<AgentServer> {
   const capabilityRegistry = createCapabilityRegistry(cfg);
+  /** v3：本次实例采用的认证模式（psk 向后兼容 / ed25519 零信任） */
+  const authMode: 'psk' | 'ed25519' = cfg.auth_mode === 'ed25519' ? 'ed25519' : 'psk';
+  const aclPolicy = cfg.acl ?? { default_effect: 'deny' as const, clients: [] };
   const levelOrder: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2 };
   const log = (level: LogLevel, msg: string): void => {
     if (levelOrder[level] >= levelOrder[cfg.log_level]) {
@@ -89,19 +97,49 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
       sendError(ws, req.id, ErrorCodes.AUTH_FAILED, 'nonce 不匹配');
       return;
     }
-    if (!verifyHmac(cfg.key, state.nonce, params.hmac ?? '')) {
-      log('warn', `鉴权失败 client_id=${params?.client_id ?? '?'}`);
+    const clientId = params.client_id ?? '?';
+    let authorized: string[] | null = null;
+
+    if (authMode === 'ed25519') {
+      const client = aclPolicy.clients.find((c) => c.client_id === clientId);
+      if (!client?.pubkey) {
+        log('warn', `鉴权失败（调用方未注册）client_id=${clientId}`);
+        sendError(ws, req.id, ErrorCodes.AUTH_FAILED, `调用方未在 ACL 中注册: ${clientId}`, {
+          hint: '在被控端 acl.clients 中加入该 client_id 与公钥',
+        });
+        setTimeout(() => ws.close(), 100);
+        return;
+      }
+      if (!verifyNonce(client.pubkey, state.nonce, params.signature ?? '')) {
+        log('warn', `鉴权失败（Ed25519 验签不通过）client_id=${clientId}`);
+        sendError(ws, req.id, ErrorCodes.AUTH_FAILED, 'Ed25519 签名校验失败');
+        setTimeout(() => ws.close(), 100);
+        return;
+      }
+      authorized = authorizedCapabilities(
+        aclPolicy,
+        clientId,
+        CAPABILITY_MANIFEST.map((c) => c.name),
+      );
+    } else if (!verifyHmac(cfg.key, state.nonce, params.hmac ?? '')) {
+      log('warn', `鉴权失败 client_id=${clientId}`);
       sendError(ws, req.id, ErrorCodes.AUTH_FAILED, '预共享密钥校验失败');
       // 稍作延迟再关闭，确保错误响应先送达控制端
       setTimeout(() => ws.close(), 100);
       return;
     }
+
     state.nonce = null; // 一次性，用后即废
     state.nonceExpiresAt = 0;
     state.authenticated = true;
-    state.clientId = params.client_id ?? state.clientId;
-    log('info', `鉴权通过 client_id=${state.clientId}`);
-    sendResult(ws, req.id, { capabilities: CAPABILITY_MANIFEST });
+    state.clientId = clientId;
+    state.authorized = authorized;
+    log(
+      'info',
+      `鉴权通过 client_id=${clientId} mode=${authMode}` +
+        (authorized ? `，授权 ${authorized.length}/${CAPABILITY_MANIFEST.length} 项能力` : ''),
+    );
+    sendResult(ws, req.id, { capabilities: CAPABILITY_MANIFEST, authorized, auth_mode: authMode });
   }
 
   async function handleInvoke(ws: WebSocket, state: ConnState, req: RpcRequest): Promise<void> {
@@ -111,6 +149,23 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     }
     const params = req.params as InvokeParams | undefined;
     const name = params?.capability ?? '';
+
+    // v3：ed25519 模式下执行能力级 ACL 校验（deny 优先 → allow → 默认拒绝）
+    if (authMode === 'ed25519') {
+      const authz = authorize(aclPolicy, state.clientId ?? '', name);
+      if (!authz.allowed) {
+        log('warn', `ACL 拒绝 client_id=${state.clientId} capability=${name} — ${authz.reason}`);
+        sendError(ws, req.id, ErrorCodes.ACL_DENIED, `无权限调用 ${name}`, {
+          capability: name,
+          client_id: state.clientId,
+          reason: authz.reason,
+          matched: authz.matched,
+          pattern: authz.pattern,
+        });
+        return;
+      }
+    }
+
     const cap = findCapability(name);
     const handler = capabilityRegistry[name];
     if (!cap || !handler) {
@@ -192,7 +247,7 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
   wss.on('connection', (ws, req) => {
     const remote = req.socket.remoteAddress ?? '?';
     log('info', `新连接: ${remote}`);
-    states.set(ws, { authenticated: false, nonce: null, nonceExpiresAt: 0, clientId: null });
+    states.set(ws, { authenticated: false, nonce: null, nonceExpiresAt: 0, clientId: null, authorized: null });
     ws.on('message', (raw: RawData) => {
       void handleMessage(ws, raw.toString());
     });

@@ -45,12 +45,18 @@ export interface ChallengeParams {
 export interface AuthParams {
   client_id: string;
   nonce: string;
-  /** Base64(HMAC-SHA256(pre_shared_key, nonce)) */
-  hmac: string;
+  /** psk 模式：Base64(HMAC-SHA256(pre_shared_key, nonce)) */
+  hmac?: string;
+  /** ed25519 模式：Base64(Ed25519_Sign(privkey, nonce)) */
+  signature?: string;
 }
 
 export interface AuthOkParams {
   capabilities: CapabilityDescriptor[];
+  /** ed25519 模式：本次调用方实际被授权的能力（全量清单的子集） */
+  authorized?: string[];
+  /** 本次连接采用的认证模式 */
+  auth_mode?: 'psk' | 'ed25519';
 }
 
 // ---------- 调用 ----------

@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { NodeAgentClient, ClientError, loadConfig, toWsUrl } from '@nodeagent/client';
+import { NodeAgentClient, ClientError, loadConfig, loadKeys, toWsUrl } from '@nodeagent/client';
 import { CapabilityNames, type InvokeResult } from '@nodeagent/protocol';
 
 /** stderr 日志（stdout 被 MCP 协议占用，禁止打印）。 */
@@ -19,14 +19,17 @@ async function ensureClient(): Promise<NodeAgentClient> {
   if (!cfg) {
     throw new Error('尚未配置被控端。请先在终端运行: nodeagent connect <host> --port 8765 --key <密钥>');
   }
+  const keys = cfg.auth_mode === 'ed25519' ? loadKeys() : null;
   const c = new NodeAgentClient({
     url: toWsUrl(cfg),
     key: cfg.key,
     clientId: cfg.client_id,
     insecure: cfg.insecure,
+    authMode: cfg.auth_mode,
+    privateKey: keys?.privateKey,
   });
   await c.connect();
-  log(`已连接被控端 ${cfg.host}:${cfg.port}`);
+  log(`已连接被控端 ${cfg.host}:${cfg.port}（${cfg.auth_mode ?? 'psk'}）`);
   client = c;
   return c;
 }

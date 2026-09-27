@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   ulid,
   computeHmac,
+  signNonce,
   isErrorResponse,
   ErrorCodes,
   type RpcRequest,
@@ -41,6 +42,10 @@ export interface ClientOptions {
   handshakeTimeoutMs?: number;
   /** 单次调用默认超时（默认 60s） */
   defaultTimeoutMs?: number;
+  /** v3：认证模式；默认 `psk` */
+  authMode?: 'psk' | 'ed25519';
+  /** v3：ed25519 模式的私钥（Base64 PKCS8 DER） */
+  privateKey?: string;
   /** 日志回调 */
   onLog?: (msg: string) => void;
 }
@@ -59,6 +64,8 @@ export class NodeAgentClient {
   private ws: WebSocket | null = null;
   private readonly pending = new Map<string, Pending>();
   private capabilities: CapabilityDescriptor[] = [];
+  /** ed25519 模式：本次被授权的能力；psk 模式为 null */
+  private authorized: string[] | null = null;
   private closed = false;
 
   constructor(private readonly opts: ClientOptions) {}
@@ -105,12 +112,29 @@ export class NodeAgentClient {
     const authParams: AuthParams = {
       client_id: this.opts.clientId,
       nonce: challenge.nonce,
-      hmac: computeHmac(this.opts.key, challenge.nonce),
     };
+    if (this.opts.authMode === 'ed25519') {
+      if (!this.opts.privateKey) {
+        throw new ClientError(
+          ErrorCodes.AUTH_FAILED,
+          'E_AUTH_FAILED',
+          'ed25519 模式需要私钥，请先运行: nodeagent keygen',
+        );
+      }
+      authParams.signature = signNonce(this.opts.privateKey, challenge.nonce);
+    } else {
+      authParams.hmac = computeHmac(this.opts.key, challenge.nonce);
+    }
+
     const authOk = await this.request<AuthOkParams>(Methods.Auth, authParams, handshakeTimeoutMs);
 
     this.capabilities = authOk.capabilities ?? [];
-    this.opts.onLog?.(`握手成功，被控端声明 ${this.capabilities.length} 项能力`);
+    this.authorized = authOk.authorized ?? null;
+    const label =
+      authOk.auth_mode === 'ed25519'
+        ? `ed25519，授权 ${this.authorized?.length ?? 0}/${this.capabilities.length} 项能力`
+        : `psk，被控端声明 ${this.capabilities.length} 项能力`;
+    this.opts.onLog?.(`握手成功（${label}）`);
     return this.capabilities;
   }
 
@@ -126,6 +150,11 @@ export class NodeAgentClient {
   /** 已获取的能力清单。 */
   listCapabilities(): CapabilityDescriptor[] {
     return this.capabilities;
+  }
+
+  /** ed25519 模式下本次被授权的能力；psk 模式返回 null（不限制）。 */
+  listAuthorized(): string[] | null {
+    return this.authorized;
   }
 
   /** 底层请求（带超时与 id 匹配）。 */

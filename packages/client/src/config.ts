@@ -8,10 +8,12 @@ export interface ClientConfig {
   host: string;
   port: number;
   tls: boolean;
-  /** v1 简化：跳过自签证书校验（TLS 仍加密，另由 HMAC 鉴权兜底） */
+  /** v1 简化：跳过自签证书校验（TLS 仍加密，另由 HMAC/签名鉴权兜底） */
   insecure?: boolean;
   /** v1 简化：预共享密钥存于 600 权限文件；v2 升级 OS 密钥链 */
   key: string;
+  /** v3：认证模式；`psk`（默认）或 `ed25519`（私钥存于 keys/ed25519.json） */
+  auth_mode?: 'psk' | 'ed25519';
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */

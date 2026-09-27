@@ -13,12 +13,14 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { NodeAgentClient } from '../../packages/client/dist/index.js';
+import { generateKeyPair } from '../../packages/protocol/dist/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '../..');
 
 const PORT = 18765;
 const TLS_PORT = 18772;
+const ED25519_PORT = 18781;
 const KEY = 'e2e-test-key-0123456789abcdef0123456789abcdef';
 const URL = `ws://127.0.0.1:${PORT}`;
 
@@ -126,6 +128,99 @@ async function testTlsMode() {
       }
     }
     throw new Error(`TLS 模式下无法连接 ${url}：${lastErr?.message ?? '未知错误'}`);
+  } finally {
+    child.kill();
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+/** v3 零信任场景：Ed25519 身份认证 + 能力级 ACL。 */
+async function testEd25519Acl() {
+  const kp = generateKeyPair();
+  const other = generateKeyPair();
+
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-ed-'));
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({
+      node_id: 'ed_test',
+      host: '127.0.0.1',
+      port: ED25519_PORT,
+      tls: false,
+      key: '',
+      log_level: 'warn',
+      auth_mode: 'ed25519',
+      acl: {
+        default_effect: 'deny',
+        clients: [{ client_id: 'ed_client', pubkey: kp.publicKey, allow: ['system.info'], deny: [] }],
+      },
+    }),
+  );
+
+  const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stderr.on('data', (d) => process.stderr.write(`[ed-agent] ${d}`));
+  child.on('exit', (code) => console.log(`\n⚠️  [ed-agent 退出] code=${code}\n`));
+
+  const url = `ws://127.0.0.1:${ED25519_PORT}`;
+  const mk = (clientId, privateKey) =>
+    new NodeAgentClient({ url, key: '', clientId, authMode: 'ed25519', privateKey });
+
+  try {
+    // 等待就绪（用合法身份探测）
+    const deadline = Date.now() + 25_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`ed25519 被控端已退出 (code=${child.exitCode})`);
+      try {
+        const probe = mk('ed_client', kp.privateKey);
+        await probe.connect();
+        probe.close();
+        ready = true;
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 400));
+      }
+    }
+    if (!ready) throw new Error('ed25519 被控端未就绪');
+
+    // 1. 合法身份：握手成功，且只授权 system.info
+    const c = mk('ed_client', kp.privateKey);
+    const caps = await c.connect();
+    assert.ok(caps.length >= 14, `能力清单应完整返回，实际 ${caps.length}`);
+    assert.deepEqual(c.listAuthorized(), ['system.info'], '授权清单应仅含 system.info');
+    const allowed = await c.invoke('system.info');
+    assert.equal(allowed.status, 'ok', '已授权能力应可调用');
+
+    // 2. 未授权能力 → E_ACL_DENIED
+    await assert.rejects(
+      () => c.invoke('system.shell.exec'),
+      (e) => {
+        assert.equal(e.code, -32406, `期望 -32406，实际 ${e.code}`);
+        return true;
+      },
+    );
+    c.close();
+
+    // 3. 未注册的调用方 → 握手失败
+    await assert.rejects(
+      () => mk('ghost', kp.privateKey).connect(),
+      (e) => {
+        assert.equal(e.code, -32401, `期望 -32401，实际 ${e.code}`);
+        return true;
+      },
+    );
+
+    // 4. 私钥与登记公钥不匹配（验签失败）→ 握手失败
+    await assert.rejects(
+      () => mk('ed_client', other.privateKey).connect(),
+      (e) => {
+        assert.equal(e.code, -32401, `期望 -32401，实际 ${e.code}`);
+        return true;
+      },
+    );
   } finally {
     child.kill();
     await new Promise((r) => setTimeout(r, 300));
@@ -314,6 +409,9 @@ async function main() {
         assert.equal(r.error.name, 'E_CAPABILITY_DISABLED');
       }
     });
+
+    // ---------- v3 零信任 ----------
+    await test('v3 Ed25519 认证 + 能力级 ACL（授权/拒绝/未注册/错误私钥）', testEd25519Acl);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

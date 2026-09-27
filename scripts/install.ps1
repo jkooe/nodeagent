@@ -100,6 +100,7 @@ if (-not $Key) {
     key         = $Key
     log_level   = "info"
     allow_input = [bool]$AllowInput
+    auth_mode   = "psk"
 } | ConvertTo-Json | Set-Content -Path $cfgPath -Encoding UTF8
 Write-Ok "Config written: $cfgPath"
 
@@ -156,6 +157,7 @@ Write-Host "  Node.js   : $nodeExe"
 Write-Host "  Config    : $cfgPath"
 $ctlLabel = if ($AllowInput) { "ENABLED (mouse/keyboard control)" } else { "disabled (default)" }
 Write-Host "  Input ctl : $ctlLabel"
+Write-Host "  Auth mode : psk (pre-shared key)"
 Write-Host ""
 Write-Host "  Pre-shared key (copy this to the Mac side):" -ForegroundColor Yellow
 Write-Host "  $Key" -ForegroundColor White
@@ -163,4 +165,7 @@ Write-Host ""
 Write-Host "  On the Mac, run:" -ForegroundColor Cyan
 $insecureFlag = if ($NoTls) { "" } else { " --insecure" }
 Write-Host "  nodeagent connect <THIS-IP> --port $Port --key $Key$insecureFlag"
+Write-Host ""
+Write-Host "  Zero-trust (optional): run 'nodeagent keygen' on the Mac, then add the" -ForegroundColor DarkGray
+Write-Host "  printed entry into this file's acl.clients and set auth_mode to 'ed25519'." -ForegroundColor DarkGray
 Write-Host ""

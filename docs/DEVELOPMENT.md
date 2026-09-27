@@ -433,13 +433,62 @@
 
 ### 6.3 演进路径
 
-| 阶段 | 鉴权 | 传输 | 授权 |
-|---|---|---|---|
-| v1 | 预共享密钥 + HMAC | TLS 1.3 | 无（凭密钥信任） |
-| v2 | Ed25519 签名 | TLS 1.3 | 能力级 ACL |
-| v3 | 完整零信任 + 审计 | TLS 1.3 | 对齐参考文档安全模型 |
+| 阶段 | 鉴权 | 传输 | 授权 | 状态 |
+|---|---|---|---|---|
+| v1 | 预共享密钥 + HMAC 挑战-应答 | TLS | 无（凭密钥信任） | ✅ 已实现 |
+| v2 | 同上 + 输入控制开关 | TLS | `allow_input` 能力组开关 | ✅ 已实现 |
+| v3 | **Ed25519 签名挑战-应答** | TLS | **能力级 ACL（默认拒绝）** | ✅ 已实现 |
+| v3+ | 同上 + 审计日志 | TLS | 对齐参考文档完整安全模型 | 规划中 |
 
-> **预留**：`hello`/`auth` 已预留 `protocol` 版本号字段；信封可无损加回 `sig`/`ts`。v2 升级不破坏 v1 结构。
+> **向后兼容**：`auth_mode` 默认 `psk`，对既有部署零影响；切到 `ed25519` 才启用零信任与 ACL。
+
+### 6.4 零信任实现（v3）
+
+**身份**：每个控制端持有独立 Ed25519 密钥对（用 Node 内置 `crypto`，无新增依赖）。
+
+```
+控制端                            被控端
+  │ ① hello {client_id}  ─────────►│
+  │ ◄─── challenge {nonce} ────────│  32B CSPRNG，TTL 30s，一次性
+  │ ② auth {signature}   ─────────►│  用 ACL 中登记的公钥验签
+  │ ◄─── auth_ok {capabilities,    │
+  │        authorized: [...]} ─────│  下发「已授权能力」子集
+```
+
+| 项 | 设计 |
+|---|---|
+| 密钥格式 | Base64(SPKI DER) 公钥 / Base64(PKCS8 DER) 私钥 —— 单行，便于写配置 |
+| 私钥存放 | `<数据目录>/keys/ed25519.json`，**600 权限、永不外传**；可用 `NODEAGENT_PRIVATE_KEY` 覆盖 |
+| 公钥登记 | 被控端 `acl.clients[].pubkey`；未登记 → 握手直接拒绝 |
+| 密钥标识 | 公钥 SHA-256 前 16 位 hex（`key_id`），便于轮换与追踪 |
+
+**授权**：能力级 ACL，判定顺序 `deny` → `allow` → `default_effect`。
+
+```jsonc
+{
+  "auth_mode": "ed25519",
+  "acl": {
+    "default_effect": "deny",            // 默认拒绝（零信任核心）
+    "clients": [
+      {
+        "client_id": "mac_01",
+        "pubkey": "MCowBQYDK2VwAyEA...",  // Base64 SPKI DER
+        "allow": ["system.*", "screen.*"], // 支持 glob
+        "deny": ["input.*"]                // deny 优先，可覆盖 allow
+      }
+    ]
+  }
+}
+```
+
+| 场景 | 结果 |
+|---|---|
+| 未注册的 client_id 连接 | 握手失败 `E_AUTH_FAILED` |
+| 私钥与登记公钥不匹配 | 握手失败 `E_AUTH_FAILED`（验签不过） |
+| 调用未授权能力 | `E_ACL_DENIED`（附 matched 规则与原因） |
+| 握手成功 | `auth_ok.authorized` 下发授权子集，CLI 以 🟢/🚫 展示授权矩阵 |
+
+> **实测**：E2E 覆盖四项 —— 授权能力可调用 / 未授权能力被拒 / 未注册身份被拒 / 错误私钥被拒。
 
 ---
 
