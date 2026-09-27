@@ -21,6 +21,10 @@ const root = join(__dirname, '../..');
 const PORT = 18765;
 const TLS_PORT = 18772;
 const ED25519_PORT = 18781;
+const DISCOVERY_PORT = 18796;
+const DISCOVERY_AGENT_PORT = 18797;
+const RECONNECT_PORT = 18798;
+const RECONNECT_KEY = 'reconnect-key-0123456789abcdef0123456789';
 const KEY = 'e2e-test-key-0123456789abcdef0123456789abcdef';
 const URL = `ws://127.0.0.1:${PORT}`;
 
@@ -272,6 +276,125 @@ async function testEd25519Acl() {
   }
 }
 
+/** v4 场景：局域网自动发现（UDP 广播）。 */
+async function testDiscovery() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-disco-'));
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({
+      node_id: 'disco_node',
+      host: '127.0.0.1',
+      port: DISCOVERY_AGENT_PORT,
+      tls: false,
+      key: 'discokey',
+      log_level: 'warn',
+      discovery: { enabled: true, broadcast: '127.0.0.1', port: DISCOVERY_PORT, interval_ms: 800 },
+    }),
+  );
+  const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stderr.on('data', (d) => process.stderr.write(`[disco-agent] ${d}`));
+
+  const { discoverOnce } = await import('../../packages/client/dist/index.js');
+  try {
+    await new Promise((r) => setTimeout(r, 1500)); // 等被控端完成首次广播
+    const nodes = await discoverOnce(2500, { port: DISCOVERY_PORT });
+    assert.equal(nodes.length, 1, `应发现 1 台设备，实际 ${nodes.length}`);
+    const n = nodes[0];
+    assert.equal(n.node_id, 'disco_node');
+    assert.equal(n.host, '127.0.0.1', 'host 应取报文来源 IP');
+    assert.equal(n.port, DISCOVERY_AGENT_PORT);
+    assert.equal(n.auth_mode, 'psk');
+    assert.equal(n.input_enabled, false, '未开启输入控制应如实报告');
+  } finally {
+    child.kill();
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
+/** v4 场景：断线自动重连。 */
+async function testAutoReconnect() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-rc-'));
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({
+      node_id: 'rc_node',
+      host: '127.0.0.1',
+      port: RECONNECT_PORT,
+      tls: false,
+      key: RECONNECT_KEY,
+      log_level: 'warn',
+      discovery: { enabled: false },
+    }),
+  );
+  const spawnAgent = () =>
+    spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+      env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+  const url = `ws://127.0.0.1:${RECONNECT_PORT}`;
+  let agent = spawnAgent();
+  let client = null;
+
+  try {
+    // 等首台就绪
+    const deadline = Date.now() + 20_000;
+    while (Date.now() < deadline) {
+      try {
+        const probe = new NodeAgentClient({ url, key: RECONNECT_KEY, clientId: 'rc' });
+        await probe.connect();
+        probe.close();
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+
+    const states = [];
+    client = new NodeAgentClient({
+      url,
+      key: RECONNECT_KEY,
+      clientId: 'rc',
+      autoReconnect: true,
+      maxReconnectDelayMs: 800,
+      onStateChange: (s) => states.push(s),
+    });
+    await client.connect();
+    assert.equal((await client.invoke('system.info')).status, 'ok', '首连应可调用');
+
+    // 杀掉被控端 → 触发断线
+    agent.kill('SIGTERM');
+    await new Promise((r) => setTimeout(r, 600));
+    assert.ok(
+      states.includes('reconnecting'),
+      `断线后应进入重连态，实际状态序列: ${states.join(',')}`,
+    );
+
+    // 重启被控端 → 应自动恢复
+    agent = spawnAgent();
+    const recoverDeadline = Date.now() + 25_000;
+    let recovered = false;
+    while (Date.now() < recoverDeadline) {
+      if (states.includes('connected')) {
+        const r = await client.invoke('system.info').catch(() => null);
+        if (r?.status === 'ok') {
+          recovered = true;
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    assert.ok(recovered, `应自动重连成功，状态序列: ${states.join(',')}`);
+  } finally {
+    client?.close();
+    agent.kill();
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
 async function main() {
   console.log('\nnodeagent 端到端测试\n');
   const agent = startAgent();
@@ -457,6 +580,10 @@ async function main() {
 
     // ---------- v3 零信任 ----------
     await test('v3 零信任：Ed25519 认证 + ACL 授权/拒绝 + 审计留痕 + 限速', testEd25519Acl);
+
+    // ---------- v4 无感体验 ----------
+    await test('v4 局域网发现：UDP 广播可被发现', testDiscovery);
+    await test('v4 断线自动重连：被控端重启后自动恢复', testAutoReconnect);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

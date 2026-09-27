@@ -10,9 +10,16 @@ import {
   loadKeys,
   createKeys,
   keysFilePath,
+  discoverOnce,
   type ClientConfig,
 } from '@nodeagent/client';
-import { CapabilityNames, matchPattern, type CapabilityDescriptor, type InvokeResult } from '@nodeagent/protocol';
+import {
+  CapabilityNames,
+  matchPattern,
+  DEFAULT_DISCOVERY_PORT,
+  type CapabilityDescriptor,
+  type InvokeResult,
+} from '@nodeagent/protocol';
 
 const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
 
@@ -23,6 +30,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent keygen [--id mac_01]      生成 Ed25519 密钥对并输出被控端 ACL 配置片段 (v3 零信任)
   nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
                                       查询被控端审计日志 (v3+)
+  nodeagent discover [--wait 5]       发现局域网内的被控端（UDP 广播，免手抄 IP）(v4)
 
   nodeagent info                      查看系统信息 (system.info)
   nodeagent status                    查看资源状态 (system.status)
@@ -72,6 +80,9 @@ interface Options {
   since?: string;
   type?: string;
   clientId?: string;
+  /** v4 发现 */
+  wait?: string;
+  discoveryPort?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -486,6 +497,44 @@ async function cmdAudit(opts: Options): Promise<void> {
   );
 }
 
+// ---------- v4 局域网发现 ----------
+
+async function cmdDiscover(opts: Options): Promise<void> {
+  const waitMs = (opts.wait ? Number(opts.wait) : 5) * 1000;
+  const port = opts.discoveryPort ? Number(opts.discoveryPort) : DEFAULT_DISCOVERY_PORT;
+
+  console.log(`正在监听局域网广播（UDP ${port}，最多 ${waitMs / 1000}s）...\n`);
+
+  let nodes: Awaited<ReturnType<typeof discoverOnce>>;
+  try {
+    nodes = await discoverOnce(waitMs, { port });
+  } catch (err) {
+    fail(`监听失败：${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (nodes.length === 0) {
+    console.log('未发现设备。请检查：');
+    console.log('  1) 被控端与本机在同一局域网（跨网段广播通常不通）');
+    console.log('  2) 被控端配置未关闭 discovery.enabled');
+    console.log(`  3) 防火墙未拦截 UDP ${port}`);
+    return;
+  }
+
+  if (opts.json) return printJson(nodes);
+
+  console.log(`发现 ${nodes.length} 台被控端：\n`);
+  console.log(`  ${'节点 ID'.padEnd(16)} ${'地址'.padEnd(20)} ${'协议'.padEnd(6)} ${'认证'.padEnd(8)} 平台`);
+  for (const n of nodes) {
+    const ctl = n.input_enabled ? '  [输入控制已开]' : '';
+    console.log(
+      `  ${n.node_id.padEnd(16)} ${`${n.host}:${n.port}`.padEnd(20)} ${(n.tls ? 'wss' : 'ws').padEnd(6)} ${n.auth_mode.padEnd(8)} ${n.platform}${ctl}`,
+    );
+  }
+  const first = nodes[0]!;
+  console.log('\n连接示例：');
+  console.log(`  nodeagent connect ${first.host} --port ${first.port} --key <密钥>${first.tls ? ' --insecure' : ''}`);
+}
+
 function parseOptions(rest: string[]): { opts: Options; positionals: string[] } {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -510,6 +559,8 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       since: { type: 'string' },
       type: { type: 'string' },
       'client-id': { type: 'string' },
+      wait: { type: 'string' },
+      'discovery-port': { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -534,6 +585,8 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       since: values['since'] as string | undefined,
       type: values['type'] as string | undefined,
       clientId: values['client-id'] as string | undefined,
+      wait: values['wait'] as string | undefined,
+      discoveryPort: values['discovery-port'] as string | undefined,
     },
     positionals,
   };
@@ -596,6 +649,9 @@ async function main(): Promise<void> {
       return;
     case 'audit':
       await cmdAudit(opts);
+      return;
+    case 'discover':
+      await cmdDiscover(opts);
       return;
     case 'screen':
       await cmdScreen(opts);

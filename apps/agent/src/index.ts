@@ -4,6 +4,7 @@ import { loadAgentConfig, agentConfigPath } from './config.js';
 import { ensureCert } from './certs.js';
 import { createAgentServer } from './server.js';
 import { initAudit, audit, auditFilePath } from './audit.js';
+import { startBeacon, DEFAULT_DISCOVERY_PORT, type Beacon } from './discovery.js';
 
 function listLocalIps(): string[] {
   const out: string[] = [];
@@ -33,6 +34,26 @@ async function main(): Promise<void> {
   });
 
   const ips = listLocalIps();
+
+  // v4：局域网心跳广播（报文不含任何凭据）
+  const beacon: Beacon | null = startBeacon(
+    {
+      enabled: config.discovery?.enabled !== false,
+      port: config.discovery?.port ?? DEFAULT_DISCOVERY_PORT,
+      broadcast: config.discovery?.broadcast ?? '255.255.255.255',
+      intervalMs: config.discovery?.interval_ms ?? 5000,
+      base: {
+        node_id: config.node_id,
+        host: ips[0] ?? '127.0.0.1',
+        port: config.port,
+        tls: config.tls,
+        auth_mode: auditMode,
+        input_enabled: config.allow_input === true,
+        platform: process.platform,
+      },
+    },
+    (msg) => console.log(`[WARN] ${msg}`),
+  );
   console.log('');
   console.log('  nodeagent 被控端已启动');
   console.log('  ─────────────────────────────────────────────');
@@ -42,6 +63,10 @@ async function main(): Promise<void> {
   console.log(`  能力       : ${CAPABILITY_MANIFEST.length} 项`);
   console.log(`  认证模式   : ${auditMode}${auditMode === 'ed25519' ? `（已登记 ${config.acl?.clients.length ?? 0} 个调用方）` : ''}`);
   console.log(`  输入控制   : ${config.allow_input === true ? '已开启' : '已禁用（默认）'}`);
+  const discoOn = config.discovery?.enabled !== false;
+  console.log(
+    `  局域网发现 : ${discoOn ? `已开启（UDP ${config.discovery?.port ?? DEFAULT_DISCOVERY_PORT} 心跳广播）` : '已关闭'}`,
+  );
   console.log(`  配置文件   : ${agentConfigPath()}`);
   console.log(`  审计日志   : ${auditFilePath()}`);
   if (isNew) {
@@ -54,6 +79,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (): Promise<void> => {
     console.log('\n正在关闭...');
+    beacon?.stop();
     audit({ type: 'agent.stop', reason: 'signal' });
     await server.close();
     process.exit(0);

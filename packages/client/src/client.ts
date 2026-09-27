@@ -46,6 +46,12 @@ export interface ClientOptions {
   authMode?: 'psk' | 'ed25519';
   /** v3：ed25519 模式的私钥（Base64 PKCS8 DER） */
   privateKey?: string;
+  /** v4：断线后自动重连（默认 false，适合长驻进程如 MCP） */
+  autoReconnect?: boolean;
+  /** v4：重连退避上限（默认 30s） */
+  maxReconnectDelayMs?: number;
+  /** v4：连接状态变化回调 */
+  onStateChange?: (state: 'connected' | 'reconnecting' | 'closed') => void;
   /** 日志回调 */
   onLog?: (msg: string) => void;
 }
@@ -67,6 +73,10 @@ export class NodeAgentClient {
   /** ed25519 模式：本次被授权的能力；psk 模式为 null */
   private authorized: string[] | null = null;
   private closed = false;
+  /** v4：重连状态 */
+  private reconnectAttempts = 0;
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private stopped = false;
 
   constructor(private readonly opts: ClientOptions) {}
 
@@ -135,6 +145,7 @@ export class NodeAgentClient {
         ? `ed25519，授权 ${this.authorized?.length ?? 0}/${this.capabilities.length} 项能力`
         : `psk，被控端声明 ${this.capabilities.length} 项能力`;
     this.opts.onLog?.(`握手成功（${label}）`);
+    this.opts.onStateChange?.('connected');
     return this.capabilities;
   }
 
@@ -214,11 +225,49 @@ export class NodeAgentClient {
     }
     this.pending.clear();
     this.opts.onLog?.('连接已关闭');
+
+    if (this.opts.autoReconnect && !this.stopped) {
+      this.scheduleReconnect();
+    } else {
+      this.opts.onStateChange?.('closed');
+    }
   }
 
-  /** 主动关闭连接。 */
+  /** v4：指数退避 + 抖动重连。 */
+  private scheduleReconnect(): void {
+    const maxDelay = this.opts.maxReconnectDelayMs ?? 30_000;
+    const base = Math.min(1000 * 2 ** this.reconnectAttempts, maxDelay);
+    const delay = Math.round(base * (0.85 + Math.random() * 0.3)); // ±15% 抖动，避免惊群
+    this.reconnectAttempts += 1;
+    this.opts.onStateChange?.('reconnecting');
+    this.opts.onLog?.(`将在 ${delay}ms 后重连（第 ${this.reconnectAttempts} 次）`);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.stopped) return;
+      this.closed = false;
+      this.connect()
+        .then(() => {
+          this.reconnectAttempts = 0;
+          this.opts.onStateChange?.('connected');
+          this.opts.onLog?.('重连成功');
+        })
+        .catch((err: unknown) => {
+          this.opts.onLog?.(`重连失败: ${err instanceof Error ? err.message : String(err)}`);
+          if (!this.stopped) this.scheduleReconnect();
+        });
+    }, delay);
+    this.reconnectTimer.unref?.();
+  }
+
+  /** 主动关闭连接（会停止自动重连）。 */
   close(): void {
+    this.stopped = true;
     this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     this.ws?.close();
     this.ws = null;
   }

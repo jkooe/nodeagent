@@ -22,3 +22,6 @@ export type MethodName = (typeof Methods)[keyof typeof Methods];
 
 /** 协议版本（MAJOR.MINOR）。 */
 export const PROTOCOL_VERSION = '1.0';
+
+/** 局域网发现的默认 UDP 端口（被控端广播目标 = 控制端监听端口）。 */
+export const DEFAULT_DISCOVERY_PORT = 8766;

@@ -35,6 +35,17 @@ export interface AgentConfig {
     /** 是否记录参数预览（默认 false，仅记摘要；开启后自动脱敏） */
     log_args?: boolean;
   };
+  /** v4：局域网发现（UDP 心跳广播） */
+  discovery?: {
+    /** 是否广播（默认 true） */
+    enabled?: boolean;
+    /** 广播目标端口（默认 8766，控制端监听同一端口） */
+    port?: number;
+    /** 广播地址（默认 255.255.255.255） */
+    broadcast?: string;
+    /** 广播间隔毫秒（默认 5000） */
+    interval_ms?: number;
+  };
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */

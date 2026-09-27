@@ -72,10 +72,12 @@ node apps/cli/dist/index.js key press ctrl s        # 组合键
 # 审计（v3+）
 node apps/cli/dist/index.js audit --limit 20                        # 最近 20 条操作记录
 node apps/cli/dist/index.js audit --type invoke --client-id mac_01  # 按类别/调用方筛选
+
+# 自动发现（v4，免手抄 IP）
+node apps/cli/dist/index.js discover --wait 5                       # 局域网内有哪些 Windows
 ```
 
 ### 3. 接入 WorkBuddy（MCP）
-
 在 `~/.workbuddy/mcp.json` 中加入：
 
 ```json
@@ -91,7 +93,7 @@ node apps/cli/dist/index.js audit --type invoke --client-id mac_01  # 按类别/
 
 随后即可用自然语言调度，例如「Windows 上装个 VSCode」「看看 Windows 内存够不够」。
 
-MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`** · **`na_audit`**
+MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`** · **`na_audit`** · **`na_discover`**
 
 ## 开发
 
@@ -166,7 +168,7 @@ nodeagent/
 | **v2** | 图形接管（`screen.*` 截屏 + `input.*` 键鼠）+ 输入控制开关 | ✅ 已实现 |
 | **v3** | 零信任：Ed25519 身份认证 + **能力级 ACL** | ✅ 已实现 |
 | **v3+** | **审计日志**（谁在何时调了什么 + 查询能力）+ **限速** | ✅ 已实现 |
-| **v4** | 无感体验（局域网自动发现 / 断线重连） | 规划中 |
+| **v4** | 无感体验：**局域网自动发现** + **断线自动重连** | ✅ 已实现 |
 
 > **输入控制安全默认**：`input.*` 为高危能力，**默认禁用**。需在被控端 `agent.json` 设 `"allow_input": true` 重启后生效，或用 `install.ps1 -AllowInput` 安装。
 

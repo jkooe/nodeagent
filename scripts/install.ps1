@@ -158,6 +158,7 @@ Write-Host "  Config    : $cfgPath"
 $ctlLabel = if ($AllowInput) { "ENABLED (mouse/keyboard control)" } else { "disabled (default)" }
 Write-Host "  Input ctl : $ctlLabel"
 Write-Host "  Auth mode : psk (pre-shared key)"
+Write-Host "  Discovery : UDP 8766 heartbeat (LAN auto-discovery; outbound only)"
 Write-Host ""
 Write-Host "  Pre-shared key (copy this to the Mac side):" -ForegroundColor Yellow
 Write-Host "  $Key" -ForegroundColor White

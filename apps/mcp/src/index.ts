@@ -1,8 +1,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { NodeAgentClient, ClientError, loadConfig, loadKeys, toWsUrl } from '@nodeagent/client';
-import { CapabilityNames, type InvokeResult } from '@nodeagent/protocol';
+import { NodeAgentClient, ClientError, loadConfig, loadKeys, toWsUrl, discoverOnce } from '@nodeagent/client';
+import { CapabilityNames, DEFAULT_DISCOVERY_PORT, type InvokeResult } from '@nodeagent/protocol';
 
 /** stderr 日志（stdout 被 MCP 协议占用，禁止打印）。 */
 function log(msg: string): void {
@@ -183,6 +183,18 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'na_discover',
+    description:
+      '发现局域网内可用的 nodeagent 被控端设备（监听 UDP 广播）。当用户问"有哪些 Windows 机器可用"、或尚未配置被控端时使用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        wait_seconds: { type: 'number', description: '监听时长（秒），默认 3，上限 15' },
+      },
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /** MCP 工具入参 → 能力 args。 */
@@ -300,6 +312,36 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const name = request.params.name;
   const input = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+  // na_discover：本地 UDP 监听，不经过被控端连接
+  if (name === 'na_discover') {
+    const waitSec = Math.min(Math.max(Number(input['wait_seconds'] ?? 3), 1), 15);
+    try {
+      const nodes = await discoverOnce(waitSec * 1000, { port: DEFAULT_DISCOVERY_PORT });
+      if (nodes.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: '未发现设备。请确认被控端已启动、与本机在同一局域网，且防火墙未拦截 UDP 广播。',
+            },
+          ],
+        };
+      }
+      const lines = nodes.map(
+        (n) =>
+          `- ${n.node_id} @ ${n.host}:${n.port}（${n.tls ? 'wss' : 'ws'}，${n.auth_mode}）${n.platform}${
+            n.input_enabled ? ' [输入控制已开]' : ''
+          }`,
+      );
+      return { content: [{ type: 'text', text: `发现 ${nodes.length} 台被控端：\n${lines.join('\n')}` }] };
+    } catch (err) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: `发现失败: ${err instanceof Error ? err.message : String(err)}` }],
+      };
+    }
+  }
 
   const resolved = resolveToolCall(name, input);
   if ('error' in resolved) {
