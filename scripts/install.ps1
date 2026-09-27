@@ -145,9 +145,30 @@ Write-Ok "Scheduled task '$taskName' registered (auto-start on logon)"
 # 7. Start now
 Write-Step "Starting agent..."
 Start-ScheduledTask -TaskName $taskName
-Start-Sleep -Seconds 2
+
+# 等待端口真正进入监听（最多 15s）；失败则给出可执行的诊断步骤
+$listening = $false
+for ($i = 0; $i -lt 15; $i++) {
+    Start-Sleep -Seconds 1
+    if (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue) {
+        $listening = $true
+        break
+    }
+}
 $state = (Get-ScheduledTask -TaskName $taskName).State
-Write-Ok "Task state: $state"
+
+if ($listening) {
+    Write-Ok "Agent is listening on port $Port (task state: $state)"
+} else {
+    Write-Warn "Task state: $state, but port $Port is NOT listening"
+    $info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($info) { Write-Warn "Last run result: $($info.LastTaskResult)" }
+    Write-Warn "Troubleshoot:"
+    Write-Warn "  1) Start the task manually:  Start-ScheduledTask -TaskName nodeagent"
+    Write-Warn "  2) Check the process:        Get-Process node"
+    Write-Warn "  3) Run in foreground to see the real error:"
+    Write-Warn "     & '$nodeExe' '$agentJs'"
+}
 
 # 8. Print connection info
 $ips = @()
@@ -177,7 +198,8 @@ Write-Host "  $Key" -ForegroundColor White
 Write-Host ""
 Write-Host "  On the Mac, run:" -ForegroundColor Cyan
 $insecureFlag = if ($NoTls) { "" } else { " --insecure" }
-Write-Host "  nodeagent connect <THIS-IP> --port $Port --key $Key$insecureFlag"
+$primaryIp = if ($ips.Count -gt 0) { $ips[0] } else { '<被控端IP>' }
+Write-Host "  nodeagent connect $primaryIp --port $Port --key $Key$insecureFlag"
 Write-Host ""
 Write-Host "  Zero-trust (optional): run 'nodeagent keygen' on the Mac, then add the" -ForegroundColor DarkGray
 Write-Host "  printed entry into this file's acl.clients and set auth_mode to 'ed25519'." -ForegroundColor DarkGray
