@@ -68,7 +68,8 @@ async function main() {
   execFileSync(
     esbuild,
     [
-      'apps/agent/dist/index.js',
+      // 输入用绝对路径，保证从任意工作目录调用都能解析
+      join(root, 'apps', 'agent', 'dist', 'index.js'),
       '--bundle',
       '--platform=node',
       '--target=node22',

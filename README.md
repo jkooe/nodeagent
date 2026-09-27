@@ -41,7 +41,18 @@ pnpm build
 
 **方式 A：安装包（推荐，免装 Node.js）**
 
-1. 在控制端构建安装包：`pnpm pack:win`（产物：`release/nodeagent-win-x64.zip`）
+1. 在控制端构建安装包（**需在项目目录执行**）：
+
+   ```bash
+   cd <项目目录>            # 例如 ~/WorkBuddy/NodeAgent/nodeagent
+   pnpm pack:win
+
+   # 或从任意目录调用：
+   node <项目目录>/scripts/pack.mjs
+   ```
+
+   产物：`release/nodeagent-win-x64.zip`（约 32MB）
+
 2. 把 zip 拷到 Windows 并解压
 3. 右键以**管理员**运行其中的 `install.ps1`
 
