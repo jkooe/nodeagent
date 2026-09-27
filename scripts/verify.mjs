@@ -13,7 +13,7 @@
 import { writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NodeAgentClient, loadConfig, toWsUrl } from '../packages/client/dist/index.js';
+import { NodeAgentClient, loadConfig, loadKeys, resolveTarget, toWsUrl } from '../packages/client/dist/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -58,7 +58,15 @@ if (values['host']) {
     console.error('✗ 未找到本机配置。请先执行: nodeagent connect <host> --port 8765 --key <密钥>');
     process.exit(1);
   }
-  conn = saved;
+  // v5：saved 为多设备结构，解析生效目标（--node 可选）
+  let target;
+  try {
+    target = resolveTarget(saved, values['node']);
+  } catch (err) {
+    console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+  conn = { ...target.profile, client_id: target.clientId };
 }
 
 // ---------- 结果收集 ----------
@@ -89,6 +97,9 @@ async function connect(key = conn.key) {
     key,
     clientId: conn.client_id ?? 'verify',
     insecure: conn.insecure,
+    authMode: conn.auth_mode,
+    privateKey: conn.auth_mode === 'ed25519' ? loadKeys()?.privateKey : undefined,
+    hub: conn.hub ? { token: conn.hub.token, nodeId: conn.hub.node_id } : undefined,
   });
   await c.connect();
   return c;

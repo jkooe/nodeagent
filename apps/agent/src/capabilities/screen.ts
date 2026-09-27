@@ -30,10 +30,13 @@ async function listDisplays(): Promise<Display[]> {
     const script = [
       'Add-Type -AssemblyName System.Windows.Forms',
       '$s = [System.Windows.Forms.Screen]::AllScreens',
+      // 读取 DPI 缩放（HKCU AppliedDPI；读不到则按 100% 处理）
+      '$dpi = (Get-ItemProperty -Path "HKCU:\\Control Panel\\Desktop\\WindowMetrics" -Name AppliedDPI -ErrorAction SilentlyContinue).AppliedDPI',
+      '$scale = if ($dpi) { [math]::Round($dpi / 96.0, 2) } else { 1.0 }',
       '$out = @()',
       'for ($i = 0; $i -lt $s.Count; $i++) {',
       '  $d = $s[$i]',
-      '  $out += [pscustomobject]@{ id = $i; name = $d.DeviceName; width = $d.Bounds.Width; height = $d.Bounds.Height; is_primary = $d.Primary; scale = 1; x = $d.Bounds.X; y = $d.Bounds.Y }',
+      '  $out += [pscustomobject]@{ id = $i; name = $d.DeviceName; width = $d.Bounds.Width; height = $d.Bounds.Height; is_primary = $d.Primary; scale = $scale; x = $d.Bounds.X; y = $d.Bounds.Y }',
       '}',
       '$out | ConvertTo-Json -Compress',
     ].join('\n');
