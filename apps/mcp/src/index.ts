@@ -1,7 +1,15 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { NodeAgentClient, ClientError, loadConfig, loadKeys, toWsUrl, discoverOnce } from '@nodeagent/client';
+import {
+  NodeAgentClient,
+  ClientError,
+  loadConfig,
+  loadKeys,
+  toWsUrl,
+  discoverOnce,
+  resolveTarget,
+} from '@nodeagent/client';
 import { CapabilityNames, DEFAULT_DISCOVERY_PORT, type InvokeResult } from '@nodeagent/protocol';
 
 /** stderr 日志（stdout 被 MCP 协议占用，禁止打印）。 */
@@ -19,17 +27,24 @@ async function ensureClient(): Promise<NodeAgentClient> {
   if (!cfg) {
     throw new Error('尚未配置被控端。请先在终端运行: nodeagent connect <host> --port 8765 --key <密钥>');
   }
-  const keys = cfg.auth_mode === 'ed25519' ? loadKeys() : null;
+  let target;
+  try {
+    target = resolveTarget(cfg);
+  } catch (err) {
+    throw new Error(err instanceof Error ? err.message : String(err));
+  }
+  const { profile, clientId } = target;
+  const keys = profile.auth_mode === 'ed25519' ? loadKeys() : null;
   const c = new NodeAgentClient({
-    url: toWsUrl(cfg),
-    key: cfg.key,
-    clientId: cfg.client_id,
-    insecure: cfg.insecure,
-    authMode: cfg.auth_mode,
+    url: toWsUrl(profile),
+    key: profile.key ?? '',
+    clientId,
+    insecure: profile.insecure,
+    authMode: profile.auth_mode,
     privateKey: keys?.privateKey,
   });
   await c.connect();
-  log(`已连接被控端 ${cfg.host}:${cfg.port}（${cfg.auth_mode ?? 'psk'}）`);
+  log(`已连接被控端 ${target.name} ${profile.host}:${profile.port}（${profile.auth_mode ?? 'psk'}）`);
   client = c;
   return c;
 }
@@ -195,6 +210,53 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'na_fs_list',
+    description: '列出被控端某目录下的文件与子目录。用户问"Windows 上某目录有什么文件"时使用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '目录绝对路径，如 C:\\\\Users\\\\me\\\\Desktop' },
+        pattern: { type: 'string', description: '可选 glob 过滤，如 "*.log"' },
+        recursive: { type: 'boolean', description: '是否递归子目录' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_fs_read',
+    description:
+      '读取被控端文件内容（默认 UTF-8）。文件较大时会分块返回，用 offset 续读、看 eof 判断结束。适合读取日志、配置、脚本。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '文件绝对路径' },
+        encoding: { type: 'string', enum: ['utf8', 'base64'], description: '默认 utf8；二进制文件用 base64' },
+        offset: { type: 'integer', description: '起始字节偏移，默认 0' },
+        max_bytes: { type: 'integer', description: '单次读取上限，默认 1MB，最大 8MB' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_fs_write',
+    description:
+      '向被控端写入文件（自动原子写，不会留半截文件）。已有文件可用 append: true 追加；目录不存在时设 create_dirs: true。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '文件绝对路径' },
+        data: { type: 'string', description: '写入内容' },
+        encoding: { type: 'string', enum: ['utf8', 'base64'], description: '默认 utf8' },
+        append: { type: 'boolean', description: '是否追加（默认覆盖）' },
+        create_dirs: { type: 'boolean', description: '目录不存在时自动创建' },
+      },
+      required: ['path', 'data'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /** MCP 工具入参 → 能力 args。 */
@@ -235,6 +297,9 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_service_list: CapabilityNames.ServiceList,
   na_screenshot: CapabilityNames.ScreenCapture,
   na_audit: CapabilityNames.AuditList,
+  na_fs_list: CapabilityNames.FsList,
+  na_fs_read: CapabilityNames.FsRead,
+  na_fs_write: CapabilityNames.FsWrite,
 };
 
 type Resolved = { capability: string; args: Record<string, unknown> } | { error: string };

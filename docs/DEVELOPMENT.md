@@ -303,6 +303,10 @@
 | 13 | `input.key.type` | 🔴🔒 | 输入文本（Unicode 逐字符） | v2 |
 | 14 | `input.key.press` | 🔴🔒 | 按下按键/组合键 | v2 |
 | 15 | `system.audit.list` | 🟢 | 查询审计日志（谁在何时调了什么） | v3+ |
+| 16 | `fs.list` | 🟢 | 列目录（glob / 递归） | v5 |
+| 17 | `fs.stat` | 🟢 | 文件元信息 | v5 |
+| 18 | `fs.read` | 🟡 | 读文件（分块续读） | v5 |
+| 19 | `fs.write` | 🔴 | 写文件（分块 / 原子写） | v5 |
 
 > 🔒 = 受 `allow_input` 开关管控，默认禁用。
 >
@@ -550,6 +554,51 @@
 | 主动关闭 | `close()` 会停止重连，不会「关不掉」 |
 
 > **实测**：E2E 覆盖两项 —— UDP 广播可被发现 / 被控端重启后客户端自动恢复调用。
+
+### 6.7 多设备与文件传输（v5）
+
+#### 多设备管理
+
+控制端配置从「单设备扁平结构」升级为「设备表」：
+
+```jsonc
+// ~/.nodeagent/config.json
+{
+  "client_id": "mac_01",      // 控制端身份（多台设备共用）
+  "current": "win_a",         // 当前默认设备
+  "nodes": {
+    "win_a": { "host": "192.168.1.100", "port": 8765, "tls": true, "insecure": true, "key": "...", "auth_mode": "psk" },
+    "win_b": { "host": "192.168.1.101", "port": 8765, "tls": true, "insecure": true, "auth_mode": "ed25519", "note": "工位机" }
+  }
+}
+```
+
+| 命令 | 作用 |
+|---|---|
+| `nodeagent connect <host> --key <K> --name win_a` | 连接测试通过后**才**写入设备表，避免脏配置 |
+| `nodeagent nodes` | 列出设备（● 标记当前设备） |
+| `nodeagent use <name>` | 切换默认设备 |
+| `nodeagent remove <name>` | 移除设备（若移除的是当前设备，自动切到第一个） |
+| `nodeagent <cmd> --node <name>` | 单次命令临时指定目标，不改动 `current` |
+
+> **零破坏迁移**：`loadConfig()` 会自动把 v1/v2 的扁平配置迁移为 `nodes.default`，老配置文件无需手工改写。
+
+#### 文件传输
+
+传输层用**分块 RPC**（而非新增二进制帧）—— 协议无改动、天然支持断点与进度、实现简单：
+
+| 能力 | 关键设计 |
+|---|---|
+| `fs.read` | `offset` + `max_bytes` 分块；`eof` 标识结束；小文件（≤8MB）首次读取附带 `sha256` 便于校验 |
+| `fs.write` | 覆盖写走**临时文件 + 原子重命名**（不会留半截文件）；`append: true` 追加；`create_dirs` 自动建目录 |
+| `fs.list` | 递归 + glob 过滤；递归设硬上限（`max_entries × 3`）防止失控 |
+| `fs.stat` | 不存在时返回 `exists: false` 而非报错，便于探测 |
+
+**路径白名单**：被控端可配 `fs_roots: ["C:\\work"]`，非空时只允许访问这些根目录之下的路径，越界返回 `E_ACL_DENIED`；为空则完全交给 v3 的能力级 ACL 管控。
+
+CLI 便捷命令：`ls` / `stat` / `cat` / `pull` / `push`（pull 与 push 自动分块，支持任意大小文件；下载同样**原子落盘**）。
+
+> **实测**：E2E 覆盖 —— 写入 → 读回 → 递归列表 → **1.5MB 分块重组 sha256 一致** → append 语义 → 白名单越界被拒。
 
 ---
 

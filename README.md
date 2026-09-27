@@ -25,8 +25,9 @@ nodeagent 让 Mac 上的 AI（WorkBuddy）通过统一协议接管局域网内�
 |---|---|
 | 协议 | JSON-RPC 2.0 over WebSocket，握手 `hello → challenge → auth → auth_ok` |
 | 鉴权 | 预共享密钥 + HMAC-SHA256 挑战-应答（防重放） |
-| 能力 | `system.*`(6，含 `audit.list`) + `app.*`(2) + `screen.*`(2) + `input.*`(5，**默认禁用**) |
+| 能力 | `system.*`(6) + `app.*`(2) + `screen.*`(2) + `fs.*`(4) + `input.*`(5，**默认禁用**) |
 | 接入 | CLI（调试底座）+ MCP（AI 落点） |
+| 多设备 | 一台 Mac 可接管多台 Windows（`nodes` 设备表 + `--node` 切换） |
 
 ## 快速开始
 
@@ -75,6 +76,19 @@ node apps/cli/dist/index.js audit --type invoke --client-id mac_01  # 按类别/
 
 # 自动发现（v4，免手抄 IP）
 node apps/cli/dist/index.js discover --wait 5                       # 局域网内有哪些 Windows
+
+# 多设备（v5）
+node apps/cli/dist/index.js connect 192.168.1.100 --key <K> --name win_a   # 添加并命名
+node apps/cli/dist/index.js connect 192.168.1.101 --key <K> --name win_b
+node apps/cli/dist/index.js nodes                                   # 列出所有设备
+node apps/cli/dist/index.js use win_a                               # 切换当前设备
+node apps/cli/dist/index.js info --node win_b                       # 临时指定目标设备
+
+# 文件传输（v5，自动分块，支持大文件）
+node apps/cli/dist/index.js ls "C:\Users\me\Desktop" --recursive
+node apps/cli/dist/index.js cat "C:\logs\app.log"
+node apps/cli/dist/index.js pull "C:\big.iso" --out ./big.iso       # 下载（原子落盘）
+node apps/cli/dist/index.js push ./script.ps1 "C:\tools\script.ps1" --create-dirs
 ```
 
 ### 3. 接入 WorkBuddy（MCP）
@@ -93,7 +107,7 @@ node apps/cli/dist/index.js discover --wait 5                       # 局域网�
 
 随后即可用自然语言调度，例如「Windows 上装个 VSCode」「看看 Windows 内存够不够」。
 
-MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`** · **`na_audit`** · **`na_discover`**
+MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`** · **`na_audit`** · **`na_discover`** · **`na_fs_list`** · **`na_fs_read`** · **`na_fs_write`**
 
 ## 开发
 
@@ -169,6 +183,7 @@ nodeagent/
 | **v3** | 零信任：Ed25519 身份认证 + **能力级 ACL** | ✅ 已实现 |
 | **v3+** | **审计日志**（谁在何时调了什么 + 查询能力）+ **限速** | ✅ 已实现 |
 | **v4** | 无感体验：**局域网自动发现** + **断线自动重连** | ✅ 已实现 |
+| **v5** | **多设备管理** + **文件传输**（分块 / 大文件 / 原子写） | ✅ 已实现 |
 
 > **输入控制安全默认**：`input.*` 为高危能力，**默认禁用**。需在被控端 `agent.json` 设 `"allow_input": true` 重启后生效，或用 `install.ps1 -AllowInput` 安装。
 

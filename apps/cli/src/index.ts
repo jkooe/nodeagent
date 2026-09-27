@@ -1,4 +1,4 @@
-import { writeFileSync } from 'node:fs';
+import { closeSync, openSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import {
   NodeAgentClient,
@@ -11,7 +11,11 @@ import {
   createKeys,
   keysFilePath,
   discoverOnce,
+  resolveTarget,
+  emptyConfig,
   type ClientConfig,
+  type ResolvedTarget,
+  type NodeProfile,
 } from '@nodeagent/client';
 import {
   CapabilityNames,
@@ -28,9 +32,19 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
       配置并连接被控端（握手成功后打印能力清单）
 
   nodeagent keygen [--id mac_01]      生成 Ed25519 密钥对并输出被控端 ACL 配置片段 (v3 零信任)
+  nodeagent nodes                     列出已配置的被控端设备 (v5 多设备)
+  nodeagent use <设备名>               切换当前默认设备
+  nodeagent remove <设备名>            移除设备
   nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
                                       查询被控端审计日志 (v3+)
   nodeagent discover [--wait 5]       发现局域网内的被控端（UDP 广播，免手抄 IP）(v4)
+
+文件传输 (v5):
+  nodeagent ls <远端路径> [--recursive] [--pattern "*.log"]     列目录
+  nodeagent stat <远端路径>                                      看元信息
+  nodeagent cat <远端路径> [--out 本地文件]                       读文本（首块）
+  nodeagent pull <远端路径> [--out 本地文件]                      下载（自动分块，支持大文件）
+  nodeagent push <本地文件> <远端路径> [--create-dirs]            上传（自动分块）
 
   nodeagent info                      查看系统信息 (system.info)
   nodeagent status                    查看资源状态 (system.status)
@@ -53,6 +67,8 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent key press <键1> [键2] ...  （组合键，如 ctrl c）
 
 通用选项:
+  --node <设备名>  本次命令临时指定目标设备（不改变 current）
+                   可放命令后（nodeagent info --node win_b）或前置（nodeagent --node=win_b info）
   --json      以原始 JSON 输出
   --config    显示当前配置路径
 `;
@@ -83,6 +99,14 @@ interface Options {
   /** v4 发现 */
   wait?: string;
   discoveryPort?: string;
+  /** v5 多设备 */
+  node?: string;
+  name?: string;
+  note?: string;
+  /** v5 文件 */
+  recursive?: boolean;
+  pattern?: string;
+  createDirs?: boolean;
 }
 
 function getClientConfig(): ClientConfig {
@@ -93,15 +117,25 @@ function getClientConfig(): ClientConfig {
   return cfg;
 }
 
-async function withClient<T>(fn: (client: NodeAgentClient) => Promise<T>): Promise<T> {
+/** 本次命令的临时目标设备（来自全局 --node）。 */
+let currentNodeOverride: string | undefined;
+
+async function withClient<T>(fn: (client: NodeAgentClient) => Promise<T>, nodeName?: string): Promise<T> {
   const cfg = getClientConfig();
-  const keys = cfg.auth_mode === 'ed25519' ? loadKeys() : null;
+  let target: ResolvedTarget;
+  try {
+    target = resolveTarget(cfg, nodeName ?? currentNodeOverride);
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+  const { profile, clientId } = target;
+  const keys = profile.auth_mode === 'ed25519' ? loadKeys() : null;
   const client = new NodeAgentClient({
-    url: toWsUrl(cfg),
-    key: cfg.key,
-    clientId: cfg.client_id,
-    insecure: cfg.insecure,
-    authMode: cfg.auth_mode,
+    url: toWsUrl(profile),
+    key: profile.key ?? '',
+    clientId,
+    insecure: profile.insecure,
+    authMode: profile.auth_mode,
     privateKey: keys?.privateKey,
   });
   try {
@@ -161,8 +195,9 @@ async function cmdConnect(host: string, opts: Options): Promise<void> {
     fail('缺少 --key <预共享密钥>（零信任模式请用 --auth-mode ed25519）');
   }
 
-  const cfg: ClientConfig = {
-    client_id: opts.id ?? 'mac_01',
+  const name = opts.name ?? host;
+  const clientId = opts.id ?? 'mac_01';
+  const profile: NodeProfile = {
     host,
     port,
     tls: !process.argv.includes('--no-tls'),
@@ -170,31 +205,39 @@ async function cmdConnect(host: string, opts: Options): Promise<void> {
     key: opts.key ?? '',
     auth_mode: authMode,
   };
+  if (opts.note) profile.note = opts.note;
 
   const keys = authMode === 'ed25519' ? loadKeys() : null;
   if (authMode === 'ed25519' && !keys) {
-    fail(`零信任模式需要本机密钥，请先运行: nodeagent keygen --id ${cfg.client_id}`);
+    fail(`零信任模式需要本机密钥，请先运行: nodeagent keygen --id ${clientId}`);
   }
 
   const client = new NodeAgentClient({
-    url: toWsUrl(cfg),
-    key: cfg.key,
-    clientId: cfg.client_id,
-    insecure: cfg.insecure,
+    url: toWsUrl(profile),
+    key: profile.key ?? '',
+    clientId,
+    insecure: profile.insecure,
     authMode,
     privateKey: keys?.privateKey,
   });
   try {
     const caps = await client.connect();
     const authorized = client.listAuthorized();
+
+    // 连接成功才落盘，避免把错配置写进设备表
+    const cfg = loadConfig() ?? emptyConfig(clientId);
+    cfg.client_id = clientId;
+    cfg.nodes[name] = profile;
+    cfg.current = name;
     saveConfig(cfg);
+
     console.log(
-      `✓ 已连接 ${cfg.host}:${cfg.port}（${cfg.tls ? 'wss' : 'ws'}，${authMode}），配置已保存到 ${configPath()}`,
+      `✓ 已连接并保存设备「${name}」${profile.host}:${profile.port}（${profile.tls ? 'wss' : 'ws'}，${authMode}）`,
     );
-    const isOk = (name: string): boolean => !authorized || authorized.some((p) => matchPattern(p, name));
-    console.log(
-      `\n被控端声明 ${caps.length} 项能力${authorized ? `，其中 ${authorized.length} 项已授权` : ''}:`,
-    );
+    console.log(`  配置: ${configPath()}（当前设备 ${name}，共 ${Object.keys(cfg.nodes).length} 台）`);
+
+    const isOk = (n: string): boolean => !authorized || authorized.some((p) => matchPattern(p, n));
+    console.log(`\n被控端声明 ${caps.length} 项能力${authorized ? `，其中 ${authorized.length} 项已授权` : ''}:`);
     for (const c of caps) {
       console.log(`  ${isOk(c.name) ? riskIcon(c.risk) : '🚫'} ${c.name.padEnd(24)} ${c.description}`);
     }
@@ -204,6 +247,56 @@ async function cmdConnect(host: string, opts: Options): Promise<void> {
   } finally {
     client.close();
   }
+}
+
+// ---------- v5 多设备管理 ----------
+
+async function cmdNodes(opts: Options): Promise<void> {
+  const cfg = loadConfig();
+  if (!cfg || Object.keys(cfg.nodes).length === 0) {
+    console.log('尚未配置任何设备。用 nodeagent connect <host> --key <密钥> 添加，或 nodeagent discover 先发现。');
+    return;
+  }
+  const names = Object.keys(cfg.nodes);
+  if (opts.json) {
+    return printJson({ current: cfg.current, client_id: cfg.client_id, nodes: cfg.nodes });
+  }
+  console.log(`控制端身份: ${cfg.client_id}    共 ${names.length} 台设备\n`);
+  console.log(`  ${'名称'.padEnd(16)} ${'地址'.padEnd(22)} ${'协议'.padEnd(6)} ${'认证'.padEnd(9)} 备注`);
+  for (const n of names) {
+    const p = cfg.nodes[n]!;
+    const mark = n === cfg.current ? '●' : ' ';
+    const auth = `${p.auth_mode ?? 'psk'}${p.insecure ? '*' : ''}`;
+    console.log(
+      `${mark} ${n.padEnd(16)} ${`${p.host}:${p.port}`.padEnd(22)} ${(p.tls ? 'wss' : 'ws').padEnd(6)} ${auth.padEnd(9)} ${p.note ?? ''}`,
+    );
+  }
+  console.log('\n（● = 当前设备；认证列 * = 跳过证书校验）');
+}
+
+async function cmdUse(name: string | undefined, opts: Options): Promise<void> {
+  if (!name) fail('用法: nodeagent use <设备名>');
+  const cfg = loadConfig();
+  if (!cfg) fail('尚未配置任何设备。请先运行: nodeagent connect <host> --key <密钥>');
+  if (!cfg.nodes[name]) {
+    fail(`未配置的设备: ${name}；已配置：${Object.keys(cfg.nodes).join(', ') || '（空）'}`);
+  }
+  cfg.current = name;
+  saveConfig(cfg);
+  if (opts.json) return printJson({ current: cfg.current });
+  const p = cfg.nodes[name]!;
+  console.log(`✓ 当前设备已切换为「${name}」 → ${p.host}:${p.port}`);
+}
+
+async function cmdRemove(name: string | undefined, opts: Options): Promise<void> {
+  if (!name) fail('用法: nodeagent remove <设备名>');
+  const cfg = loadConfig();
+  if (!cfg || !cfg.nodes[name]) fail(`未配置的设备: ${name}`);
+  delete cfg.nodes[name];
+  if (cfg.current === name) cfg.current = Object.keys(cfg.nodes)[0] ?? '';
+  saveConfig(cfg);
+  if (opts.json) return printJson({ removed: name, current: cfg.current });
+  console.log(`✓ 已移除设备「${name}」${cfg.current ? `，当前设备: ${cfg.current}` : ''}`);
 }
 
 /** v3：生成 Ed25519 密钥对，并输出可直接粘贴的被控端 ACL 配置片段。 */
@@ -535,6 +628,148 @@ async function cmdDiscover(opts: Options): Promise<void> {
   console.log(`  nodeagent connect ${first.host} --port ${first.port} --key <密钥>${first.tls ? ' --insecure' : ''}`);
 }
 
+// ---------- v5 文件传输 ----------
+
+/** 分块大小：1MB（与被控端 max_bytes 默认值配合） */
+const CHUNK_BYTES = 1024 * 1024;
+
+async function cmdLs(pathArg: string | undefined, opts: Options): Promise<void> {
+  if (!pathArg) fail('用法: nodeagent ls <远端路径> [--recursive] [--pattern "*.log"]');
+  const args: Record<string, unknown> = { path: pathArg };
+  if (opts.recursive) args['recursive'] = true;
+  if (opts.pattern) args['pattern'] = opts.pattern;
+
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.FsList, args, opts.json, (data) => {
+      const d = data as {
+        entries: Array<{ name: string; type: string; size: number; mtime: number }>;
+        total: number;
+        truncated: boolean;
+      };
+      for (const e of d.entries) {
+        const icon = e.type === 'dir' ? '📁' : '📄';
+        const when = new Date(e.mtime).toLocaleString('zh-CN');
+        console.log(`  ${icon} ${e.name.padEnd(34)} ${humanSize(e.size).padStart(10)}  ${when}`);
+      }
+      console.log(`\n共 ${d.total} 项${d.truncated ? '（已截断，可加 --pattern 过滤）' : ''}`);
+    }),
+  );
+}
+
+async function cmdStat(pathArg: string | undefined, opts: Options): Promise<void> {
+  if (!pathArg) fail('用法: nodeagent stat <远端路径>');
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.FsStat, { path: pathArg }, opts.json, (data) => {
+      const d = data as { path: string; type: string; size: number; mtime: number; exists: boolean };
+      if (!d.exists) {
+        console.log(`✗ 不存在: ${d.path}`);
+        return;
+      }
+      console.log(`  路径 : ${d.path}`);
+      console.log(`  类型 : ${d.type}`);
+      console.log(`  大小 : ${humanSize(d.size)}`);
+      console.log(`  修改 : ${new Date(d.mtime).toLocaleString('zh-CN')}`);
+    }),
+  );
+}
+
+async function cmdCat(pathArg: string | undefined, opts: Options): Promise<void> {
+  if (!pathArg) fail('用法: nodeagent cat <远端路径> [--out 本地文件]');
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.FsRead, { path: pathArg, encoding: 'utf8' }, opts.json, (data) => {
+      const d = data as { data: string; bytes: number; total_bytes: number; eof: boolean };
+      if (opts.out) {
+        writeFileSync(opts.out, d.data, 'utf8');
+        console.log(`✓ 已保存 ${opts.out}（${d.bytes} 字节${d.eof ? '' : '，文件较大仅首块，请用 pull 下载完整文件'}）`);
+        return;
+      }
+      process.stdout.write(d.data);
+      if (!d.eof) console.log(`\n\n… 仅显示首 ${humanSize(d.bytes)}（共 ${humanSize(d.total_bytes)}），完整下载请用 pull`);
+    }),
+  );
+}
+
+async function cmdPull(remote: string | undefined, opts: Options): Promise<void> {
+  if (!remote) fail('用法: nodeagent pull <远端路径> [--out 本地文件]');
+  const local = opts.out ?? remote.split(/[\\/]/).pop() ?? 'download.bin';
+
+  await withClient(async (c) => {
+    const statRes = await c.invoke(CapabilityNames.FsStat, { path: remote });
+    if (statRes.status !== 'ok') fail(`读取远端信息失败: ${statRes.error?.message}`);
+    const st = statRes.data as { exists: boolean; type: string; size: number };
+    if (!st.exists) fail(`远端文件不存在: ${remote}`);
+    if (st.type === 'dir') fail(`目标是目录，不是文件: ${remote}（先用 ls 查看）`);
+
+    const tmp = `${local}.nodeagent-part`;
+    const fd = openSync(tmp, 'w');
+    let offset = 0;
+    try {
+      for (;;) {
+        const r = await c.invoke(CapabilityNames.FsRead, {
+          path: remote,
+          encoding: 'base64',
+          offset,
+          max_bytes: CHUNK_BYTES,
+        });
+        if (r.status !== 'ok') fail(`下载失败: ${r.error?.name}: ${r.error?.message}`);
+        const d = r.data as { data: string; bytes: number; eof: boolean };
+        if (d.bytes > 0) writeSync(fd, Buffer.from(d.data, 'base64'));
+        offset += d.bytes;
+        if (d.eof || d.bytes === 0) break;
+      }
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, local); // 原子落盘，避免半截文件
+    console.log(`✓ 已下载 ${remote} → ${local}（${humanSize(offset)}）`);
+  });
+}
+
+async function cmdPush(local: string | undefined, remote: string | undefined, opts: Options): Promise<void> {
+  if (!local || !remote) fail('用法: nodeagent push <本地文件> <远端路径> [--create-dirs]');
+  let st;
+  try {
+    st = statSync(local);
+  } catch {
+    fail(`本地文件不存在: ${local}`);
+  }
+  if (!st.isFile()) fail(`不是文件: ${local}`);
+
+  await withClient(async (c) => {
+    const fd = openSync(local, 'r');
+    let offset = 0;
+    let first = true;
+    try {
+      while (offset < st.size) {
+        const len = Math.min(CHUNK_BYTES, st.size - offset);
+        const buf = Buffer.alloc(len);
+        readSync(fd, buf, 0, len, offset);
+        const r = await c.invoke(CapabilityNames.FsWrite, {
+          path: remote,
+          data: buf.toString('base64'),
+          encoding: 'base64',
+          append: !first,
+          create_dirs: first && opts.createDirs === true,
+        });
+        if (r.status !== 'ok') fail(`上传失败: ${r.error?.name}: ${r.error?.message}`);
+        offset += len;
+        first = false;
+      }
+      if (st.size === 0) {
+        const r = await c.invoke(CapabilityNames.FsWrite, {
+          path: remote,
+          data: '',
+          create_dirs: opts.createDirs === true,
+        });
+        if (r.status !== 'ok') fail(`上传失败: ${r.error?.message}`);
+      }
+    } finally {
+      closeSync(fd);
+    }
+    console.log(`✓ 已上传 ${local} → ${remote}（${humanSize(offset)}）`);
+  });
+}
+
 function parseOptions(rest: string[]): { opts: Options; positionals: string[] } {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -561,6 +796,12 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       'client-id': { type: 'string' },
       wait: { type: 'string' },
       'discovery-port': { type: 'string' },
+      node: { type: 'string' },
+      name: { type: 'string' },
+      note: { type: 'string' },
+      recursive: { type: 'boolean', default: false },
+      pattern: { type: 'string' },
+      'create-dirs': { type: 'boolean', default: false },
     },
     allowPositionals: true,
     strict: false,
@@ -587,14 +828,25 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       clientId: values['client-id'] as string | undefined,
       wait: values['wait'] as string | undefined,
       discoveryPort: values['discovery-port'] as string | undefined,
+      node: values['node'] as string | undefined,
+      name: values['name'] as string | undefined,
+      note: values['note'] as string | undefined,
+      recursive: Boolean(values['recursive']),
+      pattern: values['pattern'] as string | undefined,
+      createDirs: Boolean(values['create-dirs']),
     },
     positionals,
   };
 }
 
 async function main(): Promise<void> {
-  const [command, ...rest] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  // 命令 = 第一个非选项 token，故全局选项可前置（--node=win_b info）
+  const cmdIdx = argv.findIndex((a) => !a.startsWith('-'));
+  const command = cmdIdx >= 0 ? argv[cmdIdx] : undefined;
+  const rest = cmdIdx >= 0 ? [...argv.slice(0, cmdIdx), ...argv.slice(cmdIdx + 1)] : argv;
   const { opts, positionals } = parseOptions(rest);
+  currentNodeOverride = opts.node; // 全局 --node 生效于本次命令
 
   if (rest.includes('--config')) {
     console.log(configPath());
@@ -647,11 +899,35 @@ async function main(): Promise<void> {
     case 'keygen':
       await cmdKeygen(opts);
       return;
+    case 'nodes':
+      await cmdNodes(opts);
+      return;
+    case 'use':
+      await cmdUse(positionals[0], opts);
+      return;
+    case 'remove':
+      await cmdRemove(positionals[0], opts);
+      return;
     case 'audit':
       await cmdAudit(opts);
       return;
     case 'discover':
       await cmdDiscover(opts);
+      return;
+    case 'ls':
+      await cmdLs(positionals[0], opts);
+      return;
+    case 'stat':
+      await cmdStat(positionals[0], opts);
+      return;
+    case 'cat':
+      await cmdCat(positionals[0], opts);
+      return;
+    case 'pull':
+      await cmdPull(positionals[0], opts);
+      return;
+    case 'push':
+      await cmdPush(positionals[0], positionals[1], opts);
       return;
     case 'screen':
       await cmdScreen(opts);

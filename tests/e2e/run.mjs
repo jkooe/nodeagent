@@ -8,6 +8,7 @@
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,8 @@ const DISCOVERY_PORT = 18796;
 const DISCOVERY_AGENT_PORT = 18797;
 const RECONNECT_PORT = 18798;
 const RECONNECT_KEY = 'reconnect-key-0123456789abcdef0123456789';
+const FS_PORT = 18799;
+const FS_KEY = 'fs-key-0123456789abcdef0123456789abcdef';
 const KEY = 'e2e-test-key-0123456789abcdef0123456789abcdef';
 const URL = `ws://127.0.0.1:${PORT}`;
 
@@ -395,6 +398,132 @@ async function testAutoReconnect() {
   }
 }
 
+/** v5 场景：文件传输（分块读写 + 列表 + append + 白名单）。 */
+async function testFileTransfer() {
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-fs-'));
+  const fsRoot = mkdtempSync(join(tmpdir(), 'nodeagent-fsroot-'));
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({
+      node_id: 'fs_node',
+      host: '127.0.0.1',
+      port: FS_PORT,
+      tls: false,
+      key: FS_KEY,
+      log_level: 'warn',
+      discovery: { enabled: false },
+      fs_roots: [fsRoot],
+    }),
+  );
+
+  const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stderr.on('data', (d) => process.stderr.write(`[fs-agent] ${d}`));
+
+  const url = `ws://127.0.0.1:${FS_PORT}`;
+  const mk = () => new NodeAgentClient({ url, key: FS_KEY, clientId: 'fs_test' });
+
+  try {
+    // 等待就绪
+    const deadline = Date.now() + 20_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      if (child.exitCode !== null) throw new Error(`fs 被控端已退出 (code=${child.exitCode})`);
+      try {
+        const p = mk();
+        await p.connect();
+        p.close();
+        ready = true;
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+    }
+    if (!ready) throw new Error('fs 被控端未就绪');
+
+    const c = mk();
+    await c.connect();
+
+    // 1. 写入（自动建目录）
+    const nested = join(fsRoot, 'sub', 'hello.txt');
+    const w = await c.invoke('fs.write', { path: nested, data: '你好 nodeagent', create_dirs: true });
+    assert.equal(w.status, 'ok', `写入失败: ${JSON.stringify(w.error)}`);
+    assert.equal(w.data.written, Buffer.byteLength('你好 nodeagent'), 'written 应为 UTF-8 字节数');
+
+    // 2. 读回 + sha256
+    const r = await c.invoke('fs.read', { path: nested });
+    assert.equal(r.status, 'ok');
+    assert.equal(r.data.data, '你好 nodeagent');
+    assert.equal(r.data.eof, true, '小文件应一次读完');
+    assert.ok(typeof r.data.sha256 === 'string' && r.data.sha256.length === 64, '小文件应返回 sha256');
+
+    // 3. stat + 递归 list
+    const s = await c.invoke('fs.stat', { path: nested });
+    assert.equal(s.data.type, 'file');
+    assert.ok(s.data.size > 0, 'size 应大于 0');
+    const l = await c.invoke('fs.list', { path: fsRoot, recursive: true });
+    assert.equal(l.status, 'ok');
+    assert.ok(
+      l.data.entries.some((e) => e.name === 'hello.txt'),
+      '递归列表应包含刚写入的文件',
+    );
+
+    // 4. 大文件分块：写 1.5MB → 按 512KB 分块读 → 重组校验
+    const chunk = 512 * 1024;
+    const payload = Buffer.alloc(1_500_000);
+    for (let i = 0; i < payload.length; i += 1) payload[i] = i % 251;
+    const bigPath = join(fsRoot, 'big.bin');
+    const wBig = await c.invoke(
+      'fs.write',
+      { path: bigPath, data: payload.toString('base64'), encoding: 'base64' },
+      60_000,
+    );
+    assert.equal(wBig.status, 'ok', `大文件写入失败: ${JSON.stringify(wBig.error)}`);
+    assert.equal(wBig.data.total_bytes, payload.length);
+
+    const parts = [];
+    let offset = 0;
+    for (;;) {
+      const rr = await c.invoke(
+        'fs.read',
+        { path: bigPath, encoding: 'base64', offset, max_bytes: chunk },
+        60_000,
+      );
+      assert.equal(rr.status, 'ok');
+      parts.push(Buffer.from(rr.data.data, 'base64'));
+      offset += rr.data.bytes;
+      if (rr.data.eof || rr.data.bytes === 0) break;
+    }
+    const reassembled = Buffer.concat(parts);
+    assert.equal(reassembled.length, payload.length, `分块重组长度应一致 (${reassembled.length} vs ${payload.length})`);
+    assert.equal(
+      createHash('sha256').update(reassembled).digest('hex'),
+      createHash('sha256').update(payload).digest('hex'),
+      '分块重组内容应与原文件完全一致',
+    );
+
+    // 5. append 追加（而非覆盖）
+    const appendedPath = join(fsRoot, 'lines.txt');
+    await c.invoke('fs.write', { path: appendedPath, data: 'line1\n' });
+    await c.invoke('fs.write', { path: appendedPath, data: 'line2\n', append: true });
+    const appended = await c.invoke('fs.read', { path: appendedPath });
+    assert.equal(appended.data.data, 'line1\nline2\n', 'append 应追加');
+
+    // 6. 白名单越界 → E_ACL_DENIED
+    const outsidePath = process.platform === 'win32' ? 'C:\\Windows\\win.ini' : '/etc/hosts';
+    const outside = await c.invoke('fs.stat', { path: outsidePath });
+    assert.equal(outside.status, 'failed', '越界路径应被拒绝');
+    assert.equal(outside.error.name, 'E_ACL_DENIED', `期望 E_ACL_DENIED，实际 ${outside.error.name}`);
+
+    c.close();
+  } finally {
+    child.kill();
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+
 async function main() {
   console.log('\nnodeagent 端到端测试\n');
   const agent = startAgent();
@@ -584,6 +713,9 @@ async function main() {
     // ---------- v4 无感体验 ----------
     await test('v4 局域网发现：UDP 广播可被发现', testDiscovery);
     await test('v4 断线自动重连：被控端重启后自动恢复', testAutoReconnect);
+
+    // ---------- v5 文件传输 ----------
+    await test('v5 文件传输：写入→读回→列表→分块重组→append→白名单', testFileTransfer);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

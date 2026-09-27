@@ -4,6 +4,7 @@ import { systemInfo, systemStatus, processList, serviceList, shellExec, auditLis
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
 import { mouseMove, mouseClick, mouseScroll, keyType, keyPress, setInputPolicy } from './input.js';
+import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 
 export type CapabilityHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
@@ -13,6 +14,7 @@ export type CapabilityHandler = (args: Record<string, unknown>) => Promise<unkno
  */
 export function createCapabilityRegistry(cfg: AgentConfig): Record<string, CapabilityHandler> {
   setInputPolicy({ allowInput: cfg.allow_input === true });
+  setFsRoots(cfg.fs_roots);
   return {
     // v1 命令级
     [CapabilityNames.SystemInfo]: systemInfo,
@@ -33,5 +35,10 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.KeyPress]: keyPress,
     // v3+ 审计
     [CapabilityNames.AuditList]: auditList,
+    // v5 文件传输
+    [CapabilityNames.FsList]: fsList,
+    [CapabilityNames.FsStat]: fsStat,
+    [CapabilityNames.FsRead]: fsRead,
+    [CapabilityNames.FsWrite]: fsWrite,
   };
 }

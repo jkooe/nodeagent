@@ -46,6 +46,12 @@ export interface AgentConfig {
     /** 广播间隔毫秒（默认 5000） */
     interval_ms?: number;
   };
+  /**
+   * v5：文件访问白名单（根目录列表）。
+   * 为空或缺省 = 不限制（访问控制完全交给 v3 的能力级 ACL）；
+   * 非空 = 只允许读写这些目录之下的路径。
+   */
+  fs_roots?: string[];
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */
