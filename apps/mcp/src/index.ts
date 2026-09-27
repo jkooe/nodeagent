@@ -168,6 +168,21 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'na_audit',
+    description:
+      '查询被控端审计日志：谁在何时调用了什么能力、结果如何。用于安全审计与问题追溯，例如"最近谁在操作这台 Windows"。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: '返回条数，默认 20' },
+        since: { type: 'integer', description: '仅返回该 Unix 毫秒时间戳之后的记录' },
+        client_id: { type: 'string', description: '按调用方筛选' },
+        type: { type: 'string', enum: ['invoke', 'auth', 'acl', 'agent'], description: '按事件类别筛选' },
+      },
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /** MCP 工具入参 → 能力 args。 */
@@ -207,6 +222,7 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_process_list: CapabilityNames.ProcessList,
   na_service_list: CapabilityNames.ServiceList,
   na_screenshot: CapabilityNames.ScreenCapture,
+  na_audit: CapabilityNames.AuditList,
 };
 
 type Resolved = { capability: string; args: Record<string, unknown> } | { error: string };

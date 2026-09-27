@@ -25,7 +25,7 @@ nodeagent 让 Mac 上的 AI（WorkBuddy）通过统一协议接管局域网内�
 |---|---|
 | 协议 | JSON-RPC 2.0 over WebSocket，握手 `hello → challenge → auth → auth_ok` |
 | 鉴权 | 预共享密钥 + HMAC-SHA256 挑战-应答（防重放） |
-| 能力 | `system.*`(5) + `app.*`(2) + `screen.*`(2) + `input.*`(5，**默认禁用**) |
+| 能力 | `system.*`(6，含 `audit.list`) + `app.*`(2) + `screen.*`(2) + `input.*`(5，**默认禁用**) |
 | 接入 | CLI（调试底座）+ MCP（AI 落点） |
 
 ## 快速开始
@@ -68,6 +68,10 @@ node apps/cli/dist/index.js mouse move 500 300      # 移动鼠标（需被控�
 node apps/cli/dist/index.js mouse click 500 300
 node apps/cli/dist/index.js key type "hello world"  # 输入文本
 node apps/cli/dist/index.js key press ctrl s        # 组合键
+
+# 审计（v3+）
+node apps/cli/dist/index.js audit --limit 20                        # 最近 20 条操作记录
+node apps/cli/dist/index.js audit --type invoke --client-id mac_01  # 按类别/调用方筛选
 ```
 
 ### 3. 接入 WorkBuddy（MCP）
@@ -87,7 +91,7 @@ node apps/cli/dist/index.js key press ctrl s        # 组合键
 
 随后即可用自然语言调度，例如「Windows 上装个 VSCode」「看看 Windows 内存够不够」。
 
-MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`**
+MCP 工具：`na_status` · `na_system_info` · `na_exec` · `na_install` · `na_app_list` · `na_process_list` · `na_service_list` · **`na_screenshot`**（直接返回图片）· **`na_mouse`** · **`na_key`** · **`na_audit`**
 
 ## 开发
 
@@ -161,7 +165,8 @@ nodeagent/
 | **v1** | 命令级接管 + 装软件 + 查状态 + 基本鉴权 + CLI + MCP | ✅ 已实现 |
 | **v2** | 图形接管（`screen.*` 截屏 + `input.*` 键鼠）+ 输入控制开关 | ✅ 已实现 |
 | **v3** | 零信任：Ed25519 身份认证 + **能力级 ACL** | ✅ 已实现 |
-| **v3+** | 无感体验（自动发现 / 断线重连）+ 审计日志 | 规划中 |
+| **v3+** | **审计日志**（谁在何时调了什么 + 查询能力）+ **限速** | ✅ 已实现 |
+| **v4** | 无感体验（局域网自动发现 / 断线重连） | 规划中 |
 
 > **输入控制安全默认**：`input.*` 为高危能力，**默认禁用**。需在被控端 `agent.json` 设 `"allow_input": true` 重启后生效，或用 `install.ps1 -AllowInput` 安装。
 

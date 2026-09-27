@@ -21,6 +21,8 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
       配置并连接被控端（握手成功后打印能力清单）
 
   nodeagent keygen [--id mac_01]      生成 Ed25519 密钥对并输出被控端 ACL 配置片段 (v3 零信任)
+  nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
+                                      查询被控端审计日志 (v3+)
 
   nodeagent info                      查看系统信息 (system.info)
   nodeagent status                    查看资源状态 (system.status)
@@ -66,6 +68,10 @@ interface Options {
   interval?: string;
   /** v3：认证模式 psk | ed25519 */
   authMode?: string;
+  /** v3+ 审计查询 */
+  since?: string;
+  type?: string;
+  clientId?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -448,6 +454,38 @@ async function cmdKey(action: string | undefined, positionals: string[], opts: O
   }
 }
 
+// ---------- v3+ 审计 ----------
+
+async function cmdAudit(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.limit) args['limit'] = Number(opts.limit);
+  if (opts.since) args['since'] = Number(opts.since);
+  if (opts.type) args['type'] = opts.type;
+  if (opts.clientId) args['client_id'] = opts.clientId;
+
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.AuditList, args, opts.json, (data) => {
+      const d = data as { entries: Array<Record<string, unknown>>; total: number; file: string };
+      console.log(`审计文件: ${d.file}`);
+      console.log(`读取 ${d.total} 条，展示最新 ${d.entries.length} 条：\n`);
+      for (const e of d.entries) {
+        const ts = new Date(Number(e['ts'])).toLocaleString('zh-CN');
+        const cols = [
+          ts.padEnd(20),
+          String(e['type'] ?? '').padEnd(17),
+          String(e['client_id'] ?? '-').padEnd(10),
+          String(e['capability'] ?? '-').padEnd(20),
+          String(e['status'] ?? '-').padEnd(7),
+          e['duration_ms'] !== undefined ? `${e['duration_ms']}ms` : '',
+          e['error'] ? `err=${e['error']}` : '',
+          e['reason'] ? String(e['reason']) : '',
+        ];
+        console.log('  ' + cols.filter((x) => x !== '').join('  '));
+      }
+    }),
+  );
+}
+
 function parseOptions(rest: string[]): { opts: Options; positionals: string[] } {
   const { values, positionals } = parseArgs({
     args: rest,
@@ -469,6 +507,9 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       duration: { type: 'string' },
       interval: { type: 'string' },
       'auth-mode': { type: 'string' },
+      since: { type: 'string' },
+      type: { type: 'string' },
+      'client-id': { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -490,6 +531,9 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       duration: values['duration'] as string | undefined,
       interval: values['interval'] as string | undefined,
       authMode: values['auth-mode'] as string | undefined,
+      since: values['since'] as string | undefined,
+      type: values['type'] as string | undefined,
+      clientId: values['client-id'] as string | undefined,
     },
     positionals,
   };
@@ -549,6 +593,9 @@ async function main(): Promise<void> {
     }
     case 'keygen':
       await cmdKeygen(opts);
+      return;
+    case 'audit':
+      await cmdAudit(opts);
       return;
     case 'screen':
       await cmdScreen(opts);

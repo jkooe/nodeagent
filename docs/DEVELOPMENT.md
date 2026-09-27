@@ -302,6 +302,7 @@
 | 12 | `input.mouse.scroll` | 🔴🔒 | 滚轮滚动 | v2 |
 | 13 | `input.key.type` | 🔴🔒 | 输入文本（Unicode 逐字符） | v2 |
 | 14 | `input.key.press` | 🔴🔒 | 按下按键/组合键 | v2 |
+| 15 | `system.audit.list` | 🟢 | 查询审计日志（谁在何时调了什么） | v3+ |
 
 > 🔒 = 受 `allow_input` 开关管控，默认禁用。
 >
@@ -489,6 +490,33 @@
 | 握手成功 | `auth_ok.authorized` 下发授权子集，CLI 以 🟢/🚫 展示授权矩阵 |
 
 > **实测**：E2E 覆盖四项 —— 授权能力可调用 / 未授权能力被拒 / 未注册身份被拒 / 错误私钥被拒。
+
+### 6.5 审计与限速（v3+）
+
+**审计**：被控端把每次关键动作以 **JSONL** 追加写入 `<数据目录>/audit.log`；写入失败被吞掉，**绝不影响业务**。
+
+| 事件 | 记录内容 |
+|---|---|
+| `agent.start` / `agent.stop` | 启动参数、认证模式 |
+| `auth.success` / `auth.failure` | 调用方、来源 IP、失败原因 |
+| `invoke` | 调用方、能力、状态、耗时、参数摘要 |
+| `acl.denied` | 命中的 ACL 规则与原因 |
+| `rate.limited` | 超限的调用方与配额 |
+
+| 项 | 设计 |
+|---|---|
+| 轮转 | 单文件超 `max_bytes`（默认 10MB）即轮转，保留 `max_files`（默认 5）份 |
+| 脱敏 | 参数键含 `pass`/`token`/`secret`/`key`/`auth` → 替换为 `***`；字符串截断 200 字符 |
+| 参数记录 | 默认**仅记摘要**（`sha256` 前 16 位）；`log_args: true` 时才记脱敏预览 |
+| 查询 | 能力 `system.audit.list`（`limit`/`since`/`client_id`/`type`），CLI 为 `nodeagent audit` |
+
+**限速**：ACL 中的 `max_calls_per_min` 按调用方**滑动窗口**计数，超限返回 `E_RATE_LIMITED`(-32407)。
+
+```jsonc
+{ "client_id": "mac_01", "pubkey": "...", "allow": ["system.*"], "max_calls_per_min": 120 }
+```
+
+> **设计取舍**：审计只落被控端本地（不引入中心存储），既保持点对点架构的简洁，又满足「谁动过我的机器」这一核心诉求；集中式审计聚合留待 Hub 模式引入时再议。
 
 ---
 

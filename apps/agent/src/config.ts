@@ -24,6 +24,17 @@ export interface AgentConfig {
   auth_mode?: 'psk' | 'ed25519';
   /** v3：ed25519 模式下的能力级授权策略（默认拒绝） */
   acl?: AclPolicy;
+  /** v3+：审计日志配置 */
+  audit?: {
+    /** 是否启用（默认 true） */
+    enabled?: boolean;
+    /** 单文件上限字节（默认 10MB，超出即轮转） */
+    max_bytes?: number;
+    /** 保留的轮转文件数（默认 5） */
+    max_files?: number;
+    /** 是否记录参数预览（默认 false，仅记摘要；开启后自动脱敏） */
+    log_args?: boolean;
+  };
 }
 
 /** 数据目录：优先 NODEAGENT_HOME（跨平台一致），否则 ~/.nodeagent。 */

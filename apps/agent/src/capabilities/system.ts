@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { readAudit } from '../audit.js';
 
 type Args = Record<string, unknown>;
 
@@ -319,4 +320,16 @@ export async function shellExec(args: Args): Promise<unknown> {
     timeoutMs: (args['timeout_ms'] as number | undefined) ?? 30_000,
   });
   return r;
+}
+
+// ---------------- system.audit.list ----------------
+
+export async function auditList(args: Args): Promise<unknown> {
+  const result = readAudit({
+    limit: args['limit'] as number | undefined,
+    since: args['since'] as number | undefined,
+    clientId: args['client_id'] as string | undefined,
+    type: args['type'] as string | undefined,
+  });
+  return result;
 }

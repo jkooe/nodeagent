@@ -23,6 +23,7 @@ import {
   type InvokeParams,
 } from '@nodeagent/protocol';
 import { createCapabilityRegistry } from './capabilities/index.js';
+import { audit, describeArgs } from './audit.js';
 import type { AgentConfig } from './config.js';
 import type { TlsMaterial } from './certs.js';
 
@@ -35,6 +36,8 @@ interface ConnState {
   clientId: string | null;
   /** ed25519 模式：本次调用方被授权的能力清单；psk 模式为 null（不限制） */
   authorized: string[] | null;
+  /** 来源地址（审计用） */
+  remote: string;
 }
 
 export interface AgentServer {
@@ -50,6 +53,21 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
   /** v3：本次实例采用的认证模式（psk 向后兼容 / ed25519 零信任） */
   const authMode: 'psk' | 'ed25519' = cfg.auth_mode === 'ed25519' ? 'ed25519' : 'psk';
   const aclPolicy = cfg.acl ?? { default_effect: 'deny' as const, clients: [] };
+
+  /** 按调用方的滑动窗口限速（每分钟）。 */
+  const rateBuckets = new Map<string, number[]>();
+  function allowByRate(clientId: string, limitPerMin?: number): boolean {
+    if (!limitPerMin || limitPerMin <= 0) return true;
+    const now = Date.now();
+    const recent = (rateBuckets.get(clientId) ?? []).filter((t) => now - t < 60_000);
+    if (recent.length >= limitPerMin) {
+      rateBuckets.set(clientId, recent);
+      return false;
+    }
+    recent.push(now);
+    rateBuckets.set(clientId, recent);
+    return true;
+  }
   const levelOrder: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2 };
   const log = (level: LogLevel, msg: string): void => {
     if (levelOrder[level] >= levelOrder[cfg.log_level]) {
@@ -104,6 +122,7 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
       const client = aclPolicy.clients.find((c) => c.client_id === clientId);
       if (!client?.pubkey) {
         log('warn', `鉴权失败（调用方未注册）client_id=${clientId}`);
+        audit({ type: 'auth.failure', client_id: clientId, remote: state.remote, reason: '调用方未在 ACL 中注册' });
         sendError(ws, req.id, ErrorCodes.AUTH_FAILED, `调用方未在 ACL 中注册: ${clientId}`, {
           hint: '在被控端 acl.clients 中加入该 client_id 与公钥',
         });
@@ -112,6 +131,7 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
       }
       if (!verifyNonce(client.pubkey, state.nonce, params.signature ?? '')) {
         log('warn', `鉴权失败（Ed25519 验签不通过）client_id=${clientId}`);
+        audit({ type: 'auth.failure', client_id: clientId, remote: state.remote, reason: 'Ed25519 验签失败' });
         sendError(ws, req.id, ErrorCodes.AUTH_FAILED, 'Ed25519 签名校验失败');
         setTimeout(() => ws.close(), 100);
         return;
@@ -123,6 +143,7 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
       );
     } else if (!verifyHmac(cfg.key, state.nonce, params.hmac ?? '')) {
       log('warn', `鉴权失败 client_id=${clientId}`);
+      audit({ type: 'auth.failure', client_id: clientId, remote: state.remote, reason: '预共享密钥校验失败' });
       sendError(ws, req.id, ErrorCodes.AUTH_FAILED, '预共享密钥校验失败');
       // 稍作延迟再关闭，确保错误响应先送达控制端
       setTimeout(() => ws.close(), 100);
@@ -139,6 +160,12 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
       `鉴权通过 client_id=${clientId} mode=${authMode}` +
         (authorized ? `，授权 ${authorized.length}/${CAPABILITY_MANIFEST.length} 项能力` : ''),
     );
+    audit({
+      type: 'auth.success',
+      client_id: clientId,
+      remote: state.remote,
+      reason: `mode=${authMode}` + (authorized ? `, authorized=${authorized.length}` : ''),
+    });
     sendResult(ws, req.id, { capabilities: CAPABILITY_MANIFEST, authorized, auth_mode: authMode });
   }
 
@@ -155,6 +182,14 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
       const authz = authorize(aclPolicy, state.clientId ?? '', name);
       if (!authz.allowed) {
         log('warn', `ACL 拒绝 client_id=${state.clientId} capability=${name} — ${authz.reason}`);
+        audit({
+          type: 'acl.denied',
+          client_id: state.clientId ?? undefined,
+          remote: state.remote,
+          capability: name,
+          status: 'denied',
+          reason: authz.reason,
+        });
         sendError(ws, req.id, ErrorCodes.ACL_DENIED, `无权限调用 ${name}`, {
           capability: name,
           client_id: state.clientId,
@@ -164,6 +199,25 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
         });
         return;
       }
+    }
+
+    // v3+：按调用方滑动窗口限速（来自 ACL 的 max_calls_per_min）
+    const clientRule = aclPolicy.clients.find((c) => c.client_id === state.clientId);
+    if (!allowByRate(state.clientId ?? '', clientRule?.max_calls_per_min)) {
+      log('warn', `限速拒绝 client_id=${state.clientId} capability=${name}`);
+      audit({
+        type: 'rate.limited',
+        client_id: state.clientId ?? undefined,
+        remote: state.remote,
+        capability: name,
+        status: 'denied',
+        reason: `超过 ${clientRule?.max_calls_per_min}/分钟`,
+      });
+      sendError(ws, req.id, ErrorCodes.RATE_LIMITED, `调用频率超限（上限 ${clientRule?.max_calls_per_min}/分钟）`, {
+        capability: name,
+        limit_per_min: clientRule?.max_calls_per_min,
+      });
+      return;
     }
 
     const cap = findCapability(name);
@@ -182,25 +236,45 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
 
     const finalArgs = applyDefaults(args, cap.params_schema);
     const started = Date.now();
+    const argsInfo = describeArgs(finalArgs);
     try {
       const data = await handler(finalArgs);
-      log('info', `invoke ${name} → ok (${Date.now() - started}ms)`);
+      const duration = Date.now() - started;
+      log('info', `invoke ${name} → ok (${duration}ms)`);
+      audit({
+        type: 'invoke',
+        client_id: state.clientId ?? undefined,
+        remote: state.remote,
+        capability: name,
+        status: 'ok',
+        duration_ms: duration,
+        ...argsInfo,
+      });
       sendResult(ws, req.id, { status: 'ok', data });
     } catch (err) {
-      if (err instanceof CapabilityError) {
-        log('warn', `invoke ${name} → failed: ${err.name}`);
-        sendResult(ws, req.id, {
-          status: 'failed',
-          error: { name: err.name, message: err.message, ...(err.data !== undefined ? { data: err.data } : {}) },
-        });
-      } else {
-        const msg = err instanceof Error ? err.message : String(err);
-        log('warn', `invoke ${name} → execution failed: ${msg}`);
-        sendResult(ws, req.id, {
-          status: 'failed',
-          error: { name: ErrorNames[ErrorCodes.EXECUTION_FAILED], message: msg },
-        });
-      }
+      const duration = Date.now() - started;
+      const isBiz = err instanceof CapabilityError;
+      const errName = isBiz ? err.name : ErrorNames[ErrorCodes.EXECUTION_FAILED];
+      const errMsg = err instanceof Error ? err.message : String(err);
+      log('warn', `invoke ${name} → ${isBiz ? 'failed' : 'execution failed'}: ${errMsg}`);
+      audit({
+        type: 'invoke',
+        client_id: state.clientId ?? undefined,
+        remote: state.remote,
+        capability: name,
+        status: 'failed',
+        duration_ms: duration,
+        error: errName,
+        ...argsInfo,
+      });
+      sendResult(ws, req.id, {
+        status: 'failed',
+        error: {
+          name: errName,
+          message: errMsg,
+          ...(isBiz && (err as CapabilityError).data !== undefined ? { data: (err as CapabilityError).data } : {}),
+        },
+      });
     }
   }
 
@@ -247,7 +321,14 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
   wss.on('connection', (ws, req) => {
     const remote = req.socket.remoteAddress ?? '?';
     log('info', `新连接: ${remote}`);
-    states.set(ws, { authenticated: false, nonce: null, nonceExpiresAt: 0, clientId: null, authorized: null });
+    states.set(ws, {
+      authenticated: false,
+      nonce: null,
+      nonceExpiresAt: 0,
+      clientId: null,
+      authorized: null,
+      remote,
+    });
     ws.on('message', (raw: RawData) => {
       void handleMessage(ws, raw.toString());
     });

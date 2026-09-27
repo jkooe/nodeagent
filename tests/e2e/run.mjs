@@ -150,9 +150,24 @@ async function testEd25519Acl() {
       key: '',
       log_level: 'warn',
       auth_mode: 'ed25519',
+      audit: { enabled: true, log_args: true },
       acl: {
         default_effect: 'deny',
-        clients: [{ client_id: 'ed_client', pubkey: kp.publicKey, allow: ['system.info'], deny: [] }],
+        clients: [
+          {
+            client_id: 'ed_client',
+            pubkey: kp.publicKey,
+            allow: ['system.info', 'system.audit.list'],
+            deny: [],
+          },
+          {
+            // 用于验证限速：每分钟仅 2 次
+            client_id: 'limited',
+            pubkey: kp.publicKey,
+            allow: ['system.info'],
+            max_calls_per_min: 2,
+          },
+        ],
       },
     }),
   );
@@ -186,11 +201,11 @@ async function testEd25519Acl() {
     }
     if (!ready) throw new Error('ed25519 被控端未就绪');
 
-    // 1. 合法身份：握手成功，且只授权 system.info
+    // 1. 合法身份：握手成功，且只授权 system.info / system.audit.list
     const c = mk('ed_client', kp.privateKey);
     const caps = await c.connect();
-    assert.ok(caps.length >= 14, `能力清单应完整返回，实际 ${caps.length}`);
-    assert.deepEqual(c.listAuthorized(), ['system.info'], '授权清单应仅含 system.info');
+    assert.ok(caps.length >= 15, `能力清单应完整返回，实际 ${caps.length}`);
+    assert.deepEqual(c.listAuthorized(), ['system.info', 'system.audit.list'], '授权清单应与 ACL 一致');
     const allowed = await c.invoke('system.info');
     assert.equal(allowed.status, 'ok', '已授权能力应可调用');
 
@@ -202,9 +217,39 @@ async function testEd25519Acl() {
         return true;
       },
     );
+
+    // 3. 审计：前述调用应被记录，且 ACL 拒绝也在册
+    const auditRes = await c.invoke('system.audit.list', { limit: 50 });
+    assert.equal(auditRes.status, 'ok', '审计查询应可用');
+    const entries = auditRes.data.entries;
+    assert.ok(entries.some((e) => e.type === 'auth.success'), '应记录 auth.success');
+    assert.ok(
+      entries.some((e) => e.type === 'invoke' && e.capability === 'system.info' && e.status === 'ok'),
+      '应记录成功的 invoke',
+    );
+    assert.ok(entries.some((e) => e.type === 'acl.denied' && e.capability === 'system.shell.exec'), '应记录 ACL 拒绝');
+    // 脱敏：log_args 开启时记录预览，且敏感键被替换
+    const withPreview = entries.find((e) => e.args_preview);
+    assert.ok(withPreview, '开启 log_args 后应有参数预览');
     c.close();
 
-    // 3. 未注册的调用方 → 握手失败
+    // 4. 限速：limited 配额 2/分钟，第 3 次应被拒
+    const lim = mk('limited', kp.privateKey);
+    await lim.connect();
+    const r1 = await lim.invoke('system.info');
+    const r2 = await lim.invoke('system.info');
+    assert.equal(r1.status, 'ok');
+    assert.equal(r2.status, 'ok');
+    await assert.rejects(
+      () => lim.invoke('system.info'),
+      (e) => {
+        assert.equal(e.code, -32407, `期望 -32407（限速），实际 ${e.code}`);
+        return true;
+      },
+    );
+    lim.close();
+
+    // 5. 未注册的调用方 → 握手失败
     await assert.rejects(
       () => mk('ghost', kp.privateKey).connect(),
       (e) => {
@@ -213,7 +258,7 @@ async function testEd25519Acl() {
       },
     );
 
-    // 4. 私钥与登记公钥不匹配（验签失败）→ 握手失败
+    // 6. 私钥与登记公钥不匹配（验签失败）→ 握手失败
     await assert.rejects(
       () => mk('ed_client', other.privateKey).connect(),
       (e) => {
@@ -240,7 +285,7 @@ async function main() {
       const c = await connect();
       const caps = c.listCapabilities();
       c.close();
-      assert.ok(caps.length >= 14, `期望至少 14 项能力，实际 ${caps.length}`);
+      assert.ok(caps.length >= 15, `期望至少 15 项能力，实际 ${caps.length}`);
       for (const name of ['system.shell.exec', 'app.install', 'screen.capture', 'input.mouse.click']) {
         assert.ok(
           caps.some((x) => x.name === name),
@@ -411,7 +456,7 @@ async function main() {
     });
 
     // ---------- v3 零信任 ----------
-    await test('v3 Ed25519 认证 + 能力级 ACL（授权/拒绝/未注册/错误私钥）', testEd25519Acl);
+    await test('v3 零信任：Ed25519 认证 + ACL 授权/拒绝 + 审计留痕 + 限速', testEd25519Acl);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

@@ -1,6 +1,6 @@
 import { CapabilityNames } from '@nodeagent/protocol';
 import type { AgentConfig } from '../config.js';
-import { systemInfo, systemStatus, processList, serviceList, shellExec } from './system.js';
+import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList } from './system.js';
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
 import { mouseMove, mouseClick, mouseScroll, keyType, keyPress, setInputPolicy } from './input.js';
@@ -31,5 +31,7 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.MouseScroll]: mouseScroll,
     [CapabilityNames.KeyType]: keyType,
     [CapabilityNames.KeyPress]: keyPress,
+    // v3+ 审计
+    [CapabilityNames.AuditList]: auditList,
   };
 }

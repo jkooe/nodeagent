@@ -17,6 +17,8 @@ export const CapabilityNames = {
   MouseScroll: 'input.mouse.scroll',
   KeyType: 'input.key.type',
   KeyPress: 'input.key.press',
+  // v3+ 审计
+  AuditList: 'system.audit.list',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -436,6 +438,32 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     returns_schema: {
       type: 'object',
       properties: { pressed: { type: 'boolean' }, keys: { type: 'array', items: { type: 'string' } } },
+    },
+  },
+
+  // ---------- v3+ 审计 ----------
+  {
+    name: CapabilityNames.AuditList,
+    version: '1.0',
+    description: '查询被控端审计日志：谁在何时调用了什么能力、结果如何',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', default: 50, minimum: 1, maximum: 1000 },
+        since: { type: 'integer', description: '仅返回该时间戳（Unix 毫秒）之后的记录' },
+        client_id: { type: 'string', description: '按调用方筛选' },
+        type: { type: 'string', enum: ['invoke', 'auth', 'acl', 'agent'], description: '按事件类别筛选' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        entries: { type: 'array', items: { type: 'object' } },
+        total: { type: 'integer', description: '本次读取的总条数（未截断前）' },
+        file: { type: 'string', description: '审计文件路径' },
+      },
     },
   },
 ];
