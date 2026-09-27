@@ -324,6 +324,7 @@ nodeagent/
 
 - [产品需求文档（PRD）](./PRD.md)
 - [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md) —— 协议细节、能力 schema、安全模型、各端实现指南
+- [**跨机接管的边界与局限**](./docs/REMOTE-LIMITS.md) —— 哪些问题能远程修、哪些必须人工，附真实故障诊断案例
 
 ## 关键决策
 
