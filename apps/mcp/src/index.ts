@@ -20,6 +20,8 @@ function log(msg: string): void {
 // ---------- 被控端连接（懒加载 + 断线重置） ----------
 
 let client: NodeAgentClient | null = null;
+/** 会话级目标设备（na_use 切换；不影响 CLI 的默认设备配置）。 */
+let sessionNode: string | null = null;
 
 async function ensureClient(): Promise<NodeAgentClient> {
   if (client) return client;
@@ -29,7 +31,7 @@ async function ensureClient(): Promise<NodeAgentClient> {
   }
   let target;
   try {
-    target = resolveTarget(cfg);
+    target = resolveTarget(cfg, sessionNode ?? undefined);
   } catch (err) {
     throw new Error(err instanceof Error ? err.message : String(err));
   }
@@ -42,6 +44,7 @@ async function ensureClient(): Promise<NodeAgentClient> {
     insecure: profile.insecure,
     authMode: profile.auth_mode,
     privateKey: keys?.privateKey,
+    hub: profile.hub ? { token: profile.hub.token, nodeId: profile.hub.node_id } : undefined,
   });
   await c.connect();
   log(`已连接被控端 ${target.name} ${profile.host}:${profile.port}（${profile.auth_mode ?? 'psk'}）`);
@@ -257,6 +260,35 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: 'na_fs_stat',
+    description: '查看被控端文件或目录的元信息（类型 / 大小 / 修改时间），用于读文件前先判断类型与大小。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '文件或目录绝对路径' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_nodes',
+    description: '列出已配置的 nodeagent 被控端设备（● 为当前默认设备）。多台 Windows 时使用。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'na_use',
+    description: '切换本次会话的目标设备（不影响 CLI 的默认设备）。用户说"切换到某台机器"时使用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: '设备名（用 na_nodes 查看）' },
+      },
+      required: ['name'],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 /** MCP 工具入参 → 能力 args。 */
@@ -300,6 +332,7 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_fs_list: CapabilityNames.FsList,
   na_fs_read: CapabilityNames.FsRead,
   na_fs_write: CapabilityNames.FsWrite,
+  na_fs_stat: CapabilityNames.FsStat,
 };
 
 type Resolved = { capability: string; args: Record<string, unknown> } | { error: string };
@@ -377,6 +410,45 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const name = request.params.name;
   const input = (request.params.arguments ?? {}) as Record<string, unknown>;
+
+  // na_nodes：列出已配置设备（不经过被控端连接）
+  if (name === 'na_nodes') {
+    const cfg = loadConfig();
+    if (!cfg || Object.keys(cfg.nodes).length === 0) {
+      return { content: [{ type: 'text', text: '尚未配置任何设备。请先用 nodeagent connect 添加。' }] };
+    }
+    const lines = Object.entries(cfg.nodes).map(([n, p]) => {
+      const mark = n === (sessionNode ?? cfg.current) ? '●' : ' ';
+      const via = p.hub ? `经 Hub ${p.host}:${p.port}` : `${p.host}:${p.port}`;
+      return `${mark} ${n} — ${via}（${p.auth_mode ?? 'psk'}）${p.note ? `  ${p.note}` : ''}`;
+    });
+    return {
+      content: [{ type: 'text', text: `已配置 ${lines.length} 台设备（● = 当前目标）：\n${lines.join('\n')}` }],
+    };
+  }
+
+  // na_use：会话级切换目标设备（下次调用生效，不影响 CLI 的默认设备）
+  if (name === 'na_use') {
+    const targetName = String(input['name'] ?? '');
+    const cfg = loadConfig();
+    if (!cfg?.nodes[targetName]) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: `未配置的设备: ${targetName}；已配置：${Object.keys(cfg?.nodes ?? {}).join(', ') || '（空）'}`,
+          },
+        ],
+      };
+    }
+    sessionNode = targetName;
+    client = null; // 下次调用时按新设备重连
+    const p = cfg.nodes[targetName]!;
+    return {
+      content: [{ type: 'text', text: `已切换目标设备为「${targetName}」→ ${p.host}:${p.port}` }],
+    };
+  }
 
   // na_discover：本地 UDP 监听，不经过被控端连接
   if (name === 'na_discover') {

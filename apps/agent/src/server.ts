@@ -59,6 +59,8 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
   /** v3：本次实例采用的认证模式（psk 向后兼容 / ed25519 零信任） */
   const authMode: 'psk' | 'ed25519' = cfg.auth_mode === 'ed25519' ? 'ed25519' : 'psk';
   const aclPolicy = cfg.acl ?? { default_effect: 'deny' as const, clients: [] };
+  /** 只要配置了 ACL 就启用能力级授权（无论 psk 还是 ed25519）。 */
+  const hasAcl = Boolean(cfg.acl?.clients?.length);
 
   /** 按调用方的滑动窗口限速（每分钟）。 */
   const rateBuckets = new Map<string, number[]>();
@@ -180,8 +182,9 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     const params = req.params as InvokeParams | undefined;
     const name = params?.capability ?? '';
 
-    // v3：ed25519 模式下执行能力级 ACL 校验（deny 优先 → allow → 默认拒绝）
-    if (authMode === 'ed25519') {
+    // 能力级 ACL：只要被控端配置了 ACL 即执行（deny 优先 → allow → 默认拒绝）。
+    // 注：psk 模式下 client_id 由客户端自报，此为「配置级约束」；对抗恶意调用方仍需 ed25519 绑定身份。
+    if (hasAcl) {
       const authz = authorize(aclPolicy, state.clientId ?? '', name);
       if (!authz.allowed) {
         log('warn', `ACL 拒绝 client_id=${state.clientId} capability=${name} — ${authz.reason}`);

@@ -134,31 +134,54 @@ export interface AuditQuery {
   type?: string;
 }
 
-/** 读取审计记录（取最新 limit 条，按时间升序返回）。 */
-export function readAudit(query: AuditQuery = {}): { entries: AuditEntry[]; total: number; file: string } {
-  const p = auditFilePath();
-  if (!existsSync(p)) return { entries: [], total: 0, file: p };
-
-  let entries: AuditEntry[] = [];
+function readEntriesFromFile(file: string): AuditEntry[] {
+  if (!existsSync(file)) return [];
+  const out: AuditEntry[] = [];
   try {
-    const lines = readFileSync(p, 'utf8').split('\n');
+    const lines = readFileSync(file, 'utf8').split('\n');
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        entries.push(JSON.parse(line) as AuditEntry);
+        out.push(JSON.parse(line) as AuditEntry);
       } catch {
         /* 跳过损坏行 */
       }
     }
   } catch {
-    return { entries: [], total: 0, file: p };
+    /* 单文件读取失败不影响整体 */
   }
+  return out;
+}
 
-  const total = entries.length;
-  if (query.since !== undefined) entries = entries.filter((e) => e.ts > query.since!);
-  if (query.clientId) entries = entries.filter((e) => e.client_id === query.clientId);
-  if (query.type) entries = entries.filter((e) => e.type.startsWith(query.type!));
+/**
+ * 读取审计记录（取最新 limit 条，按时间升序返回）。
+ * 会同时读取轮转文件（audit.log.1/.2/…），避免历史记录被遗漏。
+ */
+export function readAudit(query: AuditQuery = {}): { entries: AuditEntry[]; total: number; file: string } {
+  const p = auditFilePath();
+  if (!existsSync(p)) return { entries: [], total: 0, file: p };
 
   const limit = Math.max(1, Math.min(query.limit ?? 50, 1000));
-  return { entries: entries.slice(-limit), total, file: p };
+
+  // 收集候选文件：当前文件 + 轮转文件（从新到旧）
+  const files: string[] = [p];
+  for (let i = 1; i <= 20 && existsSync(`${p}.${i}`); i += 1) files.push(`${p}.${i}`);
+
+  const collected: AuditEntry[] = [];
+  let total = 0;
+  for (const f of files) {
+    const list = readEntriesFromFile(f);
+    total += list.length;
+    for (const e of list) {
+      if (query.since !== undefined && e.ts <= query.since) continue;
+      if (query.clientId && e.client_id !== query.clientId) continue;
+      if (query.type && !e.type.startsWith(query.type)) continue;
+      collected.push(e);
+    }
+    // 已凑够需要的条数，可提前停止（避免无谓地读完所有轮转文件）
+    if (collected.length >= limit) break;
+  }
+
+  collected.sort((a, b) => a.ts - b.ts);
+  return { entries: collected.slice(-limit), total, file: p };
 }

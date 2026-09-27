@@ -18,6 +18,32 @@ function requireWindows(capability: string): void {
 
 // ---------------- app.list ----------------
 
+interface AppEntry {
+  name: string;
+  version: string;
+  publisher: string;
+  source: string;
+}
+
+/** 商店 / UWP 应用（补充注册表卸载项之外的应用；失败不阻塞主清单）。 */
+async function listUwpApps(): Promise<AppEntry[]> {
+  const script =
+    "Get-AppxPackage | Where-Object {$_.SignatureKind -ne 'System' -and $_.IsFramework -eq $false} | " +
+    'Select-Object Name,Version,Publisher | ConvertTo-Json -Compress';
+  const r = await execCommand({ command: script, timeoutMs: 60_000 }).catch(() => null);
+  if (!r || r.exit_code !== 0 || !r.stdout) return [];
+  try {
+    return toArray<{ Name?: string; Version?: string; Publisher?: string }>(JSON.parse(r.stdout)).map((a) => ({
+      name: a.Name ?? '',
+      version: a.Version ?? '',
+      publisher: a.Publisher ?? '',
+      source: 'store',
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function appList(args: Args): Promise<unknown> {
   requireWindows('app.list');
   const pattern = (args['filter'] as { name_pattern?: string } | undefined)?.name_pattern;
@@ -32,7 +58,7 @@ export async function appList(args: Args): Promise<unknown> {
     '$items | Sort-Object DisplayName -Unique | ConvertTo-Json -Compress';
 
   const r = await execCommand({ command: script, timeoutMs: 60_000 });
-  let apps = toArray<{ DisplayName?: string; DisplayVersion?: string; Publisher?: string }>(
+  const apps: AppEntry[] = toArray<{ DisplayName?: string; DisplayVersion?: string; Publisher?: string }>(
     r.stdout ? JSON.parse(r.stdout) : [],
   ).map((a) => ({
     name: a.DisplayName ?? '',
@@ -41,11 +67,22 @@ export async function appList(args: Args): Promise<unknown> {
     source: 'registry',
   }));
 
+  // 合并商店 / UWP 应用：以注册表为准，补充其中没有的
+  const uwp = await listUwpApps();
+  const seen = new Set(apps.map((a) => a.name.toLowerCase()));
+  for (const item of uwp) {
+    if (item.name && !seen.has(item.name.toLowerCase())) {
+      seen.add(item.name.toLowerCase());
+      apps.push(item);
+    }
+  }
+
+  let result = apps;
   if (pattern) {
     const re = new RegExp(pattern, 'i');
-    apps = apps.filter((a) => re.test(a.name));
+    result = result.filter((a) => re.test(a.name));
   }
-  return { apps };
+  return { apps: result, total: result.length, sources: ['registry', 'store'] };
 }
 
 // ---------------- app.install ----------------

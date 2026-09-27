@@ -14,7 +14,9 @@ async function main(): Promise<void> {
   console.log(`  Hub 令牌  : ${config.token}`);
   console.log('');
   console.log('  被控端接入 : 在 agent.json 配置 hub: { url, token } 后启动 agent');
-  console.log(`  控制端接入 : nodeagent connect <hub-主机> --port ${config.port} --hub --key <设备密钥>`);
+  console.log(
+    `  控制端接入 : nodeagent connect <hub-主机> --port ${config.port} --hub-token <Hub 令牌> --hub-node <设备ID> --key <设备密钥>`,
+  );
   console.log('');
   console.log('  安全说明   : Hub 只透传字节流，不解析内容 ——');
   console.log('               控制端与被控端仍执行自有握手，Hub 无法解密或伪造。');
