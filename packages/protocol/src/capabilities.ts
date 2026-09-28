@@ -30,6 +30,12 @@ export const CapabilityNames = {
   WindowList: 'window.list',
   WindowFocus: 'window.focus',
   ScreenFind: 'screen.find',
+  // v10 异步任务与剪贴板
+  TaskList: 'system.task.list',
+  TaskGet: 'system.task.get',
+  TaskKill: 'system.task.kill',
+  ClipGet: 'clip.get',
+  ClipSet: 'clip.set',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -194,8 +200,8 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
   },
   {
     name: CapabilityNames.ShellExec,
-    version: '1.0',
-    description: '执行 PowerShell / cmd 命令并返回退出码与输出',
+    version: '1.1',
+    description: '执行 PowerShell / cmd 命令并返回退出码与输出；async:true 时转后台任务立即返回 task_id',
     risk: 'high',
     params_schema: {
       type: 'object',
@@ -204,6 +210,8 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         shell: { type: 'string', enum: ['powershell', 'cmd'], default: 'powershell' },
         cwd: { type: 'string', description: '工作目录（可选）' },
         timeout_ms: { type: 'integer', default: 30000, minimum: 1000, maximum: 300000 },
+        async: { type: 'boolean', default: false, description: '后台执行，立即返回 task_id（用 system.task.* 管理）' },
+        wait_forever: { type: 'boolean', default: false, description: '仅 async 模式：不设超时（timeout_ms 失效）' },
       },
       required: ['command'],
       additionalProperties: false,
@@ -737,6 +745,110 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
           },
         },
       },
+    },
+  },
+  {
+    name: CapabilityNames.TaskList,
+    version: '1.0',
+    description: '列出当前后台异步任务（system.shell.exec 以 async:true 启动的命令）。',
+    risk: 'low',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              task_id: { type: 'string' },
+              command: { type: 'string', description: '命令（sha256 摘要后前 8 位）' },
+              state: { type: 'string', description: 'running | done | killed | failed' },
+              started_at: { type: 'integer' },
+              duration_ms: { type: 'integer' },
+              exit_code: { type: 'integer' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.TaskGet,
+    version: '1.0',
+    description:
+      '查询异步任务状态与输出。任务结束后仍可查询（保留最近 N 条），输出支持增量读取（offset）。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        stream: { type: 'string', enum: ['stdout', 'stderr'], default: 'stdout' },
+        offset: {
+          type: 'integer',
+          description: '从输出的第 offset 字节开始读（增量拉取）',
+          default: 0,
+        },
+        max_bytes: { type: 'integer', default: 262144 },
+      },
+      required: ['task_id'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        task_id: { type: 'string' },
+        state: { type: 'string' },
+        exit_code: { type: 'integer' },
+        started_at: { type: 'integer' },
+        duration_ms: { type: 'integer' },
+        data: { type: 'string', description: '本次读取到的输出片段' },
+        offset: { type: 'integer', description: '已读到的字节位置（下次续读用）' },
+        total_bytes: { type: 'integer' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.TaskKill,
+    version: '1.0',
+    description: '强制终止一个后台异步任务（杀整棵进程树）。',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: { task_id: { type: 'string' } },
+      required: ['task_id'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { killed: { type: 'boolean' }, task_id: { type: 'string' } },
+    },
+  },
+  {
+    name: CapabilityNames.ClipGet,
+    version: '1.0',
+    description: '读取被控端剪贴板文本（Windows: Get-Clipboard；macOS: pbpaste）。',
+    risk: 'medium',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+    },
+  },
+  {
+    name: CapabilityNames.ClipSet,
+    version: '1.0',
+    description: '向被控端剪贴板写入文本（Windows: Set-Clipboard；macOS: pbcopy）。',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: { text: { type: 'string' } },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { written: { type: 'integer', description: '写入的字符数' } },
     },
   },
 ];

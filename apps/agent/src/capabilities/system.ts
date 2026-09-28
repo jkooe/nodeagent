@@ -3,6 +3,7 @@ import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { readAudit } from '../audit.js';
+import { startTask } from './task.js';
 
 type Args = Record<string, unknown>;
 
@@ -318,11 +319,29 @@ export async function shellExec(args: Args): Promise<unknown> {
   if (typeof command !== 'string' || command.length === 0) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'command 不能为空');
   }
+  const timeoutMs = (args['timeout_ms'] as number | undefined) ?? 30_000;
+
+  // 异步模式：立即返回 task_id，长命令用 system.task.* 查询/续读/终止
+  if (args['async'] === true) {
+    const rec = startTask({
+      command,
+      shell: args['shell'] as never,
+      cwd: args['cwd'] as string | undefined,
+      timeoutMs: args['wait_forever'] === true ? 0 : timeoutMs,
+    });
+    return {
+      async: true,
+      task_id: rec.id,
+      state: rec.state,
+      hint: '用 system.task.get 增量读取输出，system.task.kill 终止',
+    };
+  }
+
   const r = await execCommand({
     command,
     shell: args['shell'] as never,
     cwd: args['cwd'] as string | undefined,
-    timeoutMs: (args['timeout_ms'] as number | undefined) ?? 30_000,
+    timeoutMs,
   });
   return r;
 }
@@ -383,8 +402,15 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
   //   4) 【本方案】计划任务，action = cmd /c「延时 → 杀旧 → 直接跑 node」
   //      —— Task Scheduler 会持有 cmd 进程，cmd 再持有 node 进程，
   //         整条链与旧 agent 完全无关，且不依赖桌面会话。
-  const LOG = 'C:\\Windows\\Temp\\nodeagent-restart.log';
+  // ⚠️ 日志文件必须唯一（带时间戳）：重启任务用 `>> LOG` 启动新 agent，
+  //    新 agent 会**长期持有该文件的 stdout 句柄**。若下次重启仍写同一文件，
+  //    所有带该重定向的命令会因句柄冲突被整体跳过（包括 taskkill！）——
+  //    表现为「restart 返回 ok 但实际什么都没发生」（真机实证：Result=1、
+  //    无日志写入、旧进程幸存）。
+  const LOG = `C:\\Windows\\Temp\\nodeagent-restart-${Date.now()}.log`;
   const steps = [
+    // 清理历史重启日志（正被运行中 agent 持有的会静默失败，无妨）
+    'del /q "C:\\Windows\\Temp\\nodeagent-restart-*.log" >nul 2>&1',
     `echo [%TIME%] begin > "${LOG}" 2>&1`,
     'ping -n 3 127.0.0.1 >nul',
     `echo [%TIME%] killing ${p.pid} >> "${LOG}" 2>&1`,
