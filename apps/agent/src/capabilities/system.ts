@@ -284,8 +284,12 @@ export async function serviceList(args: Args): Promise<unknown> {
   const filter = args['filter'] as { name_pattern?: string; state?: string } | undefined;
 
   const r = await execCommand({
+    // 注意：Get-Service 的 Status/StartType 是 .NET 枚举，直接 ConvertTo-Json 会退化为
+    // 数字（如 4=Running、1=Stopped），必须显式 ToString() 才能得到可读状态。
     command:
-      'Get-Service | Select-Object Name,DisplayName,Status,StartType | ConvertTo-Json -Compress',
+      'Get-Service | Select-Object Name,DisplayName,' +
+      "@{n='Status';e={$_.Status.ToString()}},@{n='StartType';e={$_.StartType.ToString()}} | " +
+      'ConvertTo-Json -Compress',
     timeoutMs: 30_000,
   });
   let services = toArray<{ Name?: string; DisplayName?: string; Status?: string | number; StartType?: string | number }>(
@@ -394,14 +398,24 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
   // 导致 agent 读不到配置而回退到默认端口 → EADDRINUSE。故此处不加空格。
   const cmdLine = '/c ' + (p.home ? `set NODEAGENT_HOME=${p.home}& ` : '') + steps.join(' & ');
 
-  const TASK = 'nodeagent-selfrestart';
+  // ⚠️ 任务名必须唯一（带时间戳）：重启任务的 cmd 会一直持有新 agent 进程，
+  //    任务因此长期处于 Running 状态；若沿用固定名，下次 restart 的
+  //    Unregister/Register 会静默失败（任务无法覆盖正在运行的实例），
+  //    导致「restart 返回成功但实际没有重启」（真机踩过）。
+  const TASK = `nodeagent-selfrestart-${Date.now()}`;
   const ps = [
     `$ErrorActionPreference='SilentlyContinue'`,
-    `Unregister-ScheduledTask -TaskName '${TASK}' -Confirm:$false`,
+    // 清理历史 selfrestart 任务（保留 Running 的 —— 那正是当前 agent 的宿主）
+    `Get-ScheduledTask -TaskName 'nodeagent-selfrestart*' | Where-Object { $_.State -ne 'Running' } | Unregister-ScheduledTask -Confirm:$false`,
     `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdLine.replace(/'/g, "''")}'`,
     // 不限时（默认 72h 后强制结束），保证 node 能长期运行
     `$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)`,
-    `Register-ScheduledTask -TaskName '${TASK}' -Action $a -Settings $s -Force | Out-Null`,
+    // ⚠️ 必须用最高权限：agent 通常以管理员运行，普通权限的 taskkill 杀不掉它，
+    //    否则会出现「新进程起来了但端口被占（EADDRINUSE）」。
+    `$p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType Interactive`,
+    `Register-ScheduledTask -TaskName '${TASK}' -Action $a -Settings $s -Principal $p -Force | Out-Null`,
+    // 校验注册真的成功（SilentlyContinue 会吞错，必须显式确认）
+    `if ((Get-ScheduledTask -TaskName '${TASK}' -ErrorAction SilentlyContinue) -eq $null) { Write-Output 'register-failed'; exit 1 }`,
     `Start-ScheduledTask -TaskName '${TASK}'`,
     `Write-Output 'ok'`,
   ].join('; ');

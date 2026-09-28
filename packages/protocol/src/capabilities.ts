@@ -26,6 +26,10 @@ export const CapabilityNames = {
   FsWrite: 'fs.write',
   // v7 自持能力（受控重启）
   AgentRestart: 'system.agent.restart',
+  // v8 GUI 语义（窗口与元素定位）
+  WindowList: 'window.list',
+  WindowFocus: 'window.focus',
+  ScreenFind: 'screen.find',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -615,6 +619,116 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         delay_ms: { type: 'integer' },
         mechanism: { type: 'string', description: '使用的机制：scheduled-task / detached-spawn' },
         message: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.WindowList,
+    version: '1.0',
+    description:
+      '列出当前可见的顶层窗口（标题、所属进程、精确矩形、是否前台窗口）。' +
+      '配合 screen.capture 可在**已知窗口范围内**相对定位，避免全屏猜坐标。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        title_pattern: { type: 'string', description: '可选：按标题正则过滤' },
+        limit: { type: 'integer', default: 50 },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        windows: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              hwnd: { type: 'string', description: '窗口句柄（十六进制）' },
+              title: { type: 'string' },
+              process: { type: 'string' },
+              pid: { type: 'integer' },
+              x: { type: 'integer' },
+              y: { type: 'integer' },
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+              is_foreground: { type: 'boolean' },
+              is_minimized: { type: 'boolean' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.WindowFocus,
+    version: '1.0',
+    description: '将指定窗口（按标题正则或句柄）置前并聚焦，返回其精确矩形。',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '窗口标题（正则，匹配第一个）' },
+        hwnd: { type: 'string', description: '或直接给窗口句柄' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        hwnd: { type: 'string' },
+        title: { type: 'string' },
+        x: { type: 'integer' },
+        y: { type: 'integer' },
+        width: { type: 'integer' },
+        height: { type: 'integer' },
+        focused: { type: 'boolean' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.ScreenFind,
+    version: '1.0',
+    description:
+      '在界面中查找 UI 元素并返回其**屏幕坐标**（基于 Windows UI Automation）。' +
+      '可指定窗口范围与元素类型，返回中心点坐标，直接喂给 input.mouse.click。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '要查找的文本（匹配元素 Name，支持子串）' },
+        window: { type: 'string', description: '可选：限定在该窗口标题（正则）内查找' },
+        control_type: {
+          type: 'string',
+          description: '可选：限定控件类型，如 Button / MenuItem / Edit / Text / ListItem',
+        },
+        limit: { type: 'integer', default: 20 },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        matches: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string' },
+              control_type: { type: 'string' },
+              automation_id: { type: 'string' },
+              x: { type: 'integer', description: '中心点 X（屏幕坐标）' },
+              y: { type: 'integer', description: '中心点 Y（屏幕坐标）' },
+              left: { type: 'integer' },
+              top: { type: 'integer' },
+              width: { type: 'integer' },
+              height: { type: 'integer' },
+              window_title: { type: 'string' },
+            },
+          },
+        },
       },
     },
   },

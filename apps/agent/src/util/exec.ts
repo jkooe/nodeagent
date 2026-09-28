@@ -44,7 +44,12 @@ const PS_UTF8_PREFIX =
 function buildLaunch(command: string, shell: ShellKind): Launch {
   if (IS_WINDOWS) {
     if (shell === 'cmd') {
-      // cmd 的代码页需在命令内切换（chcp 65001），且须静默
+      // cmd 的代码页需在命令内切换（chcp 65001），且须静默。
+      //
+      // ⚠️ 已知局限（实测确认）：`chcp 65001` 只能改变**输出**代码页，
+      // 而 Node 传给 cmd.exe 的**命令行参数**在进入 cmd 时已按 ANSI（中文为 GBK）
+      // 解释，因此**命令字符串中的中文仍会损坏**（chcp 显示 65001 也无济于事）。
+      // 需要在命令里使用中文时，请改用默认的 powershell（那边已完整支持 UTF-8）。
       return { file: 'cmd.exe', args: ['/d', '/s', '/c', `chcp 65001 >nul & ${command}`] };
     }
     return {
