@@ -54,6 +54,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent exec "<命令>"              执行命令 (system.shell.exec)
   nodeagent apps                      列出已安装软件 (app.list)
   nodeagent install <包名|ID>          安装软件 (app.install)
+  nodeagent restart [--delay 2000]    受控重启被控端（配置变更后让自身生效）(v7)
   nodeagent list                      列出被控端可用能力
   nodeagent invoke <capability> [--args '<json>']   通用调用
 
@@ -111,6 +112,8 @@ interface Options {
   /** v6 Hub */
   hubToken?: string;
   hubNode?: string;
+  /** v7 受控重启：延时毫秒 */
+  delay?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -411,9 +414,25 @@ async function cmdExec(command: string, opts: Options): Promise<void> {
   await withClient((c) =>
     callAndPrint(c, CapabilityNames.ShellExec, { command }, opts.json, (data) => {
       const d = data as { exit_code: number; stdout: string; stderr: string; duration_ms: number; truncated: boolean };
+      // 命令自身的输出原样打到 stdout —— 保证 `nodeagent exec "..." | jq` 不被污染
       if (d.stdout) console.log(d.stdout);
       if (d.stderr) console.error(d.stderr);
-      console.log(`\n[退出码 ${d.exit_code} · ${d.duration_ms}ms${d.truncated ? ' · 输出已截断' : ''}]`);
+      // 诊断信息（退出码/耗时）走 stderr：终端下照常可见，管道里不干扰数据
+      console.error(
+        `[退出码 ${d.exit_code} · ${d.duration_ms}ms${d.truncated ? ' · 输出已截断' : ''}]`,
+      );
+    }),
+  );
+}
+
+async function cmdRestart(opts: Options): Promise<void> {
+  const delayMs = opts.delay ? Number(opts.delay) : 2000;
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.AgentRestart, { delay_ms: delayMs, reason: 'cli' }, opts.json, (data) => {
+      const d = data as { scheduled: boolean; delay_ms: number; mechanism: string; message: string };
+      console.log(`✓ ${d.message}`);
+      console.log(`  机制: ${d.mechanism}`);
+      console.log('  提示: 约 3~4 秒后重连，可执行 `nodeagent info` 验证是否已恢复');
     }),
   );
 }
@@ -813,6 +832,8 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       'create-dirs': { type: 'boolean', default: false },
       'hub-token': { type: 'string' },
       'hub-node': { type: 'string' },
+      // v7 受控重启
+      delay: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -840,6 +861,7 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       wait: values['wait'] as string | undefined,
       discoveryPort: values['discovery-port'] as string | undefined,
       node: values['node'] as string | undefined,
+      delay: values['delay'] as string | undefined,
       name: values['name'] as string | undefined,
       note: values['note'] as string | undefined,
       recursive: Boolean(values['recursive']),
@@ -896,6 +918,9 @@ async function main(): Promise<void> {
     }
     case 'apps':
       await cmdApps(opts);
+      return;
+    case 'restart':
+      await cmdRestart(opts);
       return;
     case 'install': {
       const pkg = positionals[0];

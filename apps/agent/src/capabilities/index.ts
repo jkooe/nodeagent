@@ -1,6 +1,6 @@
 import { CapabilityNames } from '@nodeagent/protocol';
 import type { AgentConfig } from '../config.js';
-import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList } from './system.js';
+import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList, agentRestart } from './system.js';
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
 import { mouseMove, mouseClick, mouseScroll, keyType, keyPress, setInputPolicy } from './input.js';
@@ -40,5 +40,7 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.FsStat]: fsStat,
     [CapabilityNames.FsRead]: fsRead,
     [CapabilityNames.FsWrite]: fsWrite,
+    // v7 自持能力
+    [CapabilityNames.AgentRestart]: agentRestart,
   };
 }

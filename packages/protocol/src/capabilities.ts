@@ -24,6 +24,8 @@ export const CapabilityNames = {
   FsStat: 'fs.stat',
   FsRead: 'fs.read',
   FsWrite: 'fs.write',
+  // v7 自持能力（受控重启）
+  AgentRestart: 'system.agent.restart',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -584,6 +586,35 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         written: { type: 'integer', description: '本次写入字节数' },
         total_bytes: { type: 'integer', description: '写入后的文件总大小' },
         path: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.AgentRestart,
+    version: '1.0',
+    description:
+      '受控重启被控端自身（延时后由独立进程/计划任务拉起，重启后自动沿用原配置）。' +
+      '解决「配置变更后无法让自身生效」的问题——不会因进程树清理而中断。',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        delay_ms: {
+          type: 'integer',
+          description: '延时多少毫秒后重启（默认 2000，给调用方留出返回结果的时间）',
+          default: 2000,
+        },
+        reason: { type: 'string', description: '可选：重启原因（写入审计日志）' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        scheduled: { type: 'boolean', description: '重启任务是否已排入' },
+        delay_ms: { type: 'integer' },
+        mechanism: { type: 'string', description: '使用的机制：scheduled-task / detached-spawn' },
+        message: { type: 'string' },
       },
     },
   },

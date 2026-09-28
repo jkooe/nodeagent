@@ -27,15 +27,36 @@ interface Launch {
   args: string[];
 }
 
+/**
+ * PowerShell 输出编码前缀。
+ *
+ * 背景：Node 侧统一按 UTF-8 解码子进程输出，但 Windows PowerShell 默认使用
+ * 控制台代码页（中文系统为 GBK/CP936）输出，导致中文变成 U+FFFD（）。
+ * 此处强制 PowerShell 用 UTF-8 输出，从根上消除乱码。
+ *
+ * 注：均为赋值语句，不产生任何 stdout，不会污染用户命令的输出。
+ */
+const PS_UTF8_PREFIX =
+  '[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);' +
+  '$OutputEncoding=[Console]::OutputEncoding;';
+
 /** 按平台与 shell 类型构造可执行文件与参数（数组传参，不拼 shell 字符串）。 */
 function buildLaunch(command: string, shell: ShellKind): Launch {
   if (IS_WINDOWS) {
     if (shell === 'cmd') {
-      return { file: 'cmd.exe', args: ['/d', '/s', '/c', command] };
+      // cmd 的代码页需在命令内切换（chcp 65001），且须静默
+      return { file: 'cmd.exe', args: ['/d', '/s', '/c', `chcp 65001 >nul & ${command}`] };
     }
     return {
       file: 'powershell.exe',
-      args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
+      args: [
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        PS_UTF8_PREFIX + command,
+      ],
     };
   }
   const bin = shell === 'zsh' ? '/bin/zsh' : '/bin/bash';
@@ -59,7 +80,13 @@ export function execCommand(opts: ExecOptions): Promise<ExecResult> {
         cwd,
         detached: !IS_WINDOWS, // POSIX: 独立进程组，便于整组杀死
         windowsHide: true,
-        env: process.env,
+        env: {
+          ...process.env,
+          // 统一子进程输出为 UTF-8（Node 侧按 UTF-8 解码，二者须一致）
+          PYTHONIOENCODING: 'utf-8',
+          LANG: process.env['LANG'] ?? 'en_US.UTF-8',
+          LC_ALL: process.env['LC_ALL'] ?? 'en_US.UTF-8',
+        },
       });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));

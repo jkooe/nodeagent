@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
@@ -320,6 +321,131 @@ export async function shellExec(args: Args): Promise<unknown> {
     timeoutMs: (args['timeout_ms'] as number | undefined) ?? 30_000,
   });
   return r;
+}
+
+// ---------------- system.agent.restart ----------------
+
+interface RestartParams {
+  nodeExe: string;
+  agentJs: string;
+  home: string;
+  pid: number;
+  delayMs: number;
+  reason: string;
+}
+
+/**
+ * 受控重启：延时后由「脱离当前进程组」的机制拉起新的 agent 进程。
+ *
+ * 背景（真实教训）：此前用 `Start-Process` 起的"分离进程"，会被本项目的
+ * killTree（超时强杀整棵进程树）连带清理 —— 导致重启失败、端口僵死、控制端彻底失联。
+ * 因此这里改用**计划任务**（Windows）/ detached+unref（POSIX），
+ * 二者均不属于当前进程树，可安全地在自身退出后继续执行。
+ */
+export async function agentRestart(args: Args): Promise<unknown> {
+  const delayMs = (args['delay_ms'] as number | undefined) ?? 2000;
+  const reason = (args['reason'] as string | undefined) ?? '';
+
+  const nodeExe = process.execPath;
+  const agentJs = process.argv[1] ?? '';
+  if (!agentJs) {
+    throw new CapabilityError(
+      ErrorCodes.EXECUTION_FAILED,
+      '无法定位 agent 入口（process.argv[1] 为空），拒绝重启以免进程无法拉起',
+    );
+  }
+  const params: RestartParams = {
+    nodeExe,
+    agentJs,
+    home: process.env['NODEAGENT_HOME'] ?? '',
+    pid: process.pid,
+    delayMs,
+    reason,
+  };
+
+  return IS_WINDOWS ? scheduleWindowsRestart(params) : detachedPosixRestart(params);
+}
+
+/** 把 PowerShell 脚本编码为 UTF-16LE base64，彻底规避引号/中文/换行的转义问题。 */
+function encodePowerShell(script: string): string {
+  return Buffer.from(script, 'utf16le').toString('base64');
+}
+
+async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
+  // 方案演进（均为真机实测后的结论）：
+  //   1) 计划任务 + `start "" node.exe`  → 失败：Session 0 无桌面，start 拉不起进程
+  //   2) detached spawn + `start /B`     → 失败：cmd 退出即带走子进程
+  //   3) detached spawn + 直接跑 node    → 失败：detached cmd 随 agent 一起消失（日志文件都没生成）
+  //   4) 【本方案】计划任务，action = cmd /c「延时 → 杀旧 → 直接跑 node」
+  //      —— Task Scheduler 会持有 cmd 进程，cmd 再持有 node 进程，
+  //         整条链与旧 agent 完全无关，且不依赖桌面会话。
+  const LOG = 'C:\\Windows\\Temp\\nodeagent-restart.log';
+  const steps = [
+    `echo [%TIME%] begin > "${LOG}" 2>&1`,
+    'ping -n 3 127.0.0.1 >nul',
+    `echo [%TIME%] killing ${p.pid} >> "${LOG}" 2>&1`,
+    `taskkill /F /PID ${p.pid} >> "${LOG}" 2>&1`,
+    'ping -n 2 127.0.0.1 >nul',
+    `echo [%TIME%] launching >> "${LOG}" 2>&1`,
+    `"${p.nodeExe}" "${p.agentJs}" >> "${LOG}" 2>&1`,
+    `echo [%TIME%] exited code=%ERRORLEVEL% >> "${LOG}" 2>&1`,
+  ];
+  // 注意：`set X=Y & cmd` 中 `&` 前的空格会被算进变量值（变成 "Y "），
+  // 导致 agent 读不到配置而回退到默认端口 → EADDRINUSE。故此处不加空格。
+  const cmdLine = '/c ' + (p.home ? `set NODEAGENT_HOME=${p.home}& ` : '') + steps.join(' & ');
+
+  const TASK = 'nodeagent-selfrestart';
+  const ps = [
+    `$ErrorActionPreference='SilentlyContinue'`,
+    `Unregister-ScheduledTask -TaskName '${TASK}' -Confirm:$false`,
+    `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdLine.replace(/'/g, "''")}'`,
+    // 不限时（默认 72h 后强制结束），保证 node 能长期运行
+    `$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)`,
+    `Register-ScheduledTask -TaskName '${TASK}' -Action $a -Settings $s -Force | Out-Null`,
+    `Start-ScheduledTask -TaskName '${TASK}'`,
+    `Write-Output 'ok'`,
+  ].join('; ');
+
+  const r = await execCommand({
+    command: `powershell.exe -NoProfile -EncodedCommand ${encodePowerShell(ps)}`,
+    timeoutMs: 25_000,
+  });
+  if (r.exit_code !== 0) {
+    throw new CapabilityError(
+      ErrorCodes.EXECUTION_FAILED,
+      `注册重启任务失败（exit=${r.exit_code}）：${r.stderr || r.stdout}`,
+    );
+  }
+  return {
+    scheduled: true,
+    delay_ms: p.delayMs,
+    mechanism: 'scheduled-task',
+    message: `已排入计划任务 ${TASK}（约 ${Math.ceil(p.delayMs / 1000) + 2}s 后重启）`,
+  };
+}
+
+async function detachedPosixRestart(p: RestartParams): Promise<unknown> {
+  const cmd = [
+    'sleep 2',
+    `kill -9 ${p.pid} 2>/dev/null || true`,
+    'sleep 1',
+    p.home ? `NODEAGENT_HOME='${p.home}' nohup '${p.nodeExe}' '${p.agentJs}' >/dev/null 2>&1 &` : `nohup '${p.nodeExe}' '${p.agentJs}' >/dev/null 2>&1 &`,
+  ].join('; ');
+
+  // detached + unref：脱离当前进程组，父进程退出后仍继续
+  const child = spawn('/bin/sh', ['-c', cmd], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env },
+  });
+  child.unref();
+
+  return {
+    scheduled: true,
+    delay_ms: p.delayMs,
+    mechanism: 'detached-spawn',
+    message: `已启动分离的重启进程（约 ${Math.ceil(p.delayMs / 1000) + 2}s 后重启）`,
+  };
 }
 
 // ---------------- system.audit.list ----------------
