@@ -3,6 +3,7 @@ import type { AgentConfig } from '../config.js';
 import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList, agentRestart } from './system.js';
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
+import { windowList, windowFocus, screenFind } from './window.js';
 import { mouseMove, mouseClick, mouseScroll, keyType, keyPress, setInputPolicy } from './input.js';
 import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 
@@ -42,5 +43,9 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.FsWrite]: fsWrite,
     // v7 自持能力
     [CapabilityNames.AgentRestart]: agentRestart,
+    // v8 GUI 语义（窗口与元素定位）
+    [CapabilityNames.WindowList]: windowList,
+    [CapabilityNames.WindowFocus]: windowFocus,
+    [CapabilityNames.ScreenFind]: screenFind,
   };
 }
