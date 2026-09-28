@@ -278,6 +278,70 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'na_restart',
+    description:
+      '受控重启被控端（约 4 秒后生效，自动恢复原配置与端口）。配置变更后让 agent 自身生效时使用；' +
+      '重启期间连接会短暂中断，等待约 5 秒后即可继续调用其他工具。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        delay_ms: { type: 'integer', description: '延时毫秒（默认 2000）' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_window_list',
+    description:
+      '列出被控端当前可见的顶层窗口（标题 / 进程 / 精确矩形 / 是否前台）。' +
+      'GUI 操作第一步：先拿到窗口矩形，再在其范围内定位，避免全屏猜坐标。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title_pattern: { type: 'string', description: '可选：按标题正则过滤' },
+        limit: { type: 'integer', description: '返回上限（默认 50）' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_window_focus',
+    description: '将被控端的指定窗口（按标题正则）置前并聚焦，返回其精确矩形。点击某窗口内容之前先调用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: '窗口标题（正则，匹配第一个）' },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_screen_find',
+    description:
+      '在被控端界面中查找 UI 元素并返回其屏幕坐标（Windows UI Automation）。' +
+      '返回中心点 (x,y)，可直接配合 na_mouse 的 click 使用。找不到时自动降级为 OCR 截图识别（支持自绘 UI）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '要查找的文本（子串匹配，不区分大小写）' },
+        window: { type: 'string', description: '可选：限定在该窗口标题（正则）内查找' },
+        control_type: {
+          type: 'string',
+          description: '可选：控件类型，如 Button / MenuItem / Edit / ListItem（仅 UIA）',
+        },
+        method: {
+          type: 'string',
+          enum: ['auto', 'uia', 'ocr'],
+          description: 'auto=UIA 优先+OCR 兜底；uia=仅 UIA；ocr=仅截图识别',
+        },
+        limit: { type: 'integer', description: '返回上限（默认 20）' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_use',
     description: '切换本次会话的目标设备（不影响 CLI 的默认设备）。用户说"切换到某台机器"时使用。',
     inputSchema: {
@@ -333,6 +397,10 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_fs_read: CapabilityNames.FsRead,
   na_fs_write: CapabilityNames.FsWrite,
   na_fs_stat: CapabilityNames.FsStat,
+  na_restart: CapabilityNames.AgentRestart,
+  na_window_list: CapabilityNames.WindowList,
+  na_window_focus: CapabilityNames.WindowFocus,
+  na_screen_find: CapabilityNames.ScreenFind,
 };
 
 type Resolved = { capability: string; args: Record<string, unknown> } | { error: string };

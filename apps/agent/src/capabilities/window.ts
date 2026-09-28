@@ -222,7 +222,11 @@ function Get-WinByTitle([string]$re) {
 `;
 
 /**
- * 在界面中查找 UI 元素并返回屏幕坐标（UI Automation）。
+ * 在界面中查找 UI 元素并返回屏幕坐标。
+ *
+ * 两种引擎：
+ * - UIA（Windows UI Automation）：标准 Win32/WPF/WinForms 控件精确命中
+ * - OCR（Windows.Media.Ocr 截图识别）：自绘 UI（Electron/Qt/游戏）兜底
  *
  * 这是解决「看得到画面但读不懂界面」的关键能力：把元素名映射为可点击坐标。
  */
@@ -241,24 +245,12 @@ export async function screenFind(args: Args): Promise<unknown> {
   const windowTitle = args['window'] as string | undefined;
   const controlType = args['control_type'] as string | undefined;
   const limit = (args['limit'] as number | undefined) ?? 20;
+  const method = (args['method'] as string | undefined) ?? 'auto'; // auto | uia | ocr
 
-  const ctypeMap: Record<string, string> = {
-    Button: 'Button',
-    MenuItem: 'MenuItem',
-    Edit: 'Edit',
-    Text: 'Text',
-    ListItem: 'ListItem',
-    CheckBox: 'CheckBox',
-    RadioButton: 'RadioButton',
-    ComboBox: 'ComboBox',
-    Tab: 'TabItem',
-    TreeItem: 'TreeItem',
-    Hyperlink: 'Hyperlink',
-    Image: 'Image',
-  };
-  const ct = controlType ? ctypeMap[controlType] ?? controlType : '';
-
-  const script = `${FIND_SCRIPT_PRELUDE}
+  // ---------- UIA 引擎 ----------
+  const uiaFind = async (): Promise<Record<string, unknown>[]> => {
+    const ct = controlType ?? '';
+    const script = `${FIND_SCRIPT_PRELUDE}
 $text = ${JSON.stringify(text)}
 $limit = ${Number(limit)}
 $scope = [System.Windows.Automation.AutomationElement]::RootElement
@@ -288,14 +280,9 @@ foreach ($e in $found) {
   try {
     $r = $e.Current.BoundingRectangle
     if ($r.Width -le 0 -or $r.Height -le 0) { continue }
-    $wt = ''
-    try {
-      $tw = $e.Current.ControlType.ProgrammaticName
-      $wt = $tw
-    } catch {}
     $out.Add([pscustomobject]@{
       name = $e.Current.Name
-      control_type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\\.','')
+      control_type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\\\\.','')
       automation_id = $e.Current.AutomationId
       x = [int]($r.Left + $r.Width / 2)
       y = [int]($r.Top + $r.Height / 2)
@@ -306,7 +293,181 @@ foreach ($e in $found) {
 }
 $out | ConvertTo-Json -Compress
 `;
-  const out = await runPS(script, 60_000);
-  const matches = toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
-  return { matches: matches.slice(0, limit) };
+    const out = await runPS(script, 60_000);
+    return toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
+  };
+
+  // ---------- OCR 引擎（截图 → Windows.Media.Ocr → 文字坐标） ----------
+  const ocrFind = async (): Promise<Record<string, unknown>[]> => {
+    const script = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+Add-Type -AssemblyName System.Windows.Forms
+# DPI 感知：保证截图像素与窗口矩形同为物理坐标
+Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class NADPI { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
+[void][NADPI]::SetProcessDPIAware()
+
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Storage.Streams.DataWriter, Windows.Foundation, ContentType=WindowsRuntime]
+$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType=WindowsRuntime]
+
+# WinRT IAsyncOperation -> Task 等待辅助
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' })[0]
+function Await($WinRtTask, $ResultType) {
+  $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+  $netTask = $asTask.Invoke($null, @($WinRtTask))
+  $netTask.Wait(-1) | Out-Null
+  $netTask.Result
+}
+
+# 截图区域：指定窗口则截该窗口，否则整块虚拟屏
+$winRe = ${JSON.stringify(windowTitle ?? '')}
+$x = 0; $y = 0
+$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$w = $vs.Width; $h = $vs.Height
+if ($winRe -ne '') {
+  Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public class NAEnum {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+}
+"@
+  $found = [IntPtr]::Zero
+  $cb = [NAEnum+EnumProc]{
+    param($wh, $l)
+    if ([NAEnum]::IsWindowVisible($wh)) {
+      $sb = New-Object System.Text.StringBuilder 512
+      [void][NAEnum]::GetWindowTextW($wh, $sb, 512)
+      if ($sb.ToString() -match $winRe) { $script:found = $wh; return $false }
+    }
+    return $true
+  }
+  [void][NAEnum]::EnumWindows($cb, [IntPtr]::Zero)
+  if ($found -ne [IntPtr]::Zero) {
+    $r = New-Object NAEnum+RECT
+    [void][NAEnum]::GetWindowRect($found, [ref]$r)
+    $x = $r.Left; $y = $r.Top; $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
+  }
+}
+if ($w -le 0 -or $h -le 0) { Write-Output '[]'; exit 0 }
+
+$bmp = New-Object System.Drawing.Bitmap($w, $h)
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($x, $y, 0, 0, (New-Object System.Drawing.Size($w, $h)))
+$g.Dispose()
+$ms = New-Object System.IO.MemoryStream
+$bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+$bmp.Dispose()
+
+$ras = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+$writer = New-Object Windows.Storage.Streams.DataWriter($ras)
+$writer.WriteBytes($ms.ToArray())
+Await ($writer.StoreAsync()) ([UInt32]) | Out-Null
+$writer.DetachStream()
+
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ras)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$soft = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { Write-Output '[]'; exit 0 }
+$result = Await ($engine.RecognizeAsync($soft)) ([Windows.Media.Ocr.OcrResult])
+
+$text = ${JSON.stringify(text)}
+$limit = ${Number(limit)}
+# Windows OCR 会在中文字符间插入空格（如「我的加速」识别为「我 的 加 速」），
+# 因此匹配一律在「去除空白后」的文本上进行（两边同样处理）。
+$textPlain = ${JSON.stringify(text)}.Replace(' ','')
+if ($textPlain -eq '') { $textPlain = ($text -replace '\\s','') }
+$out = New-Object System.Collections.ArrayList
+foreach ($line in $result.Lines) {
+  if ($out.Count -ge $limit) { break }
+  $linePlain = ($line.Text -replace '\\s','')
+  if ($linePlain.IndexOf($textPlain, [StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+  # 优先单个词直接命中
+  $best = $null
+  foreach ($word in $line.Words) {
+    $wp = ($word.Text -replace '\\s','')
+    if ($wp.IndexOf($textPlain, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $best = $word; break }
+  }
+  if ($null -eq $best) {
+    # 最小词窗口：从每个词起累积，找到拼接后包含目标的连续词段 → 并集矩形（精确）
+    $words = @($line.Words)
+    for ($i = 0; $i -lt $words.Count -and $null -eq $best; $i++) {
+      $acc = ''
+      for ($j = $i; $j -lt $words.Count; $j++) {
+        $acc += ($words[$j].Text -replace '\\s','')
+        if ($acc.Length -ge $textPlain.Length) {
+          if ($acc.IndexOf($textPlain, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $x1 = [double]::MaxValue; $y1 = [double]::MaxValue; $x2 = [double]::MinValue; $y2 = [double]::MinValue
+            for ($k = $i; $k -le $j; $k++) {
+              $r = $words[$k].BoundingRect
+              $x1 = [Math]::Min($x1, $r.X); $y1 = [Math]::Min($y1, $r.Y)
+              $x2 = [Math]::Max($x2, $r.X + $r.Width); $y2 = [Math]::Max($y2, $r.Y + $r.Height)
+            }
+            $best = @{ X = $x1; Y = $y1; Width = ($x2 - $x1); Height = ($y2 - $y1); Text = ($words[$i..$j] | ForEach-Object { $_.Text }) -join ' ' }
+          }
+          break
+        }
+      }
+    }
+  }
+  if ($null -ne $best) {
+    # 两种形态：OcrWord（有 BoundingRect）或最小词窗口并集（hashtable）
+    if ($best -is [hashtable]) {
+      $bx = $best.X; $by = $best.Y; $bw = $best.Width; $bh = $best.Height
+      $nm = $best.Text
+    } else {
+      $r = $best.BoundingRect
+      $bx = $r.X; $by = $r.Y; $bw = $r.Width; $bh = $r.Height
+      $nm = $best.Text
+    }
+    [void]$out.Add([pscustomobject]@{
+      name = $nm; control_type = 'Text(ocr)'
+      x = [int]($bx + $bw / 2 + $x); y = [int]($by + $bh / 2 + $y)
+      left = [int]($bx + $x); top = [int]($by + $y); width = [int]$bw; height = [int]$bh
+    })
+  } else {
+    # 兜底：整行词并集
+    $x1 = [double]::MaxValue; $y1 = [double]::MaxValue; $x2 = [double]::MinValue; $y2 = [double]::MinValue
+    foreach ($word in $line.Words) {
+      $r = $word.BoundingRect
+      $x1 = [Math]::Min($x1, $r.X); $y1 = [Math]::Min($y1, $r.Y)
+      $x2 = [Math]::Max($x2, $r.X + $r.Width); $y2 = [Math]::Max($y2, $r.Y + $r.Height)
+    }
+    [void]$out.Add([pscustomobject]@{
+      name = $line.Text; control_type = 'Text(ocr)'
+      x = [int](($x1 + $x2) / 2 + $x); y = [int](($y1 + $y2) / 2 + $y)
+      left = [int]($x1 + $x); top = [int]($y1 + $y); width = [int]($x2 - $x1); height = [int]($y2 - $y1)
+    })
+  }
+}
+$out | ConvertTo-Json -Compress
+`;
+    const out = await runPS(script, 90_000);
+    return toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
+  };
+
+  if (method === 'uia') {
+    return { matches: (await uiaFind()).slice(0, limit), engine: 'uia' };
+  }
+  if (method === 'ocr') {
+    return { matches: (await ocrFind()).slice(0, limit), engine: 'ocr' };
+  }
+  // auto：UIA 优先（快且带控件语义），找不到再 OCR 兜底（自绘 UI）
+  const uiaMatches = await uiaFind();
+  if (uiaMatches.length > 0) {
+    return { matches: uiaMatches.slice(0, limit), engine: 'uia' };
+  }
+  const ocrMatches = await ocrFind();
+  return { matches: ocrMatches.slice(0, limit), engine: 'ocr' };
 }
