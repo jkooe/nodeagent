@@ -689,10 +689,10 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
   },
   {
     name: CapabilityNames.ScreenFind,
-    version: '1.0',
+    version: '1.1',
     description:
-      '在界面中查找 UI 元素并返回其**屏幕坐标**（基于 Windows UI Automation）。' +
-      '可指定窗口范围与元素类型，返回中心点坐标，直接喂给 input.mouse.click。',
+      '在界面中查找 UI 元素并返回其**屏幕坐标**。默认 UIA（Windows UI Automation），' +
+      '找不到时自动降级为 OCR（截图识别，支持自绘 UI 如 Electron/Qt）。返回中心点坐标，直接喂给 input.mouse.click。',
     risk: 'low',
     params_schema: {
       type: 'object',
@@ -701,7 +701,13 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         window: { type: 'string', description: '可选：限定在该窗口标题（正则）内查找' },
         control_type: {
           type: 'string',
-          description: '可选：限定控件类型，如 Button / MenuItem / Edit / Text / ListItem',
+          description: '可选：限定控件类型，如 Button / MenuItem / Edit / Text / ListItem（仅 UIA）',
+        },
+        method: {
+          type: 'string',
+          enum: ['auto', 'uia', 'ocr'],
+          default: 'auto',
+          description: 'auto=UIA 优先+OCR 兜底；uia=仅 UIA；ocr=仅截图识别',
         },
         limit: { type: 'integer', default: 20 },
       },
@@ -711,6 +717,7 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     returns_schema: {
       type: 'object',
       properties: {
+        engine: { type: 'string', description: '实际使用的引擎：uia | ocr' },
         matches: {
           type: 'array',
           items: {
