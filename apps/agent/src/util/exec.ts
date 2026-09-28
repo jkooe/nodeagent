@@ -41,7 +41,7 @@ const PS_UTF8_PREFIX =
   '$OutputEncoding=[Console]::OutputEncoding;';
 
 /** 按平台与 shell 类型构造可执行文件与参数（数组传参，不拼 shell 字符串）。 */
-function buildLaunch(command: string, shell: ShellKind): Launch {
+export function buildLaunch(command: string, shell: ShellKind): Launch {
   if (IS_WINDOWS) {
     if (shell === 'cmd') {
       // cmd 的代码页需在命令内切换（chcp 65001），且须静默。

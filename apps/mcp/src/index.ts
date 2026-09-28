@@ -342,6 +342,48 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_bg',
+    description:
+      '在被控端后台执行长命令（如下载、安装、日志采样），立即返回 task_id 不阻塞。' +
+      '之后用 na_task 查询输出或终止。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        command: { type: 'string', description: '要执行的 PowerShell 命令' },
+        timeout_ms: { type: 'integer', description: '超时毫秒（默认 300000，即 5 分钟）' },
+      },
+      required: ['command'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_task',
+    description:
+      '管理后台任务：action=list 列出；action=get 读取输出（offset 支持增量续读）；action=kill 终止。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['list', 'get', 'kill'], description: '默认 list' },
+        task_id: { type: 'string', description: 'get/kill 时必填' },
+        offset: { type: 'integer', description: 'get 时从第 N 字节续读（默认 0）' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_clip',
+    description:
+      '读写被控端剪贴板：action=get 读取文本；action=set 写入文本。要粘贴到 GUI 输入框时先 set 再用 na_key 按 ctrl+v。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['get', 'set'], description: '默认 get' },
+        text: { type: 'string', description: 'set 时要写入的文本' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_use',
     description: '切换本次会话的目标设备（不影响 CLI 的默认设备）。用户说"切换到某台机器"时使用。',
     inputSchema: {
@@ -455,6 +497,36 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
           return { error: 'press 需要非空 keys 数组' };
         }
         return { capability: CapabilityNames.KeyPress, args: { keys: input['keys'] } };
+      }
+      return { error: `不支持的 action: ${String(action)}` };
+    }
+    case 'na_bg': {
+      if (!input['command']) return { error: '需要 command' };
+      const args: Record<string, unknown> = { command: input['command'], async: true };
+      if (input['timeout_ms'] !== undefined) args['timeout_ms'] = input['timeout_ms'];
+      return { capability: CapabilityNames.ShellExec, args };
+    }
+    case 'na_task': {
+      const action = input['action'] ?? 'list';
+      if (action === 'list') return { capability: CapabilityNames.TaskList, args: {} };
+      if (action === 'get') {
+        if (!input['task_id']) return { error: 'get 需要 task_id' };
+        const args: Record<string, unknown> = { task_id: input['task_id'] };
+        if (input['offset'] !== undefined) args['offset'] = input['offset'];
+        return { capability: CapabilityNames.TaskGet, args };
+      }
+      if (action === 'kill') {
+        if (!input['task_id']) return { error: 'kill 需要 task_id' };
+        return { capability: CapabilityNames.TaskKill, args: { task_id: input['task_id'] } };
+      }
+      return { error: `不支持的 action: ${String(action)}` };
+    }
+    case 'na_clip': {
+      const action = input['action'] ?? 'get';
+      if (action === 'get') return { capability: CapabilityNames.ClipGet, args: {} };
+      if (action === 'set') {
+        if (input['text'] === undefined) return { error: 'set 需要 text' };
+        return { capability: CapabilityNames.ClipSet, args: { text: input['text'] } };
       }
       return { error: `不支持的 action: ${String(action)}` };
     }

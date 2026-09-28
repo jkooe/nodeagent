@@ -55,6 +55,10 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent apps                      列出已安装软件 (app.list)
   nodeagent install <包名|ID>          安装软件 (app.install)
   nodeagent restart [--delay 2000]    受控重启被控端（配置变更后让自身生效）(v7)
+  nodeagent bg "<命令>" [--timeout-ms N]  后台执行长命令，立即返回 task_id (v10)
+  nodeagent tasks                    列出后台任务
+  nodeagent task <id> [--offset N] [--kill]  读取/终止后台任务（支持增量续读）
+  nodeagent clip [--set "文本"]       读/写被控端剪贴板
   nodeagent list                      列出被控端可用能力
   nodeagent invoke <capability> [--args '<json>']   通用调用
 
@@ -114,6 +118,11 @@ interface Options {
   hubNode?: string;
   /** v7 受控重启：延时毫秒 */
   delay?: string;
+  /** v10 后台任务 / 剪贴板 */
+  timeoutMs?: string;
+  kill?: boolean;
+  offset?: string;
+  set?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -433,6 +442,98 @@ async function cmdRestart(opts: Options): Promise<void> {
       console.log(`✓ ${d.message}`);
       console.log(`  机制: ${d.mechanism}`);
       console.log('  提示: 约 3~4 秒后重连，可执行 `nodeagent info` 验证是否已恢复');
+    }),
+  );
+}
+
+async function cmdBg(command: string, opts: Options): Promise<void> {
+  await withClient((c) =>
+    callAndPrint(
+      c,
+      CapabilityNames.ShellExec,
+      { command, async: true, timeout_ms: opts.timeoutMs ? Number(opts.timeoutMs) : undefined },
+      opts.json,
+      (data) => {
+        const d = data as { task_id: string; state: string };
+        console.log(`✓ 后台任务已启动: ${d.task_id}（${d.state}）`);
+        console.log('  查询: nodeagent task ' + d.task_id);
+        console.log('  终止: nodeagent task ' + d.task_id + ' --kill');
+      },
+    ),
+  );
+}
+
+async function cmdTasks(opts: Options): Promise<void> {
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.TaskList, {}, opts.json, (data) => {
+      const rows = (data as { tasks: Array<{ task_id: string; state: string; duration_ms: number; exit_code?: number }> }).tasks;
+      if (rows.length === 0) {
+        console.log('当前没有后台任务');
+        return;
+      }
+      console.log(`${'任务ID'.padEnd(26)} ${'状态'.padEnd(9)} ${'耗时'.padStart(9)}  退出码`);
+      for (const t of rows) {
+        console.log(
+          `${t.task_id.padEnd(26)} ${t.state.padEnd(9)} ${String(t.duration_ms + 'ms').padStart(9)}  ${t.exit_code ?? '-'}`,
+        );
+      }
+    }),
+  );
+}
+
+async function cmdTask(taskId: string, opts: Options): Promise<void> {
+  if (opts.kill) {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.TaskKill, { task_id: taskId }, opts.json, (data) => {
+        const d = data as { killed: boolean };
+        console.log(d.killed ? `✓ 已终止 ${taskId}` : `任务 ${taskId} 已不在运行`);
+      }),
+    );
+    return;
+  }
+  const offset = opts.offset ? Number(opts.offset) : 0;
+  await withClient((c) =>
+    callAndPrint(
+      c,
+      CapabilityNames.TaskGet,
+      { task_id: taskId, offset },
+      opts.json,
+      (data) => {
+        const d = data as {
+          state: string;
+          exit_code: number | null;
+          duration_ms: number;
+          data: string;
+          offset: number;
+          total_bytes: number;
+        };
+        if (d.data) console.log(d.data);
+        console.error(
+          `[${d.state} · ${d.duration_ms}ms · 已读 ${d.offset}/${d.total_bytes} 字节${d.exit_code !== null && d.state !== 'running' ? ` · 退出码 ${d.exit_code}` : ''}]`,
+        );
+        if (d.state === 'running' && d.offset < d.total_bytes) {
+          console.error('  续读: nodeagent task ' + taskId + ' --offset ' + d.offset);
+        }
+      },
+    ),
+  );
+}
+
+async function cmdClip(opts: Options): Promise<void> {
+  if (opts.set !== undefined) {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.ClipSet, { text: opts.set }, opts.json, (data) => {
+        const d = data as { written: number };
+        console.log(`✓ 已写入剪贴板 ${d.written} 字符`);
+      }),
+    );
+    return;
+  }
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.ClipGet, {}, opts.json, (data) => {
+      const d = data as { text: string };
+      if (d.text) console.log(d.text);
+      else console.log('(剪贴板为空或非文本)');
     }),
   );
 }
@@ -834,6 +935,11 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       'hub-node': { type: 'string' },
       // v7 受控重启
       delay: { type: 'string' },
+      // v10 后台任务 / 剪贴板
+      'timeout-ms': { type: 'string' },
+      kill: { type: 'boolean', default: false },
+      offset: { type: 'string' },
+      set: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -862,6 +968,10 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       discoveryPort: values['discovery-port'] as string | undefined,
       node: values['node'] as string | undefined,
       delay: values['delay'] as string | undefined,
+      timeoutMs: values['timeout-ms'] as string | undefined,
+      kill: Boolean(values['kill']),
+      offset: values['offset'] as string | undefined,
+      set: values['set'] as string | undefined,
       name: values['name'] as string | undefined,
       note: values['note'] as string | undefined,
       recursive: Boolean(values['recursive']),
@@ -921,6 +1031,24 @@ async function main(): Promise<void> {
       return;
     case 'restart':
       await cmdRestart(opts);
+      return;
+    case 'bg': {
+      const cmd = positionals.join(' ');
+      if (!cmd) fail('用法: nodeagent bg "<命令>" [--timeout-ms 300000]');
+      await cmdBg(cmd, opts);
+      return;
+    }
+    case 'tasks':
+      await cmdTasks(opts);
+      return;
+    case 'task': {
+      const id = positionals[0];
+      if (!id) fail('用法: nodeagent task <task_id> [--offset N] [--kill]');
+      await cmdTask(id, opts);
+      return;
+    }
+    case 'clip':
+      await cmdClip(opts);
       return;
     case 'install': {
       const pkg = positionals[0];
