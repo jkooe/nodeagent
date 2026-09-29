@@ -1,6 +1,9 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { runPowerShellSmart } from '../util/ps-helper.js';
+import { agentDir } from '../config.js';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { macScreenFind, macWindowFocus, macWindowList } from './darwin.js';
 
 type Args = Record<string, unknown>;
@@ -200,8 +203,6 @@ function Find-UiaByText($scope, [string]$text, [int]$limit, [string]$ct) {
 `;
 
 /** 助手统一预加载段（window.list / window.focus / screen.find 共用同一个进程）。 */
-const WIN_HELPER_PRELUDE = `${WIN32_PRELUDE}
-${UIA_ASSEMBLY_PRELUDE}`;
 
 
 /**
@@ -233,6 +234,237 @@ try {
   $script:ocrReady = $false
 }
 `;
+
+
+/**
+ * 图像模板匹配预加载段（v15）。
+ *
+ * 动机：UIA 靠控件树、OCR 靠文字 —— **纯图标/无文字的控件**两者都抓不到（审查报告 §5.2 指出的盲区）。
+ * 做法：把模板图与屏幕区域都转灰度，做**零均值归一化互相关（ZNCC）**；
+ * 全分辨率逐像素太慢（3440×1440 屏 × 64×64 模板 ≈ 190 亿次），故**粗到精**：
+ *   ① 1/4 分辨率全图扫描（约 8000 万次）取候选
+ *   ② 对候选在全分辨率 ±10px 邻域精修
+ * 编译一次常驻（随助手预加载），运行时纯 native 循环。
+ * 亮度和对比度无关（ZNCC 归一化），故对主题/亮度变化不敏感。
+ */
+const IMAGE_MATCH_PRELUDE = `
+Add-Type -AssemblyName System.Drawing
+# ⚠️ Add-Type 的老坑：-AssemblyName 只把程序集加载进 PowerShell 会话，
+#    编译 C# 时还必须显式 -ReferencedAssemblies，否则报「命名空间 System.Drawing
+#    中不存在 Imaging」。真机踩过：编译失败会让整个助手起不来，并伴随误导性的
+#    「找不到类型 System.Windows.Forms.SystemInformation」二次错误。
+Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+public class NAImageMatch {
+  public class Hit { public int x; public int y; public int w; public int h; public double score; }
+
+  private static byte[] Gray(Bitmap src, out int w, out int h) {
+    w = src.Width; h = src.Height;
+    var dst = new byte[w * h];
+    var rect = new Rectangle(0, 0, w, h);
+    Bitmap bmp = src.PixelFormat == PixelFormat.Format24bppRgb ? src : src.Clone(rect, PixelFormat.Format24bppRgb);
+    var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+    try {
+      int stride = data.Stride;
+      var buf = new byte[stride * h];
+      Marshal.Copy(data.Scan0, buf, 0, buf.Length);
+      for (int y = 0; y < h; y++) {
+        int row = y * stride;
+        for (int x = 0; x < w; x++) {
+          int i = row + x * 3;
+          // BGR -> luma (integer approximation of ITU-R BT.601)
+          dst[y * w + x] = (byte)((buf[i + 2] * 77 + buf[i + 1] * 150 + buf[i] * 29) >> 8);
+        }
+      }
+    } finally { bmp.UnlockBits(data); if (bmp != src) bmp.Dispose(); }
+    return dst;
+  }
+
+  // Area-average downscale (coarse search layer)
+  private static byte[] Downscale(byte[] src, int w, int h, int f, out int ow, out int oh) {
+    ow = w / f; oh = h / f;
+    var dst = new byte[ow * oh];
+    for (int y = 0; y < oh; y++) {
+      for (int x = 0; x < ow; x++) {
+        int sum = 0;
+        for (int dy = 0; dy < f; dy++) {
+          int row = (y * f + dy) * w;
+          for (int dx = 0; dx < f; dx++) sum += src[row + x * f + dx];
+        }
+        dst[y * ow + x] = (byte)(sum / (f * f));
+      }
+    }
+    return dst;
+  }
+
+  // Zero-mean normalized cross correlation; 1.0 = identical
+  private static double Zncc(byte[] S, int sw, int sx, int sy, byte[] T, int tw, int th) {
+    int n = tw * th;
+    double sumT = 0;
+    for (int i = 0; i < n; i++) sumT += T[i];
+    double meanT = sumT / n;
+
+    double sumS = 0;
+    for (int y = 0; y < th; y++) {
+      int row = (sy + y) * sw + sx;
+      for (int x = 0; x < tw; x++) sumS += S[row + x];
+    }
+    double meanS = sumS / n;
+
+    double num = 0, dS = 0, dT = 0;
+    for (int y = 0; y < th; y++) {
+      int row = (sy + y) * sw + sx;
+      int trow = y * tw;
+      for (int x = 0; x < tw; x++) {
+        double a = S[row + x] - meanS;
+        double b = T[trow + x] - meanT;
+        num += a * b; dS += a * a; dT += b * b;
+      }
+    }
+    double den = Math.Sqrt(dS * dT);
+    if (den < 1e-9) return 0;
+    return num / den;
+  }
+
+  /**
+   // (comment removed: ASCII only)
+   // (comment removed: ASCII only)
+   */
+  public static string Match(string screenPath, string templatePath, int maxResults, double threshold, int searchX, int searchY, int searchW, int searchH) {
+    var hits = new List<Hit>();
+    using (var screenBmp = new Bitmap(screenPath))
+    using (var tmplBmp = new Bitmap(templatePath)) {
+      int sw, sh, tw, th;
+      var S0 = Gray(screenBmp, out sw, out sh);
+      var T0 = Gray(tmplBmp, out tw, out th);
+      if (tw >= sw || th >= sh) return "[]";
+
+      // Guard: a flat template carries no gradient information, so correlation is
+      // undefined (ZNCC denominator ~ 0). Report it explicitly instead of silently
+      // returning no hits - a uniform crop usually means the wrong region was picked.
+      //
+      // NOTE: build all JSON/string literals with the char constant Q.
+      // Writing a backslash-quote inside a TS template literal collapses it to a bare
+      // quote and breaks the C# compile - this trap bit this file twice.
+      const char Q = '"';
+      var ci0 = System.Globalization.CultureInfo.InvariantCulture;
+      double tSum = 0, tSum2 = 0;
+      for (int i = 0; i < T0.Length; i++) { tSum += T0[i]; tSum2 += (double)T0[i] * T0[i]; }
+      double tMean = tSum / T0.Length;
+      double tVar = (tSum2 / T0.Length) - (tMean * tMean);
+      if (tVar < 4.0) {
+        return "[" + "{" + Q + "__error" + Q + ":" + Q + "template_has_no_contrast" + Q
+          + "," + Q + "variance" + Q + ":" + tVar.ToString("F2", ci0) + "}" + "]";
+      }
+
+      // Optional search window: crop a sub-image, then add the offset back to hit coords
+      int ox = 0, oy = 0;
+      if (searchW > 0 && searchH > 0) {
+        ox = Math.Max(0, Math.Min(searchX, sw - 1));
+        oy = Math.Max(0, Math.Min(searchY, sh - 1));
+        int w = Math.Min(searchW, sw - ox), h = Math.Min(searchH, sh - oy);
+        var sub = new byte[w * h];
+        for (int y = 0; y < h; y++) Array.Copy(S0, (oy + y) * sw + ox, sub, y * w, w);
+        S0 = sub; sw = w; sh = h;
+      }
+
+      const int F = 4;
+      int sw4, sh4, tw4, th4;
+      var S4 = Downscale(S0, sw, sh, F, out sw4, out sh4);
+      var T4 = Downscale(T0, tw, th, F, out tw4, out th4);
+
+      // (1) coarse scan: collect candidates.
+      // NOTE: the pre-filter must be MUCH looser than the final threshold.
+      // Downsampling lowers the correlation of the true position (typically 0.7-0.85
+      // for a 0.9+ full-res match), so a tight pre-filter discards the right answer
+      // before refinement ever runs (this exact bug made every match return empty).
+      var cands = new List<Hit>();
+      if (tw4 > 0 && th4 > 0 && tw4 <= sw4 && th4 <= sh4) {
+        double preFilter = Math.Max(0.30, threshold - 0.30);
+        double bestCoarse = -1; int bx4 = 0, by4 = 0;
+        for (int y = 0; y <= sh4 - th4; y++) {
+          for (int x = 0; x <= sw4 - tw4; x++) {
+            double sc = Zncc(S4, sw4, x, y, T4, tw4, th4);
+            if (sc > bestCoarse) { bestCoarse = sc; bx4 = x; by4 = y; }
+            if (sc >= preFilter) cands.Add(new Hit { x = x * F, y = y * F, w = tw, h = th, score = sc });
+          }
+        }
+        // Belt and braces: always keep the coarse best, even if it missed the pre-filter
+        if (bestCoarse > 0) {
+          bool seen = false;
+          foreach (var c in cands) { if (Math.Abs(c.x - bx4 * F) < F && Math.Abs(c.y - by4 * F) < F) { seen = true; break; } }
+          if (!seen) cands.Add(new Hit { x = bx4 * F, y = by4 * F, w = tw, h = th, score = bestCoarse });
+        }
+      }
+      cands.Sort((a, b) => b.score.CompareTo(a.score));
+      if (cands.Count > 40) cands.RemoveRange(40, cands.Count - 40);
+
+      // (2) refine at full resolution within a +/-F*2 neighborhood
+      foreach (var c in cands) {
+        double best = -1; int bx = c.x, by = c.y;
+        for (int dy = -F * 2; dy <= F * 2; dy++) {
+          for (int dx = -F * 2; dx <= F * 2; dx++) {
+            int x = c.x + dx, y = c.y + dy;
+            if (x < 0 || y < 0 || x + tw > sw || y + th > sh) continue;
+            double sc = Zncc(S0, sw, x, y, T0, tw, th);
+            if (sc > best) { best = sc; bx = x; by = y; }
+          }
+        }
+        if (best >= threshold) hits.Add(new Hit { x = bx + ox, y = by + oy, w = tw, h = th, score = best });
+      }
+
+      // (3) de-dup: non-maximum suppression (keep best within 8px)
+      hits.Sort((a, b) => b.score.CompareTo(a.score));
+      var final = new List<Hit>();
+      foreach (var h in hits) {
+        bool dup = false;
+        foreach (var f in final) {
+          if (Math.Abs(f.x - h.x) < 8 && Math.Abs(f.y - h.y) < 8) { dup = true; break; }
+        }
+        if (!dup) final.Add(h);
+        if (final.Count >= maxResults) break;
+      }
+
+      var parts = new List<string>();
+      foreach (var h in final) {
+        // Build JSON by concatenation; reuse the shared Q / ci0 declared above.
+        var ci = ci0;
+        parts.Add("{" + Q + "x" + Q + ":" + h.x.ToString(ci) + "," + Q + "y" + Q + ":" + h.y.ToString(ci)
+          + "," + Q + "width" + Q + ":" + h.w.ToString(ci) + "," + Q + "height" + Q + ":" + h.h.ToString(ci)
+          + "," + Q + "score" + Q + ":" + h.score.ToString("F4", ci) + "}");
+      }
+      return "[" + String.Join(",", parts.ToArray()) + "]";
+    }
+  }
+
+  // Capture a screen region to a file (avoids extra process round-trips)
+  public static string Capture(string outPath, int x, int y, int w, int h) {
+    using (var bmp = new Bitmap(w, h))
+    using (var g = Graphics.FromImage(bmp)) {
+      g.CopyFromScreen(x, y, 0, 0, new Size(w, h));
+      bmp.Save(outPath, ImageFormat.Png);
+    }
+    return outPath;
+  }
+}
+"@ -ReferencedAssemblies System.Drawing
+`;
+
+/**
+ * 助手统一预加载段（window.list / window.focus / screen.find 的 UIA/OCR/图像三引擎共用）。
+ * ⚠️ 必须定义在四段之后（块级作用域），且**四段缺一不可** ——
+ * 漏拼会被 esbuild tree-shake，直到运行时才报「找不到类型」（真机踩过）。
+ * tests/unit/win-prelude.test.mjs 对此有回归断言。
+ */
+export const WIN_HELPER_PRELUDE = `${WIN32_PRELUDE}
+${UIA_ASSEMBLY_PRELUDE}
+${OCR_PRELUDE}
+${IMAGE_MATCH_PRELUDE}`;
 
 interface WinInfo {
   hwnd: string;
@@ -408,9 +640,10 @@ export async function screenFind(args: Args): Promise<unknown> {
       { platform: process.platform },
     );
   }
-  const text = args['text'] as string;
-  if (typeof text !== 'string' || text.length === 0) {
-    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'text 不能为空');
+  const text = (args['text'] as string | undefined) ?? '';
+  const wantImage = (args['method'] as string | undefined) === 'image';
+  if (!wantImage && (typeof text !== 'string' || text.length === 0)) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'text 不能为空（method=image 时用 template 代替）');
   }
   const windowTitle = args['window'] as string | undefined;
   const controlType = args['control_type'] as string | undefined;
@@ -424,6 +657,9 @@ export async function screenFind(args: Args): Promise<unknown> {
   const regionArg = args['region'] as
     | { x: number; y: number; width: number; height: number }
     | undefined;
+  // v15：图像模板匹配
+  const template = args['template'] as string | undefined;
+  const threshold = Math.max(0.3, Math.min(0.999, (args['threshold'] as number | undefined) ?? 0.85));
 
   // ---------- UIA 引擎 ----------
   const uiaFind = async (): Promise<Record<string, unknown>[]> => {
@@ -456,6 +692,81 @@ if ($out.Count -eq 0) { Write-Output '[]' } else { $out | ConvertTo-Json -Compre
 `;
     const out = await runPS(body, 60_000);
     return toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
+  };
+
+  // ---------- 图像模板引擎（灰度 ZNCC 粗到精，v15） ----------
+  // 适用：纯图标 / 无文字的自绘控件（UIA 无控件树、OCR 无文字可读的盲区）
+  const imageFind = async (): Promise<Record<string, unknown>[]> => {
+    if (!template) {
+      throw new CapabilityError(
+        ErrorCodes.PARAM_INVALID,
+        'method=image 需要 template 参数（被控端上的模板图片路径，支持 png/jpg/bmp）',
+      );
+    }
+    const tmpDir = join(agentDir(), 'tmp');
+    mkdirSync(tmpDir, { recursive: true });
+    const shot = join(tmpDir, `match-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`);
+    // PowerShell 单引号字面量：不插值（避免路径里的 $ 被展开）、不处理反斜杠转义。
+    // 不能用 JSON.stringify —— 它会产出双引号串，而 PS 双引号会做变量插值且把 \ 当字面两个反斜杠。
+    const q = (v: string): string => `'${v.replace(/'/g, "''")}'`;
+
+    // 截图区域：显式 region 优先，否则整块虚拟屏
+    const capX = regionArg ? regionArg.x : 'VSX';
+    const capY = regionArg ? regionArg.y : 'VSY';
+    const capW = regionArg ? regionArg.width : 'VSW';
+    const capH = regionArg ? regionArg.height : 'VSH';
+
+    const body = `
+if (-not (Test-Path ${q(template)})) {
+  Write-Output '{"__error":"模板文件不存在"}'
+  return
+}
+$vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
+$cx = ${typeof capX === 'number' ? capX : '$vs.X'}
+$cy = ${typeof capY === 'number' ? capY : '$vs.Y'}
+$cw = ${typeof capW === 'number' ? capW : '$vs.Width'}
+$ch = ${typeof capH === 'number' ? capH : '$vs.Height'}
+try {
+  [void][NAImageMatch]::Capture(${q(shot)}, $cx, $cy, $cw, $ch)
+  $json = [NAImageMatch]::Match(${q(shot)}, ${q(template)}, ${Number(limit)}, ${threshold}, 0, 0, 0, 0)
+  Write-Output $json
+} catch {
+  Write-Output ('{"__error":"' + $_.Exception.Message.Replace('"','''') + '"}')
+} finally {
+  Remove-Item ${q(shot)} -Force -ErrorAction SilentlyContinue
+}
+`;
+    const out = await runPS(body, 120_000);
+    type ImgHit = { x: number; y: number; width: number; height: number; score: number };
+    const raw = extractJson<Record<string, unknown> | ImgHit[]>(out);
+    if (raw && !Array.isArray(raw) && typeof raw === 'object' && '__error' in raw) {
+      throw new CapabilityError(
+        ErrorCodes.EXECUTION_FAILED,
+        `图像匹配失败: ${String((raw as { __error?: string }).__error)}`,
+      );
+    }
+    const hits: ImgHit[] = Array.isArray(raw) ? raw : [];
+    // 模板纯色时 C# 会返回 [{__error:...}]（数组形式），这里统一转成可读错误
+    const first = hits[0] as unknown as { __error?: string; variance?: number } | undefined;
+    if (first && typeof first === 'object' && first.__error === 'template_has_no_contrast') {
+      throw new CapabilityError(
+        ErrorCodes.PARAM_INVALID,
+        '模板几乎没有色彩/明暗差异（纯色或低对比），无法用于模板匹配；请改用有纹理或图标的区域',
+        { variance: first.variance },
+      );
+    }
+    return hits.map((h) => ({
+      name: `image:${template.split(/[\\/]/).pop() ?? 'template'}`,
+      control_type: 'Image(template)',
+      score: h.score,
+      // 命中坐标相对截图原点 -> 补回屏幕原点
+      x: Math.round(capX === 'VSX' ? h.x + (regionArg?.x ?? 0) : h.x + Number(capX)),
+      y: Math.round(capY === 'VSY' ? h.y + (regionArg?.y ?? 0) : h.y + Number(capY)),
+      left: Math.round(capX === 'VSX' ? h.x + (regionArg?.x ?? 0) : h.x + Number(capX)),
+      top: Math.round(capY === 'VSY' ? h.y + (regionArg?.y ?? 0) : h.y + Number(capY)),
+      width: h.width,
+      height: h.height,
+    }));
   };
 
   // ---------- OCR 引擎（截图 → Windows.Media.Ocr → 文字坐标） ----------
@@ -607,6 +918,7 @@ $out | ConvertTo-Json -Compress
   const attempt = async (): Promise<{ matches: Record<string, unknown>[]; engine: string }> => {
     if (method === 'uia') return { matches: (await uiaFind()).slice(0, limit), engine: 'uia' };
     if (method === 'ocr') return { matches: (await ocrFind()).slice(0, limit), engine: 'ocr' };
+    if (method === 'image') return { matches: (await imageFind()).slice(0, limit), engine: 'image' };
     // auto：UIA 优先（快且带控件语义），找不到再 OCR 兜底（自绘 UI）
     const uiaMatches = await uiaFind();
     if (uiaMatches.length > 0) return { matches: uiaMatches.slice(0, limit), engine: 'uia' };

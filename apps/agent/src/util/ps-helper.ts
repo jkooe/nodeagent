@@ -1,5 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { execCommand } from './exec.js';
 
 /**
@@ -27,6 +30,41 @@ const IDLE_KILL_MS = 10 * 60 * 1000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 /** 助手启动（含类型编译）允许的较长时间；只发生一次 */
 const SPAWN_TIMEOUT_MS = 60_000;
+
+/**
+ * 从 PowerShell 的 stderr 中提取**真正有用的错误信息**。
+ *
+ * PowerShell 的 stderr 是 CLIXML（XML）：里面既有 `Preparing modules for first use.`
+ * 这类**进度噪声**，也有真正的错误。原样截断展示会把真错误淹没在噪声里
+ * （真机踩过：排查 C# 编译失败时只看到一堆 progress 记录）。
+ */
+export function extractPsError(stderr: string): string {
+  if (!stderr) return '';
+  const decoded = stderr
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&')
+    .replace(/&#39;/g, "'");
+
+  // CLIXML 的错误条目形如 <S S="Error">错误文本</S>
+  const errs: string[] = [];
+  const re = /<S S="Error">([\s\S]*?)<\/S>/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(decoded)) !== null) {
+    const text = m[1]!.trim();
+    if (text) errs.push(text);
+  }
+  if (errs.length > 0) return errs.join('\n').slice(0, 800);
+
+  // 没有结构化错误：剥掉 CLIXML 标签后取残余文本
+  const stripped = decoded
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/Preparing modules for first use\./g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return stripped.slice(0, 500);
+}
 
 /**
  * 解析助手输出的一行协议报文。
@@ -131,9 +169,11 @@ export class PsShell {
   /** 助手里执行一段脚本；返回 stdout。抛出异常表示「本次不可用」，调用方应降级。 */
   async run(body: string, timeoutMs = 30_000): Promise<string> {
     if (!this.stats.enabled) throw new Error(`PsShell[${this.label}] 已熔断`);
-    await this.ensureStarted();
     const started = Date.now();
     try {
+      // ensureStarted 必须在 try 内：它失败（如 spawn 失败）同样要计入统计，
+      // 否则会表现成「spawned 一直涨、calls 恒为 0」的诡异状态（真机踩过，掩盖了根因）。
+      await this.ensureStarted();
       const out = await this.enqueue(body, timeoutMs);
       this.stats.calls += 1;
       this.stats.hits += 1;
@@ -186,9 +226,16 @@ export class PsShell {
     this.starting = new Promise<void>((resolve, reject) => {
       this.stats.spawned += 1;
       const bootstrap = buildBootstrap(this.prelude);
+      // ⚠️ 不能用 -EncodedCommand：预加载段含内嵌 C#（编码后 ~36KB）超过 Windows
+      //    命令行 ~32KB 上限，spawn 会直接失败（ENAMETOOLONG）→ 每次都静默降级到
+      //    慢路径（真机踩过：助手 spawned 计数增长但 calls 恒为 0）。
+      //    改为落地临时脚本 + -File（无长度限制）。
+      const dir = mkdtempSync(join(tmpdir(), 'na-psh-'));
+      const bootPath = join(dir, 'bootstrap.ps1');
+      writeFileSync(bootPath, `\uFEFF${bootstrap}`, 'utf8');
       const p = spawn(
         'powershell.exe',
-        ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', toEncodedCommand(bootstrap)],
+        ['-NoProfile', '-NoLogo', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', bootPath],
         { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] },
       );
       this.proc = p;
@@ -232,7 +279,11 @@ export class PsShell {
           clearTimeout(q.timer);
           q.reject(new Error(`PsShell[${this.label}] 进程退出`));
         }
-        if (!wasReady) reject(new Error(`PsShell[${this.label}] 启动失败（code=${String(code)}）`));
+        if (!wasReady) {
+          // 带上 stderr 尾巴 —— 否则只看到「启动失败(code=1)」无从下手（真机踩过）
+          const tail = this.stderrBuf.trim().slice(-600);
+          reject(new Error(`PsShell[${this.label}] 启动失败（code=${String(code)}）${tail ? ` :: ${tail}` : ''}`));
+        }
       });
     }).finally(() => {
       this.starting = null;
@@ -380,12 +431,20 @@ export async function runPowerShellSmart(opts: RunPsOptions): Promise<{ stdout: 
     }
   }
 
+  // ⚠️ 不能用 -EncodedCommand 传整个脚本：预加载段（含内嵌 C#）已远超
+  //    Windows 的 ~32KB 命令行上限，会报 spawn ENAMETOOLONG（真机踩过）。
+  //    改为**落地成临时脚本再 -File 执行**：无长度限制，且 UTF-8 BOM 保证
+  //    PowerShell 5.1 正确读取非 ASCII（BOM 缺失会被当 ANSI 解析）。
+  const dir = mkdtempSync(join(tmpdir(), 'na-ps-'));
+  const scriptPath = join(dir, 'run.ps1');
+  writeFileSync(scriptPath, `\uFEFF${prelude}\n${body}`, 'utf8');
   const r = await execCommand({
-    command: `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${toEncodedCommand(`${prelude}\n${body}`)}`,
+    command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${JSON.stringify(scriptPath)}`,
     timeoutMs,
   });
   if (r.exit_code !== 0) {
-    const err = new Error((r.stderr || r.stdout).slice(0, 600)) as Error & { exitCode?: number };
+    const detail = extractPsError(r.stderr) || r.stdout.slice(0, 400);
+    const err = new Error(detail || `PowerShell 退出码 ${r.exit_code}`) as Error & { exitCode?: number };
     err.exitCode = r.exit_code;
     throw err;
   }
