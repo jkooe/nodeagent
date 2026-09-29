@@ -34,7 +34,13 @@ async function main(): Promise<void> {
   if (useHub && config.hub) {
     hubClient = startHubClient(
       config,
-      { url: config.hub.url, token: config.hub.token, insecure: config.hub.insecure },
+      {
+        url: config.hub.url,
+        token: config.hub.token,
+        insecure: config.hub.insecure,
+        maxSlots: config.hub.max_slots,
+        warmSlots: config.hub.warm_slots,
+      },
       (level, msg) => console.log(`[${new Date().toISOString()}] [${level.toUpperCase()}] ${msg}`),
     );
   }

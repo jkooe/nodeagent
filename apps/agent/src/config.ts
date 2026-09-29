@@ -57,6 +57,10 @@ export interface AgentConfig {
    * 适用于被控端位于 NAT / 无公网 IP 的环境。
    */
   hub?: {
+    /** v12：最多维持的 Hub 槽位数（并发控制端上限），默认 2 */
+    max_slots?: number;
+    /** v12：常备（预热的）槽位数，默认 2；设为 1 可省一条空闲连接 */
+    warm_slots?: number;
     enabled: boolean;
     /** Hub 地址，例如 wss://hub.example.com/hub/agent */
     url: string;

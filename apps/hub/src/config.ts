@@ -15,6 +15,11 @@ export interface HubConfig {
    */
   tls?: { cert_file: string; key_file: string };
   log_level: 'debug' | 'info' | 'warn';
+  /**
+   * v12 / E3：同一被控端允许的**并发槽位数**（= 可同时接入的控制端数量）。
+   * 默认 3：够 AI + 人 + 备用同时在线；设为 1 即退回旧的「独占」语义。
+   */
+  max_slots_per_node?: number;
 }
 
 export function hubDir(): string {
