@@ -26,7 +26,7 @@ fi
 echo "✓ Node.js v$VER"
 
 # 2. 检查构建产物
-if [ ! -f "$SRC/nodeagent" ] || [ ! -f "$SRC/nodeagent-mcp" ]; then
+if [ ! -f "$SRC/nodeagent" ] || [ ! -f "$SRC/nodeagent-mcp" ] || [ ! -f "$SRC/nodeagentd" ]; then
   echo "✗ 未找到构建产物：$SRC" >&2
   echo "  请先在项目目录运行: pnpm pack:mac" >&2
   exit 1
@@ -35,9 +35,11 @@ fi
 # 3. 安装（install 会设置 755 权限）
 mkdir -p "$BIN_DIR"
 install -m 755 "$SRC/nodeagent" "$BIN_DIR/nodeagent"
+install -m 755 "$SRC/nodeagentd" "$BIN_DIR/nodeagentd"
 install -m 755 "$SRC/nodeagent-mcp" "$BIN_DIR/nodeagent-mcp"
 echo "✓ 已安装到 $BIN_DIR"
 echo "  - nodeagent      控制端 CLI"
+echo "  - nodeagentd     常驻连接池 daemon（nodeagent daemon start 拉起）"
 echo "  - nodeagent-mcp  MCP server（供 WorkBuddy 调用）"
 
 # 4. PATH 检查

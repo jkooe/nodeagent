@@ -1,4 +1,9 @@
 import { closeSync, openSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import fsSync from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   NodeAgentClient,
@@ -59,6 +64,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent tasks                    列出后台任务
   nodeagent task <id> [--offset N] [--kill]  读取/终止后台任务（支持增量续读）
   nodeagent clip [--set "文本"]       读/写被控端剪贴板
+  nodeagent daemon [start|stop|status] 常驻连接池（批量操作提速 5~10 倍）(v10)
   nodeagent list                      列出被控端可用能力
   nodeagent invoke <capability> [--args '<json>']   通用调用
 
@@ -136,7 +142,92 @@ function getClientConfig(): ClientConfig {
 /** 本次命令的临时目标设备（来自全局 --node）。 */
 let currentNodeOverride: string | undefined;
 
+// ---------- v10 daemon 转发 ----------
+
+const DAEMON_SOCK = path.join(os.tmpdir(), 'nodeagentd.sock');
+
+interface DaemonResponse {
+  status: 'ok' | 'failed' | 'daemon_error';
+  data?: unknown;
+  error?: { name: string; message: string } | string;
+}
+
+/** 经 daemon 转发一次能力调用（JSON lines over UDS）。 */
+function viaDaemon(node: string, capability: string, args: Record<string, unknown>, timeoutMs?: number): Promise<DaemonResponse> {
+  return new Promise((resolve, reject) => {
+    const s = net.connect(DAEMON_SOCK);
+    s.setTimeout(timeoutMs ?? 60_000);
+    let buf = '';
+    const failOnce = (err: Error): void => {
+      s.destroy();
+      reject(err);
+    };
+    s.once('error', failOnce);
+    s.once('timeout', () => failOnce(new Error('daemon 转发超时')));
+    s.once('connect', () => {
+      s.write(JSON.stringify({ node, capability, args, timeout_ms: timeoutMs }) + '\n');
+    });
+    s.on('data', (chunk) => {
+      buf += chunk.toString('utf8');
+      const idx = buf.indexOf('\n');
+      if (idx >= 0) {
+        try {
+          resolve(JSON.parse(buf.slice(0, idx)) as DaemonResponse);
+        } catch (err) {
+          failOnce(err instanceof Error ? err : new Error(String(err)));
+          return;
+        }
+        s.end();
+      }
+    });
+  });
+}
+
+/** 「虚拟客户端」：invoke 转发给 daemon，业务错误原样返回、daemon 自身错误抛异常触发回退。 */
+function daemonProxyClient(nodeName: string): { invoke: NodeAgentClient['invoke'] } {
+  return {
+    async invoke<T>(capability: string, args: Record<string, unknown>, timeoutMs?: number) {
+      const resp = await viaDaemon(nodeName, capability, args, timeoutMs);
+      if (resp.status === 'daemon_error') {
+        throw new Error(typeof resp.error === 'string' ? resp.error : resp.error?.message);
+      }
+      if (resp.status === 'failed') {
+        const e = resp.error;
+        return {
+          status: 'failed' as const,
+          error: typeof e === 'string' ? { name: 'E_EXECUTION_FAILED', message: e } : e,
+        } as never;
+      }
+      return { status: 'ok' as const, data: resp.data } as never;
+    },
+  };
+}
+
 async function withClient<T>(fn: (client: NodeAgentClient) => Promise<T>, nodeName?: string): Promise<T> {
+  const cfg = getClientConfig();
+  let target: ResolvedTarget;
+  try {
+    target = resolveTarget(cfg, nodeName ?? currentNodeOverride);
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+  const node = nodeName ?? currentNodeOverride ?? cfg.current;
+  // v10 daemon 快路径：socket 存活则经 daemon 复用长连接（省 1~2s TLS+握手）
+  if (node && existsSync(DAEMON_SOCK)) {
+    try {
+      return await fn(daemonProxyClient(node) as unknown as NodeAgentClient);
+    } catch (err) {
+      // daemon 自身错误（转发失败/超时）→ 静默回退直连；业务错误原样抛出
+      if (!(err instanceof ClientError)) {
+        return withClientDirect(fn, nodeName);
+      }
+      throw err;
+    }
+  }
+  return withClientDirect(fn, nodeName);
+}
+
+async function withClientDirect<T>(fn: (client: NodeAgentClient) => Promise<T>, nodeName?: string): Promise<T> {
   const cfg = getClientConfig();
   let target: ResolvedTarget;
   try {
@@ -1045,6 +1136,63 @@ async function main(): Promise<void> {
       const id = positionals[0];
       if (!id) fail('用法: nodeagent task <task_id> [--offset N] [--kill]');
       await cmdTask(id, opts);
+      return;
+    }
+    case 'daemon': {
+      // start | stop | status（无参默认 status）
+      const sub = positionals[0] ?? 'status';
+      if (sub === 'start') {
+        // 找 nodeagentd：优先 PATH 上的同名二进制（esbuild 单文件模式下与 CLI 同目录）
+        const { spawn: spawnDetached } = await import('node:child_process');
+        const binDir = path.dirname(process.argv[1] ?? 'nodeagent');
+        const candidates = [path.join(binDir, 'nodeagentd'), 'nodeagentd'];
+        let entry = '';
+        for (const c of candidates) {
+          if (existsSync(c)) {
+            entry = c;
+            break;
+          }
+        }
+        if (!entry) {
+          // 兜底：dev 模式 dist/daemon.js
+          const devEntry = path.join(binDir, 'daemon.js');
+          if (existsSync(devEntry)) entry = devEntry;
+        }
+        if (!entry) {
+          fail('未找到 nodeagentd（请运行: bash scripts/install-macos.sh）');
+        }
+        const child = spawnDetached(process.execPath, [entry], {
+          detached: true,
+          stdio: 'ignore',
+          env: process.env,
+        });
+        child.unref();
+        await new Promise((r) => setTimeout(r, 800));
+        console.log(existsSync(DAEMON_SOCK) ? `✓ nodeagentd 已启动（${DAEMON_SOCK}）` : '✗ daemon 未能启动');
+        return;
+      }
+      if (sub === 'stop') {
+        if (!existsSync(DAEMON_SOCK)) {
+          console.log('daemon 未在运行');
+          return;
+        }
+        const { spawn: sp } = await import('node:child_process');
+        sp('pkill', ['-f', 'nodeagentd.sock'], { stdio: 'ignore' });
+        await new Promise((r) => setTimeout(r, 500));
+        try {
+          fsSync.unlinkSync(DAEMON_SOCK);
+        } catch {
+          /* ignore */
+        }
+        console.log('✓ nodeagentd 已停止');
+        return;
+      }
+      // status
+      if (!existsSync(DAEMON_SOCK)) {
+        console.log('daemon: 未运行（启动: nodeagent daemon start）');
+      } else {
+        console.log(`daemon: 运行中（${DAEMON_SOCK}）`);
+      }
       return;
     }
     case 'clip':
