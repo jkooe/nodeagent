@@ -51,11 +51,12 @@ test('清单：v7~v11 新能力均已登记', () => {
     'event.unwatch',
     'event.list',
     'event.poll',
+    'system.metrics',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 35, '当前应有 35 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 36, '当前应有 36 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------

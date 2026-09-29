@@ -47,6 +47,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
                                       查询被控端审计日志 (v3+)
   nodeagent audit verify              校验审计链完整性（防篡改检测）(v11)
+  nodeagent metrics [--since <ms>]    成功指标：闭环率/装软件率/P95/拦截率 (v13)
   nodeagent discover [--wait 5]       发现局域网内的被控端（UDP 广播，免手抄 IP）(v4)
 
 文件传输 (v5):
@@ -975,6 +976,60 @@ async function cmdMacro(sub: string | undefined, file: string | undefined, opts:
   });
 }
 
+/** v13：成功指标（对齐 PRD 2.2 四项验收指标）。 */
+async function cmdMetrics(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.since) args['since'] = Number(opts.since);
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.Metrics, args, opts.json, (data) => {
+      const m = data as {
+        close_loop: { attempts: number; ok: number; failed: number; success_rate: number };
+        app_install: { attempts: number; ok: number; failed: number; success_rate: number | null };
+        latency: {
+          p50_ms: number;
+          p95_ms: number;
+          max_ms: number;
+          timeouts: number;
+          fast: { samples: number; p50_ms: number; p95_ms: number; max_ms: number };
+          slow: { samples: number; p50_ms: number; p95_ms: number; max_ms: number; capabilities: string[] };
+        };
+        security: { acl_denied: number; rate_limited: number; auth_failures: number; interception_rate: number };
+        verdict: {
+          close_loop_ok: boolean;
+          app_install_ok: boolean;
+          p95_ok: boolean;
+          interception_ok: boolean;
+          all_pass: boolean;
+        };
+        targets: { close_loop_success_rate: number; app_install_success_rate: number; p95_ms: number };
+        by_capability: Record<string, { attempts: number; ok: number; success_rate: number; p95_ms: number }>;
+        window: { from: number; to: number; entries: number };
+      };
+      const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
+      const mark = (ok: boolean): string => (ok ? '✅' : '❌');
+      const from = m.window.from ? new Date(m.window.from).toLocaleString('zh-CN') : '-';
+      const to = m.window.to ? new Date(m.window.to).toLocaleString('zh-CN') : '-';
+      console.log(`窗口: ${from} → ${to}   （审计 ${m.window.entries} 条）\n`);
+      console.log(`闭环成功率  ${pct(m.close_loop.success_rate).padStart(7)}  ${mark(m.verdict.close_loop_ok)}  目标 ≥${pct(m.targets.close_loop_success_rate)}  样本 ${m.close_loop.ok}/${m.close_loop.attempts}`);
+      const ir = m.app_install.success_rate;
+      console.log(`装软件成功率 ${ir === null ? '  无样本' : pct(ir).padStart(7)}  ${mark(m.verdict.app_install_ok)}  目标 ≥${pct(m.targets.app_install_success_rate)}  样本 ${m.app_install.ok}/${m.app_install.attempts}`);
+      console.log(`P95 时延    ${String(m.latency.fast.p95_ms + 'ms').padStart(7)}  ${mark(m.verdict.p95_ok)}  交互层（目标 <${m.targets.p95_ms}ms，样本 ${m.latency.fast.samples}：P50 ${m.latency.fast.p50_ms}ms / 最大 ${m.latency.fast.max_ms}ms${m.latency.timeouts ? ` / 超时 ${m.latency.timeouts}` : ''}）`);
+      console.log(`慢操作耗时  ${String(m.latency.slow.p95_ms + 'ms').padStart(7)}  ——   样本 ${m.latency.slow.samples}（${m.latency.slow.capabilities.join(' / ')}；本身耗时由业务决定，不计入达标判定）`);
+      console.log(`安全拦截    ${pct(m.security.interception_rate).padStart(7)}  ${mark(m.verdict.interception_ok)}  ACL 拒绝 ${m.security.acl_denied} / 超频 ${m.security.rate_limited} / 认证失败 ${m.security.auth_failures}`);
+      console.log(`\n总体: ${m.verdict.all_pass ? '✅ 四项全达标' : '⚠️ 存在未达标项'}`);
+
+      const caps = Object.entries(m.by_capability).sort((a, b) => b[1].attempts - a[1].attempts);
+      if (caps.length > 0) {
+        console.log('\n按能力细分（Top 10）：');
+        console.log(`  ${'能力'.padEnd(26)} ${'次数'.padStart(6)} ${'成功率'.padStart(8)} ${'P95'.padStart(9)}`);
+        for (const [name, st] of caps.slice(0, 10)) {
+          console.log(`  ${name.padEnd(26)} ${String(st.attempts).padStart(6)} ${pct(st.success_rate).padStart(8)} ${String(st.p95_ms + 'ms').padStart(9)}`);
+        }
+      }
+    }),
+  );
+}
+
 async function cmdClip(opts: Options): Promise<void> {
   // 图片上传：从本地文件读入（避免超长命令行参数）
   if (opts.imageFile) {
@@ -1654,6 +1709,9 @@ async function main(): Promise<void> {
       }
       return;
     }
+    case 'metrics':
+      await cmdMetrics(opts);
+      return;
     case 'clip':
       await cmdClip(opts);
       return;

@@ -430,6 +430,19 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_metrics',
+    description:
+      '按 PRD 2.2 汇总被控端成功指标（闭环成功率 / 装软件成功率 / P95 时延 / 安全拦截率）' +
+      '及达标判定与按能力细分。排查「成功率掉了没有／哪个能力最慢」时用。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        since: { type: 'integer', description: '可选：只统计该 Unix 毫秒之后的审计条目' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_event_watch',
     description:
       '订阅被控端事件：file=文件变动、process=进程启停、net=监听端口开闭。' +
@@ -577,6 +590,7 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_fs_write: CapabilityNames.FsWrite,
   na_fs_stat: CapabilityNames.FsStat,
   na_restart: CapabilityNames.AgentRestart,
+  na_metrics: CapabilityNames.Metrics,
   na_event_watch: CapabilityNames.EventWatch,
   na_event_poll: CapabilityNames.EventPoll,
   na_event_unwatch: CapabilityNames.EventUnwatch,
