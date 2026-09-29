@@ -15,6 +15,7 @@ export const CapabilityNames = {
   MouseMove: 'input.mouse.move',
   MouseClick: 'input.mouse.click',
   MouseScroll: 'input.mouse.scroll',
+  MouseDrag: 'input.mouse.drag',
   KeyType: 'input.key.type',
   KeyPress: 'input.key.press',
   // v3+ 审计
@@ -30,6 +31,7 @@ export const CapabilityNames = {
   WindowList: 'window.list',
   WindowFocus: 'window.focus',
   ScreenFind: 'screen.find',
+  ScreenRecord: 'screen.record',
   // v10 异步任务与剪贴板
   TaskList: 'system.task.list',
   TaskGet: 'system.task.get',
@@ -419,6 +421,38 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     },
   },
   {
+    name: CapabilityNames.MouseDrag,
+    version: '1.0',
+    description:
+      '鼠标拖拽：从 (from_x,from_y) 按下并拖到 (to_x,to_y) 释放。' +
+      '用于拖动文件/窗口、框选文本、滑动条。整段动作在单次调用内完成，步数按距离自适应。',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        from_x: { type: 'integer' },
+        from_y: { type: 'integer' },
+        to_x: { type: 'integer' },
+        to_y: { type: 'integer' },
+        button: { type: 'string', enum: ['left', 'right', 'middle'], default: 'left' },
+        steps: { type: 'integer', minimum: 1, maximum: 200, description: '插值步数（默认按距离自适应）' },
+        step_delay_ms: { type: 'integer', minimum: 0, maximum: 200, default: 12 },
+      },
+      required: ['from_x', 'from_y', 'to_x', 'to_y'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        dragged: { type: 'boolean' },
+        from: { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' } } },
+        to: { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' } } },
+        button: { type: 'string' },
+        steps: { type: 'integer' },
+      },
+    },
+  },
+  {
     name: CapabilityNames.KeyType,
     version: '1.0',
     description: '输入一段文本（逐字符模拟键盘）',
@@ -759,6 +793,44 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     },
   },
   {
+    name: CapabilityNames.ScreenRecord,
+    version: '1.0',
+    description:
+      '录制屏幕为帧序列（JPEG），检测到 ffmpeg 时额外封装 mp4。产物留在被控端目录，' +
+      '用 fs.read / pull 取回。用于复现「间歇性」问题、记录 GUI 操作过程。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        duration_ms: { type: 'integer', minimum: 1000, maximum: 60000, default: 5000 },
+        fps: { type: 'integer', minimum: 1, maximum: 10, default: 2 },
+        scale: { type: 'number', minimum: 0.1, maximum: 1, default: 0.5, description: '全屏录制时的缩放' },
+        region: {
+          type: 'object',
+          properties: {
+            x: { type: 'integer' }, y: { type: 'integer' },
+            width: { type: 'integer' }, height: { type: 'integer' },
+          },
+          description: '可选：只录制该区域（多屏时用负坐标）',
+        },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        dir: { type: 'string', description: '帧序列目录（被控端路径）' },
+        frames: { type: 'integer' },
+        requested_frames: { type: 'integer' },
+        elapsed_ms: { type: 'integer' },
+        fps: { type: 'integer' },
+        video_path: { type: 'string', description: '有 ffmpeg 时的 mp4 路径' },
+        frames_only: { type: 'boolean' },
+        message: { type: 'string' },
+      },
+    },
+  },
+  {
     name: CapabilityNames.TaskList,
     version: '1.0',
     description: '列出当前后台异步任务（system.shell.exec 以 async:true 启动的命令）。',
@@ -837,29 +909,50 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
   },
   {
     name: CapabilityNames.ClipGet,
-    version: '1.0',
-    description: '读取被控端剪贴板文本（Windows: Get-Clipboard；macOS: pbpaste）。',
-    risk: 'medium',
-    params_schema: { type: 'object', properties: {}, additionalProperties: false },
-    returns_schema: {
-      type: 'object',
-      properties: { text: { type: 'string' } },
-    },
-  },
-  {
-    name: CapabilityNames.ClipSet,
-    version: '1.0',
-    description: '向被控端剪贴板写入文本（Windows: Set-Clipboard；macOS: pbcopy）。',
+    version: '1.1',
+    description:
+      '读取被控端剪贴板。format=auto（默认）优先取图片、无图则取文本；text 仅取文本；image 仅取图片。',
     risk: 'medium',
     params_schema: {
       type: 'object',
-      properties: { text: { type: 'string' } },
-      required: ['text'],
+      properties: {
+        format: { type: 'string', enum: ['auto', 'text', 'image'], default: 'auto' },
+      },
       additionalProperties: false,
     },
     returns_schema: {
       type: 'object',
-      properties: { written: { type: 'integer', description: '写入的字符数' } },
+      properties: {
+        type: { type: 'string', description: 'text | image' },
+        text: { type: 'string' },
+        format: { type: 'string', description: '图片格式（png）' },
+        image_base64: { type: 'string' },
+        bytes: { type: 'integer' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.ClipSet,
+    version: '1.1',
+    description:
+      '向被控端剪贴板写入文本或图片（Windows: Set-Clipboard / SetImage；macOS: pbcopy）。' +
+      '图片以 Base64 PNG 传入（image_base64），内部经临时文件传递以规避命令行长度限制。',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '文本（与 image_base64 二选一）' },
+        image_base64: { type: 'string', description: 'PNG 图片的 Base64（与 text 二选一）' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        type: { type: 'string' },
+        written: { type: 'integer', description: '写入的字符数（文本）' },
+        written_bytes: { type: 'integer', description: '写入的字节数（图片）' },
+      },
     },
   },
   {

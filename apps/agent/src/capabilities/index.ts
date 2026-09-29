@@ -4,9 +4,10 @@ import { systemInfo, systemStatus, processList, serviceList, shellExec, auditLis
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
 import { windowList, windowFocus, screenFind } from './window.js';
+import { screenRecord } from './record.js';
 import { taskList, taskGet, taskKill } from './task.js';
 import { clipGet, clipSet } from './clipboard.js';
-import { mouseMove, mouseClick, mouseScroll, keyType, keyPress, setInputPolicy } from './input.js';
+import { mouseMove, mouseClick, mouseScroll, mouseDrag, keyType, keyPress, setInputPolicy } from './input.js';
 import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 
 export type CapabilityHandler = (args: Record<string, unknown>) => Promise<unknown>;
@@ -34,6 +35,7 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.MouseMove]: mouseMove,
     [CapabilityNames.MouseClick]: mouseClick,
     [CapabilityNames.MouseScroll]: mouseScroll,
+    [CapabilityNames.MouseDrag]: mouseDrag,
     [CapabilityNames.KeyType]: keyType,
     [CapabilityNames.KeyPress]: keyPress,
     // v3+ 审计
@@ -51,6 +53,7 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.WindowList]: windowList,
     [CapabilityNames.WindowFocus]: windowFocus,
     [CapabilityNames.ScreenFind]: screenFind,
+    [CapabilityNames.ScreenRecord]: screenRecord,
     // v10 异步任务与剪贴板
     [CapabilityNames.TaskList]: taskList,
     [CapabilityNames.TaskGet]: taskGet,
