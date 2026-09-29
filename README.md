@@ -269,7 +269,7 @@ nodeagent record [--duration 5000] [--fps 2] [--region x,y,w,h]     # 录屏为�
 ### 事件订阅与宏
 
 ```bash
-nodeagent events --kind file --path C:\logs --seconds 20   # 实时接收文件变动推送
+nodeagent events --kind file --path C:\logs --seconds 20   # 实时接收文件变动推送（CLI 直连推送）
 nodeagent events --kind process --pattern chrome*            # 进程启停
 nodeagent events                                              # 列出当前订阅
 nodeagent macro init demo.json                               # 生成示例宏
@@ -302,7 +302,7 @@ nodeagent mouse drag 300 200 700 500                # 拖拽（拖文件/框选�
 | `na_fs_list` · `na_fs_read` · `na_fs_write` · `na_fs_stat` | 读目录 / 读文件 / 写文件 / 元信息 |
 | `na_restart` | 受控重启被控端 |
 | `na_audit` · `na_discover` · `na_nodes` · `na_use` | 查审计、发现设备、多设备切换 |
-| `na_event_watch` · `na_event_poll` · `na_event_list` · `na_event_unwatch` | 事件订阅与增量拉取 |
+| `na_event_watch` · `na_event_poll` · `na_event_list` · `na_event_unwatch` | 事件订阅；`notify:true` 走 MCP 日志通知实时推送，否则用 `na_event_poll` 拉取 |
 | `na_macro_run` | 回放 GUI 宏（步骤序列，逐步校验） |
 
 ## Hub 中转（跨网段 / 公网）
@@ -361,6 +361,7 @@ pnpm test:unit    # 单元测试（89 项：协议纯函数 / 清单守护 / 审
 pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
 pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
 pnpm verify       # 对已配置的被控端跑全套验收并输出报告
+node scripts/verify-mcp-events.mjs   # 验证 MCP 事件双通路（推送 + 拉取）
 ```
 
 ### 三层自动化真机验证
@@ -423,7 +424,8 @@ nodeagent/
 | **v12.1** | **Hub 侧按控制端授权**（多令牌 + 按设备白/黑名单 + 注册准入） | ✅ |
 | **v12.2** | GUI **等待/重试语义**（`wait_ms`）—— 界面加载/动画不再假失败 | ✅ |
 | **v12.3** | **macOS 端 GUI 对齐**：AppleScript 窗口枚举/聚焦 + Vision OCR 元素定位（含 Retina 坐标换算） | ✅ |
-| **待办** | v7~v12 能力入 CI（需 workflow scope 才能推 CI 改动）、macOS 端 GUI 能力对齐、事件订阅推给 MCP 客户端（当前为缓冲拉取） | 🚧 |
+| **v12.4** | **事件直达 MCP 宿主**（实时推送 + 拉取双通路） | ✅ |
+| **待办** | CI 单元测试步骤已就绪（分支 `ci/workflow-unit-tests`，**需 `gh auth refresh -s workflow` 授权后推送**）；GUI 图像锚点匹配（自绘 UI 更稳） | 🚧 |
 
 ## 文档
 
