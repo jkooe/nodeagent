@@ -24,14 +24,14 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **自持** | `system.agent.restart` | **受控重启自身**（配置变更后让它生效，不会失联） |
 | **异步任务** | `system.task.list` · `system.task.get` · `system.task.kill` | 长命令后台执行 + 增量续读 + 终止（`exec` 加 `async:true`） |
 | **软件** | `app.list` · `app.install` | 已装软件（注册表 + winget）、winget 静默安装 |
-| **屏幕** | `screen.info` · `screen.capture` · `screen.record` · `screen.find` | 显示器 / 截屏 / **录屏为帧序列** / **按名字找元素取坐标**（含区域与等待） |
+| **屏幕** | `screen.info` · `screen.capture` · `screen.record` · `screen.find` | 显示器 / 截屏 / **录屏为帧序列** / **元素定位三引擎**（UIA 控件树 → OCR 文字 → **图像模板**） |
 | **窗口** | `window.list` · `window.focus` | 枚举可见窗口（精确矩形）/ 置前聚焦（**Windows + macOS**） |
 | **文件** | `fs.list` · `fs.stat` · `fs.read` · `fs.write` | 列目录 / 元信息 / 分块读 / 原子写 |
 | **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**与**按键序列/连按** |
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
 | **事件订阅** | `event.watch` · `event.unwatch` · `event.list` · `event.poll` | 文件变动 / 进程启停 / 端口开闭，**主动推送**（无需轮询） |
 
-**36 项能力** · **32 个 MCP 工具** · **101 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
+**36 项能力** · **32 个 MCP 工具** · **114 项单元测试** · **26 项端到端用例**（CI 在真实 Windows 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -280,7 +280,14 @@ nodeagent group add 办公机 win_a,win_b                        # 设备分组
 nodeagent fanout system.info --nodes @办公机                  # 按组并发下发
 ```
 
-### GUI 语义（找到元素再点，不猜坐标）
+### GUI 语义（三条腿：控件树 / 文字 / 图像）
+
+```bash
+nodeagent screen find "确定"                        # UIA → OCR 自动降级
+nodeagent screen find "登录" --method ocr --wait-ms 5000   # 等界面加载出来
+nodeagent screen find "" --method image --template C:\icons\save.png --threshold 0.9
+                                                    # 纯图标控件：按图找坐标
+```
 
 ```bash
 nodeagent invoke window.list --args '{"title_pattern":"记事本"}'
@@ -359,7 +366,7 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
 ```bash
 pnpm build        # 构建全部包
 pnpm typecheck    # 类型检查
-pnpm test:unit    # 单元测试（101 项：协议纯函数 / 清单守护 / 审计链 / ACL / 宏引擎 / 分组 / Hub 授权 / 成功指标）
+pnpm test:unit    # 单元测试（114 项：协议纯函数 / 清单守护 / 审计链 / ACL / 宏引擎 / 分组 / Hub 授权 / 指标 / 助手与预加载段）
 pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
 pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
 pnpm verify       # 对已配置的被控端跑全套验收并输出报告
@@ -428,6 +435,8 @@ nodeagent/
 | **v12.3** | **macOS 端 GUI 对齐**：AppleScript 窗口枚举/聚焦 + Vision OCR 元素定位（含 Retina 坐标换算） | ✅ |
 | **v12.4** | **事件直达 MCP 宿主**（实时推送 + 拉取双通路） | ✅ |
 | **v13** | **成功指标聚合**（PRD 2.2 四项）+ 依真实数据修正口径（时延分层） | ✅ |
+| **v14** | **PowerShell 常驻助手** —— GUI 能力提速 4~25 倍（预加载 C#/UIA，免每次现编译） | ✅ |
+| **v15** | `screen.find` **图像模板匹配**（纯图标/无文字控件盲区）+ 一堆真机根因修复 | ✅ |
 | **待办** | CI 单元测试步骤已就绪（分支 `ci/workflow-unit-tests`，**需 `gh auth refresh -s workflow` 授权后推送**）；GUI 图像锚点匹配（自绘 UI 更稳） | 🚧 |
 
 ## 文档
