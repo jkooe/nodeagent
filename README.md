@@ -31,7 +31,7 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
 | **事件订阅** | `event.watch` · `event.unwatch` · `event.list` · `event.poll` | 文件变动 / 进程启停 / 端口开闭，**主动推送**（无需轮询） |
 
-**35 项能力** · **31 个 MCP 工具** · **79 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
+**35 项能力** · **31 个 MCP 工具** · **89 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -330,6 +330,26 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
 被控端侧常备 2 条连接（`hub.warm_slots`）并在被占用时自动扩容 —— 因此
 「AI + 人同时在线」不再互斥（旧版是独占，会返回 `E_NODE_BUSY`）。
 
+**Hub 侧访问控制（v12）**：可配置多令牌，每个令牌独立指定能访问哪些设备：
+
+```json
+{
+  "token": "<主令牌，放行全部>",
+  "node_allowlist": ["win_*"],
+  "tokens": [
+    { "value": "ci-token",    "name": "ci",    "allow_nodes": ["win_build_*"] },
+    { "value": "guest-token", "name": "guest", "allow_nodes": ["*"], "deny_nodes": ["win_prod"] },
+    { "value": "roll-*",      "name": "rolling", "allow_nodes": ["win_a"] }
+  ]
+}
+```
+
+- 判定顺序 **deny → allow → 默认拒绝**；`node_allowlist` 非空时只有匹配的 node_id 能注册
+- `value` 以 `*` 结尾表示**前缀匹配**（便于令牌轮换期间灰度）
+- 设备列表按身份过滤（控制端只看得到自己被授权的设备），越权接入返回 `E_NODE_FORBIDDEN`
+- **职责边界**：Hub 只做「能否连到某设备」的接入过滤；连上之后的**能力级**授权
+  仍由被控端 ACL 按 client_id 裁决 —— 两层独立，Hub 不参与能力决策
+
 **安全边界**：Hub **只做字节透传**，不解析内容、不持有设备密钥 —— 控制端与被控端之间仍执行端到端握手，因此 **Hub 无法窃听也无法伪造**（Hub 被攻陷也不等于设备被接管）。生产环境建议在 Hub 前挂 Caddy / Nginx 终止 TLS。
 
 ## 开发
@@ -337,7 +357,7 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
 ```bash
 pnpm build        # 构建全部包
 pnpm typecheck    # 类型检查
-pnpm test:unit    # 单元测试（79 项：协议纯函数 / 清单守护 / 审计链 / ACL v11 / 宏引擎 / 设备分组）
+pnpm test:unit    # 单元测试（89 项：协议纯函数 / 清单守护 / 审计链 / ACL / 宏引擎 / 设备分组 / Hub 授权）
 pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
 pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
 pnpm verify       # 对已配置的被控端跑全套验收并输出报告
@@ -400,7 +420,8 @@ nodeagent/
 | **v11** | **安全加固**：私钥入系统密钥库（Keychain/DPAPI）+ 审计链防篡改 + ACL 细化（IP/时段/按能力限速） | ✅ |
 | **v11+** | **操作面补完**：鼠标拖拽 / 录屏 / 剪贴板图片 / 多设备并发 / 一键升级 | ✅ |
 | **v12** | **事件订阅**（file/process/net 主动推送）+ **GUI 宏**（步骤序列回放）+ **Hub 并发多控制端** + 设备分组 | ✅ |
-| **待办** | v7~v12 能力入 CI（需 workflow scope 才能推 CI 改动）、macOS 端 GUI 能力对齐、Hub 侧按设备授权 | 🚧 |
+| **v12.1** | **Hub 侧按控制端授权**（多令牌 + 按设备白/黑名单 + 注册准入） | ✅ |
+| **待办** | v7~v12 能力入 CI（需 workflow scope 才能推 CI 改动）、macOS 端 GUI 能力对齐、事件订阅推给 MCP 客户端（当前为缓冲拉取） | 🚧 |
 
 ## 文档
 

@@ -66,7 +66,14 @@ export interface HubListResult {
 
 export interface HubError {
   type: 'error';
-  code: 'E_HUB_AUTH' | 'E_NODE_OFFLINE' | 'E_NODE_BUSY' | 'E_BAD_REQUEST' | 'E_TOO_MANY_SLOTS';
+  code:
+    | 'E_HUB_AUTH'
+    | 'E_NODE_OFFLINE'
+    | 'E_NODE_BUSY'
+    | 'E_BAD_REQUEST'
+    | 'E_TOO_MANY_SLOTS'
+    /** v12：身份合法但未被授权访问该设备 / 该节点不允许注册 */
+    | 'E_NODE_FORBIDDEN';
   message: string;
 }
 

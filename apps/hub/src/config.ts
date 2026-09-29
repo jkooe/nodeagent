@@ -3,6 +3,21 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
+/**
+ * Hub 侧访问规则（v12 / E3c）：一个令牌 = 一个控制端身份。
+ * `value` 以 `*` 结尾时按**前缀**匹配（便于令牌轮换期间灰度）。
+ */
+export interface HubTokenRule {
+  /** 令牌值（前缀式轮换：以 * 结尾表示前缀匹配） */
+  value: string;
+  /** 身份名（日志/审计可读） */
+  name?: string;
+  /** 可访问设备（glob，默认 ["*"]） */
+  allow_nodes?: string[];
+  /** 禁止访问设备（优先级高于 allow） */
+  deny_nodes?: string[];
+}
+
 export interface HubConfig {
   node_id: string;
   host: string;
@@ -20,6 +35,16 @@ export interface HubConfig {
    * 默认 3：够 AI + 人 + 备用同时在线；设为 1 即退回旧的「独占」语义。
    */
   max_slots_per_node?: number;
+  /**
+   * v12 / E3c：多控制端令牌（各自独立的设备白/黑名单）。
+   * 未配置时退回顶层 `token`（视为主令牌，放行全部设备）。
+   */
+  tokens?: HubTokenRule[];
+  /**
+   * v12 / E3c：允许注册的设备白名单（glob）。非空时，未匹配的 node_id 无法注册，
+   * 防止他人用泄露的令牌把自家节点挂到你的 Hub 上。
+   */
+  node_allowlist?: string[];
 }
 
 export function hubDir(): string {

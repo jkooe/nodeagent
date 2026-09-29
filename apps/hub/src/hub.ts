@@ -3,6 +3,7 @@ import { createServer as createHttpServer, type IncomingMessage } from 'node:htt
 import { createServer as createHttpsServer } from 'node:https';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 import type { HubConfig } from './config.js';
+import { nodeAllowed, nodeMayRegister, resolveToken, visibleNodes, type ResolvedToken } from './authz.js';
 import type {
   HubClientConnect,
   HubError,
@@ -160,8 +161,15 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
     log('info', `配对成功 ${entry.node_id} ↔ 控制端`);
   }
 
-  /** 解析 + 令牌校验；失败时已回错误消息并关闭连接。 */
-  function readControl(ws: WebSocket, raw: string, remote: string): HubInbound | null {
+  /**
+   * 解析 + 身份校验（v12：多令牌）。失败时已回错误并关闭连接。
+   * 返回消息 + 解析出的身份（供后续设备级授权判断）。
+   */
+  function readControl(
+    ws: WebSocket,
+    raw: string,
+    remote: string,
+  ): { msg: HubInbound; token: ResolvedToken } | null {
     let msg: HubInbound;
     try {
       msg = JSON.parse(raw) as HubInbound;
@@ -169,12 +177,13 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
       fail(ws, 'E_BAD_REQUEST', '消息不是合法 JSON');
       return null;
     }
-    if (msg.token !== cfg.token) {
+    const token = resolveToken(cfg, msg.token);
+    if (!token) {
       log('warn', `鉴权失败（令牌不匹配）from ${remote}`);
       fail(ws, 'E_HUB_AUTH', 'Hub 令牌错误');
       return null;
     }
-    return msg;
+    return { msg, token };
   }
 
   // ---------------- 被控端接入 ----------------
@@ -184,12 +193,21 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
 
     const onMessage = (data: RawData): void => {
       if (registeredId) return; // 注册后不再受理控制面消息
-      const msg = readControl(ws, data.toString(), remote);
-      if (!msg) return;
+      const parsed = readControl(ws, data.toString(), remote);
+      if (!parsed) return;
+      const { msg, token } = parsed;
       if (msg.type !== 'register') {
         fail(ws, 'E_BAD_REQUEST', `被控端不应发送 ${msg.type}`);
         return;
       }
+      // v12：注册准入白名单（防止陌生节点借令牌挂靠）
+      const reg = nodeMayRegister(cfg, msg.node_id);
+      if (!reg.allowed) {
+        log('warn', `拒绝注册 ${msg.node_id}：${reg.reason}`);
+        fail(ws, 'E_NODE_FORBIDDEN', reg.reason);
+        return;
+      }
+      void token;
 
       const nodeId = msg.node_id;
       const pool = poolOf(nodeId).filter((e) => e.ws.readyState === WebSocket.OPEN);
@@ -228,12 +246,17 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
   // ---------------- 控制端接入 ----------------
 
   function handleClientSocket(ws: WebSocket, remote: string): void {
+    let clientToken: ResolvedToken | null = null;
+    void clientToken;
     const onMessage = (data: RawData): void => {
-      const msg = readControl(ws, data.toString(), remote);
-      if (!msg) return;
+      const parsed = readControl(ws, data.toString(), remote);
+      if (!parsed) return;
+      const { msg, token } = parsed;
+      clientToken = token;
 
       if (msg.type === 'list') {
-        send(ws, { type: 'list.result', agents: viewAgents() });
+        // v12：只展示该身份被授权的设备
+        send(ws, { type: 'list.result', agents: visibleNodes(token, viewAgents()) });
         return;
       }
 
@@ -245,6 +268,13 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
       const nodeId = (msg as HubClientConnect).node_id;
       if (liveCount(nodeId) === 0) {
         fail(ws, 'E_NODE_OFFLINE', `设备离线: ${nodeId}`);
+        return;
+      }
+      // v12：设备级授权（Hub 只做接入过滤；能力级仍由被控端 ACL 裁夺）
+      const perm = nodeAllowed(token, nodeId);
+      if (!perm.allowed) {
+        log('warn', `拒绝接入 ${nodeId}（${token.name}）：${perm.reason}`);
+        fail(ws, 'E_NODE_FORBIDDEN', perm.reason);
         return;
       }
       void (async () => {
