@@ -7,13 +7,13 @@
  * 运行：node tests/e2e/run.mjs
  */
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { NodeAgentClient } from '../../packages/client/dist/index.js';
+import { NodeAgentClient, runMacro } from '../../packages/client/dist/index.js';
 import { generateKeyPair } from '../../packages/protocol/dist/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -651,6 +651,263 @@ async function testHubMode() {
   }
 }
 
+// ============================================================================
+// v7~v13 新增能力的 e2e 覆盖（审查报告 §5.1-3：新能力此前只有手工真机验证）
+// ============================================================================
+
+/**
+ * v7+ GUI 语义契约。
+ * 不断言「屏幕上一定有什么」（CI 无桌面会话时不可靠），而断言**对外契约**：
+ *   - window.list 结构正确且前台窗口排最前
+ *   - window.focus 目标不存在时是干净错误（不崩溃、不挂起）
+ *   - screen.find 无命中时返回空数组 + engine + waited_ms（而非报错）
+ *   - 参数校验（wait_ms 越界）必须拒绝
+ */
+/**
+ * 断言「协议层错误」。
+ *
+ * ⚠️ 契约差异（e2e 实测踩到的）：
+ *   - **能力层**失败（如输入未开启、窗口未找到）→ 正常返回 `{ status:'failed', error:{name} }`
+ *   - **协议层**失败（参数校验 / 鉴权 / ACL / 限速）→ 让 invoke() **抛 ClientError**（err.name = 错误码）
+ * 两种都不能少：前者是「调用成功但业务失败」，后者是「请求根本没被受理」。
+ */
+async function expectProtocolError(fn, expectedName) {
+  try {
+    await fn();
+  } catch (err) {
+    assert.equal(err.name, expectedName, `期望 ${expectedName}，实际 ${err.name}`);
+    return;
+  }
+  assert.fail(`期望抛出 ${expectedName}，但调用居然成功了`);
+}
+
+async function testGuiSemantics() {
+  const c = await connect();
+  try {
+    const wl = await c.invoke('window.list', { limit: 5 });
+    if (wl.status === 'ok') {
+      assert.ok(Array.isArray(wl.data.windows), 'windows 应为数组');
+      assert.equal(typeof wl.data.total, 'number', 'total 应为数字');
+      assert.ok(wl.data.windows.length <= 5, 'limit 应生效');
+      const hasFg = wl.data.windows.some((w) => w.is_foreground);
+      if (hasFg) assert.ok(wl.data.windows[0].is_foreground, '前台窗口应排在最前（避免被 limit 截掉）');
+    } else {
+      // macOS 未授予辅助功能权限时走这里：必须是可执行的提示，而不是笼统失败
+      assert.ok(
+        ['E_EXECUTION_FAILED', 'E_UNSUPPORTED_PLATFORM'].includes(wl.error.name),
+        `非预期错误: ${wl.error.name}`,
+      );
+      assert.match(wl.error.message, /权限|辅助功能|不支持/);
+    }
+
+    const wf = await c.invoke('window.focus', { title: '绝不存在的窗口_ZZZ9' });
+    assert.equal(wf.status, 'failed', '目标不存在应失败');
+    assert.ok(
+      ['E_EXECUTION_FAILED', 'E_UNSUPPORTED_PLATFORM'].includes(wf.error.name),
+      `非预期错误: ${wf.error.name}`,
+    );
+
+    if (process.platform === 'win32') {
+      const sf = await c.invoke('screen.find', { text: '绝不存在_ZZZ9', method: 'uia', limit: 3 });
+      assert.equal(sf.status, 'ok', '无命中不是错误，应返回空结果');
+      assert.deepEqual(sf.data.matches, [], '无命中时 matches 应为空数组');
+      assert.equal(sf.data.engine, 'uia', '应如实报告使用的引擎');
+      assert.equal(typeof sf.data.waited_ms, 'number', '应回报实际等待时长');
+    }
+
+    await expectProtocolError(
+      () => c.invoke('screen.find', { text: 'x', wait_ms: 999999 }),
+      'E_PARAM_INVALID',
+    );
+  } finally {
+    c.close();
+  }
+}
+
+/** v10：剪贴板读写 + 后台任务全生命周期（启动→读取→列表→终止）。 */
+async function testClipAndTasks() {
+  const c = await connect();
+  try {
+    const marker = `e2e-clip-${Date.now()}`;
+    const set = await c.invoke('clip.set', { text: marker });
+    assert.equal(set.status, 'ok');
+    const got = await c.invoke('clip.get', { format: 'text' });
+    assert.equal(got.status, 'ok');
+    assert.equal(String(got.data.text ?? '').trim(), marker, '剪贴板往返应一致');
+
+    const bg = await c.invoke('system.shell.exec', {
+      command: 'echo e2e-async-marker',
+      async: true,
+    });
+    assert.equal(bg.status, 'ok');
+    assert.ok(bg.data.task_id, '异步执行应返回 task_id');
+    const taskId = bg.data.task_id;
+
+    await new Promise((r) => setTimeout(r, 1500));
+    const g = await c.invoke('system.task.get', { task_id: taskId });
+    assert.equal(g.status, 'ok');
+    assert.match(String(g.data.data ?? ''), /e2e-async-marker/, '应能续读到任务输出');
+    // 任务终态为 done / killed / failed，运行中为 running
+    assert.ok(['done', 'running'].includes(g.data.state), `状态应合法: ${g.data.state}`);
+
+    const list = await c.invoke('system.task.list', {});
+    assert.ok(Array.isArray(list.data.tasks), 'tasks 应为数组');
+    assert.ok(list.data.tasks.some((t) => t.task_id === taskId), '列表中应能看到该任务');
+
+    // 终止：起一个长任务再杀掉，并确认状态已终结
+    const longCmd = process.platform === 'win32' ? 'Start-Sleep 30' : 'sleep 30';
+    const long = await c.invoke('system.shell.exec', { command: longCmd, async: true });
+    const longId = long.data.task_id;
+    await new Promise((r) => setTimeout(r, 1000));
+    const killed = await c.invoke('system.task.kill', { task_id: longId });
+    assert.equal(killed.data.killed, true, '运行中的任务应可终止');
+    const after = await c.invoke('system.task.get', { task_id: longId });
+    assert.equal(after.data.state, 'killed', '终止后状态应为 killed');
+    assert.equal(after.data.exit_code, 124, '被强杀的任务退出码应归一为 124');
+  } finally {
+    c.close();
+  }
+}
+
+/** v12：事件订阅 —— 推送与拉取两条通路都要通。 */
+async function testEventWatch() {
+  const dir = mkdtempSync(join(tmpdir(), 'na-e2e-watch-'));
+  const pushed = [];
+  const c = new NodeAgentClient({
+    url: URL,
+    key: KEY,
+    clientId: 'e2e_mac',
+    onEvent: (e) => pushed.push(e),
+  });
+  try {
+    await c.connect();
+    const w = await c.invoke('event.watch', { kind: 'file', path: dir });
+    assert.equal(w.status, 'ok');
+    const watchId = w.data.watch_id;
+    assert.ok(watchId, '应返回 watch_id');
+
+    // 制造变动（创建 + 修改）
+    writeFileSync(join(dir, 'watched.txt'), 'v1');
+    await new Promise((r) => setTimeout(r, 400));
+    writeFileSync(join(dir, 'watched.txt'), 'v2');
+    await new Promise((r) => setTimeout(r, 1200));
+
+    assert.ok(pushed.length > 0, '应通过 event 通知收到推送（无需轮询）');
+    assert.ok(
+      pushed.some((e) => String(e.target ?? '').includes('watched.txt')),
+      `推送应包含目标文件名: ${JSON.stringify(pushed.slice(0, 2))}`,
+    );
+
+    const poll = await c.invoke('event.poll', { limit: 20 });
+    assert.equal(poll.status, 'ok');
+    assert.ok(poll.data.events.length > 0, '拉取通路也应能读到事件');
+    assert.equal(typeof poll.data.next_cursor, 'number', '应返回游标供增量拉取');
+    const firstCursor = poll.data.next_cursor;
+    const again = await c.invoke('event.poll', { since: firstCursor });
+    assert.equal(again.data.events.length, 0, '同一游标再拉应无新事件');
+
+    const listed = await c.invoke('event.list', {});
+    assert.ok(
+      listed.data.watches.some((x) => x.watch_id === watchId),
+      '订阅列表应包含该订阅',
+    );
+
+    const un = await c.invoke('event.unwatch', { watch_id: watchId });
+    assert.equal(un.data.removed, true);
+    const after = await c.invoke('event.list', {});
+    assert.ok(!after.data.watches.some((x) => x.watch_id === watchId), '取消后不应再出现');
+
+    // 参数校验（协议层错误 -> 抛 ClientError）
+    await expectProtocolError(() => c.invoke('event.watch', { kind: 'disk' }), 'E_PARAM_INVALID');
+  } finally {
+    c.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** v12：GUI 宏引擎 —— 用不依赖 GUI 的步骤组合验证回放与断言。 */
+async function testMacroReplay() {
+  const c = await connect();
+  try {
+    const ok = await runMacro(
+      { client: c },
+      {
+        name: 'e2e-macro',
+        steps: [
+          { action: 'exec', command: 'echo macro-step-1', expect_stdout: 'macro-step-1' },
+          { action: 'clip', set: 'macro-clip-value' },
+          { action: 'clip', expect: 'macro-clip-value' },
+          { action: 'sleep', ms: 50 },
+          { action: 'exec', command: 'echo macro-step-2', expect_stdout: 'macro-step-2' },
+        ],
+      },
+      { STAMP: 'e2e' },
+    );
+    assert.equal(ok.ok, true, `宏应全通过: ${JSON.stringify(ok.steps)}`);
+    assert.equal(ok.steps.length, 5);
+    assert.ok(ok.steps.every((s) => s.ok));
+
+    // 断言失败必须中止并给出定位
+    const fail = await runMacro(
+      { client: c },
+      {
+        steps: [
+          { action: 'exec', command: 'echo only-this' },
+          { action: 'exec', command: 'echo other', expect_stdout: '不存在的输出' },
+          { action: 'exec', command: 'echo never-runs' },
+        ],
+      },
+    );
+    assert.equal(fail.ok, false);
+    assert.equal(fail.failed_at, 1, '应定位到第 1 步');
+    assert.equal(fail.steps.length, 2, '失败后不应继续执行');
+
+    // optional 步骤失败不中断
+    const opt = await runMacro(
+      { client: c },
+      {
+        steps: [
+          { action: 'clip', expect: '绝不在剪贴板里的内容', optional: true },
+          { action: 'exec', command: 'echo still-runs' },
+        ],
+      },
+    );
+    assert.equal(opt.ok, true, 'optional 失败不应让整体失败');
+  } finally {
+    c.close();
+  }
+}
+
+/** v13：成功指标形状与达标判定 + 审计链完整性（防篡改）。 */
+async function testMetricsAndAudit() {
+  const c = await connect();
+  try {
+    const m = await c.invoke('system.metrics', {});
+    assert.equal(m.status, 'ok');
+    const d = m.data;
+    for (const k of ['close_loop', 'app_install', 'latency', 'security', 'verdict', 'targets', 'window']) {
+      assert.ok(k in d, `指标缺少字段 ${k}`);
+    }
+    assert.ok(d.close_loop.attempts >= 1, '至少应统计到本次会话的调用');
+    assert.ok(d.close_loop.success_rate > 0 && d.close_loop.success_rate <= 1);
+    assert.equal(d.security.interception_rate, 1, '拦截率恒为 100%（拦截由服务端强制）');
+    assert.equal(typeof d.verdict.all_pass, 'boolean');
+    // 时延分层：交互层参与判定，慢操作单列
+    assert.equal(typeof d.latency.fast.p95_ms, 'number');
+    assert.equal(typeof d.latency.slow.p95_ms, 'number');
+    assert.ok(Array.isArray(d.latency.slow.capabilities) && d.latency.slow.capabilities.length > 0);
+    // 装软件无样本时应为 null（而非 0，否则会误判为不达标）
+    if (d.app_install.attempts === 0) assert.equal(d.app_install.success_rate, null);
+
+    const v = await c.invoke('system.audit.verify', {});
+    assert.equal(v.status, 'ok');
+    assert.equal(v.data.ok, true, '审计链应完整');
+    assert.ok(v.data.checked >= 1, '应校验到链条目');
+  } finally {
+    c.close();
+  }
+}
+
 async function main() {
   console.log('\nnodeagent 端到端测试\n');
   const agent = startAgent();
@@ -846,6 +1103,13 @@ async function main() {
 
     // ---------- v6 Hub 中转 ----------
     await test('v6 Hub 中转：注册→配对→端到端握手→多次接入→v12 并发双控制端', testHubMode);
+
+    // ---------- v7~v13 新增能力（含 v14 常驻助手路径）----------
+    await test('v8 GUI 语义契约：window.list 结构 / focus 干净报错 / find 空命中与参数校验', testGuiSemantics);
+    await test('v10 剪贴板与后台任务：往返 / 异步执行→续读→列表→终止(exit 124)', testClipAndTasks);
+    await test('v12 事件订阅：文件监控 → 推送 + 拉取双通路 → 取消', testEventWatch);
+    await test('v12 GUI 宏引擎：步骤回放 / 断言中止定位 / optional 继续', testMacroReplay);
+    await test('v13 成功指标与审计链：形状 + 分层时延 + 达标判定 + 链完整', testMetricsAndAudit);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));
