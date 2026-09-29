@@ -540,7 +540,16 @@ async function testHubMode() {
 
   writeFileSync(
     join(hubHome, 'hub.json'),
-    JSON.stringify({ node_id: 'hub_e2e', host: '127.0.0.1', port: HUB_PORT, token: HUB_TOKEN, log_level: 'warn' }),
+    JSON.stringify({
+      node_id: 'hub_e2e',
+      host: '127.0.0.1',
+      port: HUB_PORT,
+      token: HUB_TOKEN,
+      log_level: 'warn',
+      // v12 / E3c：受限令牌（只允许访问 other_node，用于验证设备级授权）
+      tokens: [{ value: 'limited-token', name: 'limited', allow_nodes: ['other_node'] }],
+      node_allowlist: ['hub_*'],
+    }),
   );
   writeFileSync(
     join(agentHome, 'agent.json'),
@@ -625,6 +634,16 @@ async function testHubMode() {
     assert.equal(r4.status, 'ok', '控制端 2 第二次调用应成功');
     cc1.close();
     cc2.close();
+
+    // 6. v12 设备级授权：受限令牌访问未授权设备 -> E_NODE_FORBIDDEN
+    await assert.rejects(
+      () => mk('limited-token', 'hub_node').connect(),
+      (e) => {
+        assert.equal(e.name, 'E_NODE_FORBIDDEN', `期望 E_NODE_FORBIDDEN，实际 ${e.name}`);
+        assert.match(e.message, /未被授权|白名单/, '错误信息应说明授权原因');
+        return true;
+      },
+    );
   } finally {
     hubProc.kill();
     agentProc.kill();
