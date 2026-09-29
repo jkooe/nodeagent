@@ -746,6 +746,7 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         width: { type: 'integer' },
         height: { type: 'integer' },
         focused: { type: 'boolean' },
+        activated_by: { type: 'string', description: '激活方式：api（SetForegroundWindow）| click（标题栏点击兜底）' },
       },
     },
   },

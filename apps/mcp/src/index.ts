@@ -11,6 +11,7 @@ import {
   resolveTarget,
 } from '@nodeagent/client';
 import { CapabilityNames, DEFAULT_DISCOVERY_PORT, type InvokeResult } from '@nodeagent/protocol';
+import { runMacro } from '@nodeagent/client';
 
 /** stderr 日志（stdout 被 MCP 协议占用，禁止打印）。 */
 function log(msg: string): void {
@@ -371,6 +372,27 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_macro_run',
+    description:
+      '回放一段 GUI 宏（步骤序列）：把一次成功操作固化后重复执行。' +
+      '步骤支持 focus/find/click/type/key/drag/sleep/exec/clip/assert/capture，' +
+      '可带 retry 重试、optional 可选、${VAR} 变量替换。返回每步结果（含失败定位）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        steps: {
+          type: 'array',
+          description: '步骤数组',
+          items: { type: 'object', additionalProperties: true },
+        },
+        vars: { type: 'object', description: '可选：变量表（供 ${NAME} 替换）' },
+        default_delay_ms: { type: 'integer', description: '每步之间默认等待' },
+      },
+      required: ['steps'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_event_watch',
     description:
       '订阅被控端事件：file=文件变动、process=进程启停、net=监听端口开闭。' +
@@ -668,6 +690,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: [{ type: 'text', text: `已配置 ${lines.length} 台设备（● = 当前目标）：\n${lines.join('\n')}` }],
     };
+  }
+
+  // na_macro_run：需要直接驱动一个长连接完成多步操作，故在执行入口单独处理
+  if (name === 'na_macro_run') {
+    const steps = input['steps'];
+    if (!Array.isArray(steps) || steps.length === 0) {
+      return { content: [{ type: 'text', text: '✗ steps 不能为空' }] };
+    }
+    try {
+      const client = await ensureClient();
+      const res = await runMacro(
+        { client: client as unknown as NodeAgentClient },
+        {
+          name: (input['name'] as string) ?? 'macro',
+          steps: steps as never,
+          ...(input['default_delay_ms'] !== undefined
+            ? { default_delay_ms: Number(input['default_delay_ms']) }
+            : {}),
+        },
+        (input['vars'] ?? {}) as Record<string, string>,
+      );
+      const lines = res.steps.map(
+        (s) => `${s.ok ? '✓' : '✗'} [${String(s.index).padStart(2)}] ${s.action.padEnd(8)} ${String(s.ms + 'ms').padStart(7)}  ${s.detail ?? ''}`,
+      );
+      const head = res.ok
+        ? `宏「${res.name}」全部 ${res.steps.length} 步通过：`
+        : `宏「${res.name}」在第 ${res.failed_at} 步失败：`;
+      return { content: [{ type: 'text', text: `${head}\n${lines.join('\n')}` }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `✗ 宏执行异常: ${err instanceof Error ? err.message : String(err)}` }] };
+    }
   }
 
   // na_use：会话级切换目标设备（下次调用生效，不影响 CLI 的默认设备）
