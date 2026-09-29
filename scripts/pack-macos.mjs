@@ -58,6 +58,7 @@ console.log('\n=== ② 打包控制端 ===');
 rmSync(PKG_DIR, { recursive: true, force: true });
 mkdirSync(PKG_DIR, { recursive: true });
 bundle('apps/cli/dist/index.js', join(PKG_DIR, 'nodeagent'));
+bundle('apps/cli/dist/daemon.js', join(PKG_DIR, 'nodeagentd'));
 bundle('apps/mcp/dist/index.js', join(PKG_DIR, 'nodeagent-mcp'));
 
 console.log(`\n✓ 完成: ${PKG_DIR}`);
