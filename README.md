@@ -20,7 +20,7 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 
 | 分组 | 能力 | 说明 |
 |---|---|---|
-| **系统** | `system.info` · `system.status` · `system.process.list` · `system.service.list` · `system.shell.exec` · `system.audit.list` · `system.audit.verify` | 信息 / 资源 / 进程 / 服务 / 命令 / 审计 / **审计防篡改校验** |
+| **系统** | `system.info` · `system.status` · `system.process.list` · `system.service.list` · `system.shell.exec` · `system.audit.list` · `system.audit.verify` · `system.metrics` | 信息 / 资源 / 进程 / 服务 / 命令 / 审计 / **防篡改校验** / **成功指标（PRD 2.2）** |
 | **自持** | `system.agent.restart` | **受控重启自身**（配置变更后让它生效，不会失联） |
 | **异步任务** | `system.task.list` · `system.task.get` · `system.task.kill` | 长命令后台执行 + 增量续读 + 终止（`exec` 加 `async:true`） |
 | **软件** | `app.list` · `app.install` | 已装软件（注册表 + winget）、winget 静默安装 |
@@ -31,7 +31,7 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
 | **事件订阅** | `event.watch` · `event.unwatch` · `event.list` · `event.poll` | 文件变动 / 进程启停 / 端口开闭，**主动推送**（无需轮询） |
 
-**35 项能力** · **31 个 MCP 工具** · **89 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
+**36 项能力** · **32 个 MCP 工具** · **101 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -245,6 +245,7 @@ nodeagent push <本地文件> <远端路径> [--create-dirs]  # 上传（自动�
 ```bash
 nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
 nodeagent audit verify                              # 校验审计链完整性（防篡改检测）
+nodeagent metrics [--since <ms>]                    # 成功指标：闭环率/装软件率/P95/拦截率
 nodeagent keygen [--id mac_01]                      # 生成 Ed25519 密钥 + ACL 配置片段（私钥入系统钥匙串）
 ```
 
@@ -304,6 +305,7 @@ nodeagent mouse drag 300 200 700 500                # 拖拽（拖文件/框选�
 | `na_audit` · `na_discover` · `na_nodes` · `na_use` | 查审计、发现设备、多设备切换 |
 | `na_event_watch` · `na_event_poll` · `na_event_list` · `na_event_unwatch` | 事件订阅；`notify:true` 走 MCP 日志通知实时推送，否则用 `na_event_poll` 拉取 |
 | `na_macro_run` | 回放 GUI 宏（步骤序列，逐步校验） |
+| `na_metrics` | 成功指标（闭环率 / 装软件率 / P95 / 拦截率）+ 达标判定 |
 
 ## Hub 中转（跨网段 / 公网）
 
@@ -357,7 +359,7 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
 ```bash
 pnpm build        # 构建全部包
 pnpm typecheck    # 类型检查
-pnpm test:unit    # 单元测试（89 项：协议纯函数 / 清单守护 / 审计链 / ACL / 宏引擎 / 设备分组 / Hub 授权）
+pnpm test:unit    # 单元测试（101 项：协议纯函数 / 清单守护 / 审计链 / ACL / 宏引擎 / 分组 / Hub 授权 / 成功指标）
 pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
 pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
 pnpm verify       # 对已配置的被控端跑全套验收并输出报告
@@ -425,6 +427,7 @@ nodeagent/
 | **v12.2** | GUI **等待/重试语义**（`wait_ms`）—— 界面加载/动画不再假失败 | ✅ |
 | **v12.3** | **macOS 端 GUI 对齐**：AppleScript 窗口枚举/聚焦 + Vision OCR 元素定位（含 Retina 坐标换算） | ✅ |
 | **v12.4** | **事件直达 MCP 宿主**（实时推送 + 拉取双通路） | ✅ |
+| **v13** | **成功指标聚合**（PRD 2.2 四项）+ 依真实数据修正口径（时延分层） | ✅ |
 | **待办** | CI 单元测试步骤已就绪（分支 `ci/workflow-unit-tests`，**需 `gh auth refresh -s workflow` 授权后推送**）；GUI 图像锚点匹配（自绘 UI 更稳） | 🚧 |
 
 ## 文档
