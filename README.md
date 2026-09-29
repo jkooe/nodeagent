@@ -20,13 +20,20 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 
 | 分组 | 能力 | 说明 |
 |---|---|---|
-| **系统** | `system.info` · `system.status` · `system.process.list` · `system.service.list` · `system.shell.exec` · `system.audit.list` | 信息 / 资源 / 进程 / 服务 / 命令 / 审计 |
+| **系统** | `system.info` · `system.status` · `system.process.list` · `system.service.list` · `system.shell.exec` · `system.audit.list` · `system.audit.verify` | 信息 / 资源 / 进程 / 服务 / 命令 / 审计 / **审计防篡改校验** |
+| **自持** | `system.agent.restart` | **受控重启自身**（配置变更后让它生效，不会失联） |
+| **异步任务** | `system.task.list` · `system.task.get` · `system.task.kill` | 长命令后台执行 + 增量续读 + 终止（`exec` 加 `async:true`） |
 | **软件** | `app.list` · `app.install` | 已装软件（注册表 + winget）、winget 静默安装 |
-| **屏幕** | `screen.info` · `screen.capture` | 显示器信息、截屏（支持区域与缩放） |
+| **屏幕** | `screen.info` · `screen.capture` · `screen.record` · `screen.find` | 显示器 / 截屏 / **录屏为帧序列** / **按名字找元素取坐标** |
+| **窗口** | `window.list` · `window.focus` | 枚举可见窗口（精确矩形）/ 置前聚焦 |
 | **文件** | `fs.list` · `fs.stat` · `fs.read` · `fs.write` | 列目录 / 元信息 / 分块读 / 原子写 |
-| **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**） |
+| **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**与**按键序列/连按** |
+| **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
 
-**19 项能力** · **15 个 MCP 工具** · **21 项端到端用例**（CI 在真实 Windows 上验证）
+**31 项能力** · **26 个 MCP 工具** · **61 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
+
+> 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
+> 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
 
 ## 快速开始
 
@@ -57,6 +64,16 @@ pnpm build
 3. 右键以**管理员**运行其中的 `install.ps1`
 
 安装脚本会使用**包内自带的 Node.js 运行时**，自动：生成预共享密钥 → 写配置 → 放行防火墙 → 注册开机自启 → 启动 Agent，并打印**密钥**与**连接命令**。
+
+**两种运行模式（重要）**
+
+| 模式 | 命令 | 登录/注销 | 能力范围 |
+|---|---|---|---|
+| 交互（默认） | `install.ps1` | 登录时启动；**注销即停** | 全部能力，**含 GUI**（截屏 / UIA 找元素 / 键鼠注入） |
+| 无人值守 | `install.ps1 -Unattended -AtStartup` | **注销、重启后仍运行**（S4U，无需存密码） | 无 GUI —— 截屏/输入类能力不可用（进程在非交互会话，没有桌面） |
+
+> 这是 Windows 的固有限制：**图形操作必须有交互桌面**。需要 GUI 就保持登录（可锁屏）；
+> 只需跑命令/传文件/查状态这类无人值守场景，用 `-Unattended` 更稳。
 
 **方式 B：开发模式（本仓库）**
 
@@ -175,6 +192,10 @@ node apps/cli/dist/index.js connect 192.168.1.100 --port 8765 --auth-mode ed2551
 
 ### 其他安全默认
 
+- 输入控制（键鼠）默认禁用，需被控端显式 `"allow_input": true`
+- 私钥不落明文：macOS 存 Keychain、Windows 存 DPAPI（老版本明文密钥首次加载自动迁移）
+- 审计日志**链式哈希**（`prev`/`hash`），`nodeagent audit verify` 可检出篡改与删除
+- ACL 支持 IP 白/黑名单（CIDR）、生效时段（含跨零点）、**按能力限速**（精确 > glob > 全局）
 - `input.*`（键鼠控制）**默认禁用**，需被控端 `"allow_input": true` 或 `install.ps1 -AllowInput`
 - 键盘文本经 Base64 传参、PowerShell 侧解码，**杜绝内容注入**；按键名走白名单映射
 - 文件能力支持 `fs_roots` 路径白名单，越界返回 `E_ACL_DENIED`
@@ -222,7 +243,35 @@ nodeagent push <本地文件> <远端路径> [--create-dirs]  # 上传（自动�
 
 ```bash
 nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
-nodeagent keygen [--id mac_01]                      # 生成 Ed25519 密钥 + ACL 配置片段
+nodeagent audit verify                              # 校验审计链完整性（防篡改检测）
+nodeagent keygen [--id mac_01]                      # 生成 Ed25519 密钥 + ACL 配置片段（私钥入系统钥匙串）
+```
+
+### 自持与运维
+
+```bash
+nodeagent restart [--delay 2000]                    # 受控重启被控端（配置变更后让它生效）
+nodeagent deploy <agent.mjs> [--path <远端路径>]     # 一键升级（备份 → 上传 → 重启 → 复验）
+nodeagent daemon [start|stop|status]                # 常驻连接池（批量操作省去每次握手）
+nodeagent fanout <能力名> [--nodes a,b] [--args JSON] # 多设备并发下发并汇总
+```
+
+### 长任务与剪贴板
+
+```bash
+nodeagent bg "<命令>" [--timeout-ms N]               # 后台执行，立即返回 task_id
+nodeagent tasks | nodeagent task <id> [--offset N] [--kill]   # 列出 / 增量读 / 终止
+nodeagent clip [--set "文本"] [--out <路径>] [--image-file <路径>]  # 剪贴板文本或图片
+nodeagent record [--duration 5000] [--fps 2] [--region x,y,w,h]     # 录屏为帧序列
+```
+
+### GUI 语义（找到元素再点，不猜坐标）
+
+```bash
+nodeagent invoke window.list --args '{"title_pattern":"记事本"}'
+nodeagent invoke window.focus --args '{"title":"记事本"}'
+nodeagent invoke screen.find --args '{"text":"一键加速","method":"auto"}'  # UIA → OCR 兜底
+nodeagent mouse drag 300 200 700 500                # 拖拽（拖文件/框选）
 ```
 
 ## MCP 工具
@@ -230,11 +279,15 @@ nodeagent keygen [--id mac_01]                      # 生成 Ed25519 密钥 + AC
 | 工具 | 说明 |
 |---|---|
 | `na_system_info` · `na_status` · `na_process_list` · `na_service_list` | 系统信息与状态 |
-| `na_exec` · `na_install` · `na_app_list` | 执行命令、装软件、列软件 |
-| `na_screenshot` | 截屏，**直接返回图片**给 AI 看 |
-| `na_mouse` · `na_key` | 键鼠控制（需被控端开启） |
-| `na_fs_list` · `na_fs_read` · `na_fs_write` | 读目录 / 读文件 / 写文件 |
-| `na_audit` · `na_discover` | 查审计、发现设备 |
+| `na_exec` · `na_bg` · `na_task` | 执行命令、后台长任务（启动/续读/终止） |
+| `na_install` · `na_app_list` | 装软件、列软件 |
+| `na_screenshot` · `na_record` | 截屏（直接返回图片给 AI 看）、录屏为帧序列 |
+| `na_window_list` · `na_window_focus` · `na_screen_find` | **GUI 语义**：列窗口 / 聚焦 / 按名字取坐标（UIA+OCR） |
+| `na_mouse` · `na_key` | 键鼠控制（含拖拽、按键序列；需被控端开启） |
+| `na_clip` | 读写剪贴板文本或图片 |
+| `na_fs_list` · `na_fs_read` · `na_fs_write` · `na_fs_stat` | 读目录 / 读文件 / 写文件 / 元信息 |
+| `na_restart` | 受控重启被控端 |
+| `na_audit` · `na_discover` · `na_nodes` · `na_use` | 查审计、发现设备、多设备切换 |
 
 ## Hub 中转（跨网段 / 公网）
 
@@ -264,6 +317,7 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
 ```bash
 pnpm build        # 构建全部包
 pnpm typecheck    # 类型检查
+pnpm test:unit    # 单元测试（61 项：协议纯函数 / 清单守护 / 审计链 / ACL v11）
 pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
 pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
 pnpm verify       # 对已配置的被控端跑全套验收并输出报告
@@ -319,6 +373,13 @@ nodeagent/
 | **v4** | 无感体验：局域网自动发现 + 断线自动重连 | ✅ |
 | **v5** | 多设备管理 + 文件传输（分块 / 大文件 / 原子写） | ✅ |
 | **v6** | Hub 中转：跨网段 / 公网接入（被控端主动外连，穿 NAT） | ✅ |
+| **v7** | **自持**：受控重启（配置变更后让自身生效，不再丢连接） | ✅ |
+| **v8** | **GUI 语义**：`window.list` / `window.focus` / `screen.find`（UIA 按名取坐标） | ✅ |
+| **v9** | `screen.find` **OCR 兜底**（自绘 UI 也能定位）+ MCP 工具同步 | ✅ |
+| **v10** | **长任务异步化**（`system.task.*`）+ 剪贴板 + CLI 常驻连接池 daemon | ✅ |
+| **v11** | **安全加固**：私钥入系统密钥库（Keychain/DPAPI）+ 审计链防篡改 + ACL 细化（IP/时段/按能力限速） | ✅ |
+| **v11+** | **操作面补完**：鼠标拖拽 / 录屏 / 剪贴板图片 / 多设备并发 / 一键升级 | ✅ |
+| **待办** | 事件订阅（push）、v7~v11 能力入 CI、macOS 端 GUI 能力对齐 | 🚧 |
 
 ## 文档
 

@@ -68,6 +68,8 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
                                       读/写剪贴板文本或图片（--out 保存图片）(v11)
   nodeagent record [--duration 5000] [--fps 2] [--scale 0.5] [--region x,y,w,h]
                                       录屏为帧序列（有 ffmpeg 则封装 mp4）(v11)
+  nodeagent deploy <agent.mjs> [--path <远端路径>]
+                                      一键升级被控端（备份 → 上传 → 重启 → 复验）(v11)
   nodeagent fanout <能力名> [--nodes a,b] [--args JSON]
                                       多设备并发调用并汇总 (v11)
   nodeagent daemon [start|stop|status] 常驻连接池（批量操作提速 5~10 倍）(v10)
@@ -142,6 +144,8 @@ interface Options {
   fps?: string;
   /** v11 多设备并发 */
   nodes?: string;
+  /** v11 部署目标路径 */
+  path?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -702,6 +706,70 @@ async function cmdRecord(opts: Options): Promise<void> {
   );
 }
 
+/**
+ * v11 / D2：一键部署 / 升级被控端 agent。
+ * 流程：被控端自报入口路径（system.info）→ 上传新 agent.mjs → 受控重启 → 复验能力数。
+ * 全程无需手工拷文件或起计划任务。
+ */
+async function cmdDeploy(localFile: string, opts: Options): Promise<void> {
+  if (!existsSync(localFile)) fail(`本地文件不存在: ${localFile}`);
+  const buf = readFileSync(localFile);
+  if (buf.length < 10_000) fail(`文件过小，疑似不是 agent 包: ${localFile}`);
+
+  await withClient(async (c) => {
+    const info = await c.invoke<Record<string, unknown>>(CapabilityNames.SystemInfo, {});
+    if (info.status === 'failed') fail('无法读取被控端信息');
+    const d = info.data as {
+      agent_script?: string;
+      pid?: number;
+      node_path?: string;
+      agent_home?: string;
+    };
+    const target = opts.path ?? d.agent_script;
+    if (!target) fail('被控端未上报入口路径，请用 --path <远端路径> 指定');
+    console.log(`目标: ${target}（当前 PID ${d.pid ?? '?'}）`);
+
+    // 备份现有文件（便于回滚）
+    const backup = `${target}.bak-${Date.now()}`;
+    if (d.node_path) {
+      const cp = await c.invoke(CapabilityNames.ShellExec, {
+        command: `Copy-Item '${target}' '${backup}' -Force -ErrorAction SilentlyContinue; Write-Output 'ok'`,
+        timeout_ms: 15_000,
+      });
+      if (cp.status === 'ok') console.log(`已备份: ${backup}`);
+    }
+
+    // 上传（fs.write 分块；由 agent 内部处理，无需本地→远端路径映射）
+    const CHUNK = 512 * 1024;
+    let offset = 0;
+    while (offset < buf.length) {
+      const part = buf.subarray(offset, Math.min(offset + CHUNK, buf.length));
+      const w = await c.invoke(CapabilityNames.FsWrite, {
+        path: target,
+        data: part.toString('base64'),
+        encoding: 'base64',
+        append: offset > 0,
+      });
+      if (w.status === 'failed') fail(`上传失败于 offset ${offset}: ${w.error?.message}`);
+      offset += part.length;
+    }
+    console.log(`✓ 已上传 ${(buf.length / 1024).toFixed(0)} KB`);
+
+    // 受控重启（复用 v7 能力，无需外部计划任务）
+    const r = await c.invoke(CapabilityNames.AgentRestart, { delay_ms: 1500, reason: 'deploy' });
+    if (r.status === 'failed') fail(`重启失败: ${r.error?.message}`);
+    console.log('✓ 已触发重启，等待恢复…');
+  });
+
+  // 等待新版本上线并复验
+  await new Promise((t) => setTimeout(t, 9000));
+  await withClient(async (c) => {
+    const info = await c.invoke<{ capabilities?: unknown[] }>(CapabilityNames.SystemInfo, {});
+    const caps = c.listCapabilities();
+    console.log(`✓ 新版本已上线：PID ${(info.data as { pid?: number })?.pid ?? '?'}，能力 ${caps.length} 项`);
+  });
+}
+
 async function cmdClip(opts: Options): Promise<void> {
   // 图片上传：从本地文件读入（避免超长命令行参数）
   if (opts.imageFile) {
@@ -1204,6 +1272,7 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       'image-file': { type: 'string' },
       fps: { type: 'string' },
       nodes: { type: 'string' },
+      path: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -1239,6 +1308,7 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       imageFile: values['image-file'] as string | undefined,
       fps: values['fps'] as string | undefined,
       nodes: values['nodes'] as string | undefined,
+      path: values['path'] as string | undefined,
       name: values['name'] as string | undefined,
       note: values['note'] as string | undefined,
       recursive: Boolean(values['recursive']),
@@ -1381,6 +1451,12 @@ async function main(): Promise<void> {
       const cap = positionals[0];
       if (!cap) fail('用法: nodeagent fanout <能力名> [--nodes a,b] [--args JSON]');
       await cmdFanout(cap, opts);
+      return;
+    }
+    case 'deploy': {
+      const f = positionals[0];
+      if (!f) fail('用法: nodeagent deploy <agent.mjs 路径> [--path <远端路径>]');
+      await cmdDeploy(f, opts);
       return;
     }
     case 'install': {

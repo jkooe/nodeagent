@@ -54,6 +54,11 @@ export async function systemInfo(args: Args): Promise<unknown> {
     memory_total: os.totalmem(),
     uptime_sec: Math.round(os.uptime()),
     is_admin: await isAdmin(),
+    // v11：自描述信息，供控制端「一键部署/升级」定位目标文件与数据目录
+    pid: process.pid,
+    agent_script: process.argv[1] ?? '',
+    agent_home: process.env['NODEAGENT_HOME'] ?? '',
+    node_path: process.execPath,
   };
 
   if (fields && fields.length > 0) {
