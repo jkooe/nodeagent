@@ -66,6 +66,8 @@ public class NAWin32 {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint f, int dx, int dy, uint d, UIntPtr e);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
 }
@@ -138,7 +140,9 @@ export async function windowList(args: Args): Promise<unknown> {
     all = all.filter((w) => re.test(w.title));
   }
   const limit = (args['limit'] as number | undefined) ?? 50;
-  return { windows: all.slice(0, limit) };
+  // 前台窗口排最前：低 limit 时也不会把它截掉（真机踩过：被系统对话框抢占焦点却查不到）
+  all.sort((a, b) => Number(b.is_foreground) - Number(a.is_foreground));
+  return { windows: all.slice(0, limit), total: all.length };
 }
 
 // ---------------- window.focus ----------------
@@ -182,6 +186,24 @@ if ($h -eq [IntPtr]::Zero) { Write-Output '{"found":false}'; exit 0 }
 [void][NAWin32]::ShowWindow($h, 9)   # SW_RESTORE
 [void][NAWin32]::SetForegroundWindow($h)
 Start-Sleep -Milliseconds 400
+
+# ⚠️ SetForegroundWindow 会被 Windows 的前台锁定规则**静默否决**（真机踩过：
+#    返回后 GetForegroundWindow 仍是别人，后续键鼠全打进错误窗口）。
+#    故校验一次；未生效则在标题栏做一次真实点击 —— 点击比 API 更能说服系统切换前台。
+$activatedBy = 'api'
+if ([NAWin32]::GetForegroundWindow() -ne $h) {
+  $rr = New-Object NAWin32+RECT
+  [void][NAWin32]::GetWindowRect($h, [ref]$rr)
+  $cx = [int](($rr.Left + $rr.Right) / 2)
+  $cy = [int]($rr.Top + 8)          # 标题栏（避开内容区，避免误触按钮）
+  [NAWin32]::SetCursorPos($cx, $cy) | Out-Null
+  Start-Sleep -Milliseconds 120
+  [NAWin32]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)   # LEFTDOWN
+  Start-Sleep -Milliseconds 60
+  [NAWin32]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)   # LEFTUP
+  Start-Sleep -Milliseconds 350
+  if ([NAWin32]::GetForegroundWindow() -eq $h) { $activatedBy = 'click' }
+}
 $r = New-Object NAWin32+RECT
 [void][NAWin32]::GetWindowRect($h, [ref]$r)
 $sb2 = New-Object System.Text.StringBuilder 512
@@ -190,6 +212,7 @@ $sb2 = New-Object System.Text.StringBuilder 512
   found = $true; hwnd = ('0x{0:X}' -f $h.ToInt64()); title = $sb2.ToString()
   x = $r.Left; y = $r.Top; width = ($r.Right - $r.Left); height = ($r.Bottom - $r.Top)
   focused = ([NAWin32]::GetForegroundWindow() -eq $h)
+  activated_by = $activatedBy
 } | ConvertTo-Json -Compress
 `;
   const out = await runPS(script, 40_000);

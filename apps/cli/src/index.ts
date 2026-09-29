@@ -3,10 +3,12 @@ import { existsSync } from 'node:fs';
 import fsSync from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
-import path from 'node:path';
+import path, { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
   NodeAgentClient,
+  loadMacroFile,
+  runMacro,
   ClientError,
   loadConfig,
   saveConfig,
@@ -66,6 +68,9 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent task <id> [--offset N] [--kill]  读取/终止后台任务（支持增量续读）
   nodeagent clip [--set "文本"] [--out <路径>] [--image-file <路径>]
                                       读/写剪贴板文本或图片（--out 保存图片）(v11)
+  nodeagent macro run <file.json> [--var k=v] [--out <目录>]
+                                      回放 GUI 宏（步骤序列，逐步校验）(v12)
+  nodeagent macro validate <file.json> | macro init [文件]
   nodeagent events [--kind file|process|net] [--path <路径>] [--pattern G] [--seconds 15]
                                       订阅事件并实时接收推送（无 --kind 则列出订阅）(v12)
   nodeagent record [--duration 5000] [--fps 2] [--scale 0.5] [--region x,y,w,h]
@@ -150,6 +155,8 @@ interface Options {
   path?: string;
   /** v12 事件订阅 */
   kind?: string;
+  /** v12 宏变量 */
+  vars?: string[];
   seconds?: string;
   intervalMs?: string;
 }
@@ -872,6 +879,95 @@ async function cmdEvents(opts: Options): Promise<void> {
   }
 }
 
+/**
+ * v12 / E4：GUI 宏 —— 把一次成功操作固化为可重放的步骤序列。
+ * 子命令：run（回放）/ validate（仅校验文件）/ init（生成示例）
+ */
+async function cmdMacro(sub: string | undefined, file: string | undefined, opts: Options): Promise<void> {
+  if (sub === 'init') {
+    const target = file ?? 'macro.json';
+    if (existsSync(target)) fail(`文件已存在: ${target}`);
+    const sample = {
+      name: '示例：在记事本里打字并复制',
+      description: '演示 focus / find / type / key / clip / assert 组合；坐标与文本请按实际调整',
+      default_delay_ms: 300,
+      steps: [
+        { action: 'focus', title: 'Notepad', retry: 3, interval_ms: 800 },
+        { action: 'key', keys: ['ctrl', 'a'] },
+        { action: 'key', keys: ['delete'] },
+        { action: 'type', text: '宏回放演示 ${STAMP:-demo}' },
+        { action: 'sleep', ms: 300 },
+        { action: 'key', keys: ['ctrl', 'a'] },
+        { action: 'key', keys: ['ctrl', 'c'] },
+        { action: 'clip', expect: '宏回放演示' },
+        { action: 'assert', kind: 'window', text: 'Notepad' },
+      ],
+    };
+    writeFileSync(target, JSON.stringify(sample, null, 2) + '\n');
+    console.log(`✓ 已生成示例宏: ${target}`);
+    console.log('  试用: nodeagent --node=<设备> macro run ' + target + ' --var STAMP=hello');
+    return;
+  }
+
+  if (!file) fail('用法: nodeagent macro run <文件.json> [--var k=v] / macro validate <文件.json> / macro init [文件.json]');
+  if (!existsSync(file)) fail(`宏文件不存在: ${file}`);
+
+  const macro = loadMacroFile(file);
+
+  if (sub === 'validate') {
+    const actions = macro.steps.map((s) => String(s['action'] ?? '?'));
+    console.log(`✓ 语法有效：${macro.steps.length} 个步骤`);
+    console.log(`  名称: ${macro.name ?? '(未命名)'}`);
+    console.log(`  步骤: ${actions.join(' → ')}`);
+    return;
+  }
+
+  // 解析 --var k=v
+  const vars: Record<string, string> = {};
+  for (const kv of opts.vars ?? []) {
+    const i = kv.indexOf('=');
+    if (i <= 0) fail(`--var 需为 k=v 形式: ${kv}`);
+    vars[kv.slice(0, i)] = kv.slice(i + 1);
+  }
+
+  await withClient(async (c) => {
+    const outDir = opts.out ?? '.';
+    const t0 = Date.now();
+    const res = await runMacro(
+      {
+        client: c,
+        saveCapture: opts.out
+          ? (name, b64) => {
+              const p = join(outDir, name);
+              writeFileSync(p, Buffer.from(b64, 'base64'));
+              return p;
+            }
+          : undefined,
+        log: (m) => console.error(m),
+      },
+      macro,
+      vars,
+    );
+
+    if (opts.json) {
+      printJson(res);
+      if (!res.ok) process.exitCode = 1;
+      return;
+    }
+    console.log(`宏「${res.name}」共 ${macro.steps.length} 步，耗时 ${Date.now() - t0}ms\n`);
+    for (const s of res.steps) {
+      const mark = s.ok ? '✓' : '✗';
+      console.log(`  ${mark} [${String(s.index).padStart(2)}] ${s.action.padEnd(8)} ${String(s.ms + 'ms').padStart(7)}  ${s.detail ?? ''}`);
+    }
+    if (res.ok) {
+      console.log('\n✓ 全部步骤通过');
+    } else {
+      console.error(`\n✗ 在第 ${res.failed_at} 步失败，宏已中止`);
+      process.exitCode = 1;
+    }
+  });
+}
+
 async function cmdClip(opts: Options): Promise<void> {
   // 图片上传：从本地文件读入（避免超长命令行参数）
   if (opts.imageFile) {
@@ -1376,6 +1472,7 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       nodes: { type: 'string' },
       path: { type: 'string' },
       kind: { type: 'string' },
+      var: { type: 'string', multiple: true },
       seconds: { type: 'string' },
       'interval-ms': { type: 'string' },
     },
@@ -1415,6 +1512,7 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       nodes: values['nodes'] as string | undefined,
       path: values['path'] as string | undefined,
       kind: values['kind'] as string | undefined,
+      vars: (values['var'] as string[] | undefined) ?? [],
       seconds: values['seconds'] as string | undefined,
       intervalMs: values['interval-ms'] as string | undefined,
       name: values['name'] as string | undefined,
@@ -1558,6 +1656,11 @@ async function main(): Promise<void> {
     case 'events':
       await cmdEvents(opts);
       return;
+    case 'macro': {
+      const sub = positionals[0];
+      await cmdMacro(sub, positionals[1], opts);
+      return;
+    }
     case 'fanout': {
       const cap = positionals[0];
       if (!cap) fail('用法: nodeagent fanout <能力名> [--nodes a,b] [--args JSON]');
