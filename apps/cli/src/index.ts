@@ -1,4 +1,4 @@
-import { closeSync, openSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import { existsSync } from 'node:fs';
 import fsSync from 'node:fs';
 import net from 'node:net';
@@ -64,7 +64,12 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent bg "<命令>" [--timeout-ms N]  后台执行长命令，立即返回 task_id (v10)
   nodeagent tasks                    列出后台任务
   nodeagent task <id> [--offset N] [--kill]  读取/终止后台任务（支持增量续读）
-  nodeagent clip [--set "文本"]       读/写被控端剪贴板
+  nodeagent clip [--set "文本"] [--out <路径>] [--image-file <路径>]
+                                      读/写剪贴板文本或图片（--out 保存图片）(v11)
+  nodeagent record [--duration 5000] [--fps 2] [--scale 0.5] [--region x,y,w,h]
+                                      录屏为帧序列（有 ffmpeg 则封装 mp4）(v11)
+  nodeagent fanout <能力名> [--nodes a,b] [--args JSON]
+                                      多设备并发调用并汇总 (v11)
   nodeagent daemon [start|stop|status] 常驻连接池（批量操作提速 5~10 倍）(v10)
   nodeagent list                      列出被控端可用能力
   nodeagent invoke <capability> [--args '<json>']   通用调用
@@ -75,6 +80,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
                                       截屏并保存 (screen.capture)
   nodeagent mouse move <x> <y> [--duration 300]
   nodeagent mouse click [<x> <y>] [--button left|right|middle]
+  nodeagent mouse drag <x1> <y1> <x2> <y2> 鼠标拖拽（拖文件/框选）(v11)
   nodeagent mouse scroll <delta>
   nodeagent key type "<文本>" [--interval 10]
   nodeagent key press <键1> [键2] ...  （组合键，如 ctrl c）
@@ -130,6 +136,12 @@ interface Options {
   kill?: boolean;
   offset?: string;
   set?: string;
+  /** v11 剪贴板图片 */
+  imageFile?: string;
+  /** v11 录屏 */
+  fps?: string;
+  /** v11 多设备并发 */
+  nodes?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -611,7 +623,99 @@ async function cmdTask(taskId: string, opts: Options): Promise<void> {
   );
 }
 
+/**
+ * v11 / C5：把一个能力并发下发到多台设备并汇总结果。
+ * 每台设备独立连接、互不阻塞（allSettled），任一失败不影响其他。
+ */
+async function cmdFanout(capability: string, opts: Options): Promise<void> {
+  const cfg = getClientConfig();
+  const names = (opts.nodes ?? '')
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+  const targets = names.length > 0 ? names : Object.keys(cfg.nodes);
+  if (targets.length === 0) fail('没有可用的设备，请先 nodeagent connect');
+
+  let args: Record<string, unknown> = {};
+  if (opts.args) {
+    try {
+      args = JSON.parse(opts.args) as Record<string, unknown>;
+    } catch {
+      fail('--args 需为合法 JSON，例如 --args {"limit":5}');
+    }
+  }
+
+  const started = Date.now();
+  const results = await Promise.allSettled(
+    targets.map(async (n) => {
+      const t0 = Date.now();
+      const data = await withClient(async (c) => {
+        const r = await c.invoke(capability, args, Number(opts.timeoutMs ?? 60_000));
+        if (r.status === 'failed') throw new Error(`${r.error?.name}: ${r.error?.message}`);
+        return r.data;
+      }, n);
+      return { node: n, ms: Date.now() - t0, data };
+    }),
+  );
+
+  if (opts.json) {
+    printJson(
+      results.map((r, i) =>
+        r.status === 'fulfilled'
+          ? { node: r.value.node, ok: true, ms: r.value.ms, data: r.value.data }
+          : { node: targets[i], ok: false, error: String(r.reason) },
+      ),
+    );
+    return;
+  }
+
+  console.log(`并发下发 ${capability} → ${targets.length} 台设备（总耗时 ${Date.now() - started}ms）\n`);
+  results.forEach((r, i) => {
+    const name = (targets[i] ?? '?').padEnd(16);
+    if (r.status === 'fulfilled') {
+      const preview = JSON.stringify(r.value.data);
+      console.log(`  ✓ ${name} ${String(r.value.ms + 'ms').padStart(7)}  ${preview.slice(0, 150)}`);
+    } else {
+      console.log(`  ✗ ${name} ${'—'.padStart(7)}  ${String(r.reason).slice(0, 150)}`);
+    }
+  });
+}
+
+async function cmdRecord(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.duration) args['duration_ms'] = Number(opts.duration);
+  if (opts.fps) args['fps'] = Number(opts.fps);
+  if (opts.scale) args['scale'] = Number(opts.scale);
+  if (opts.region) {
+    const n = opts.region.split(',').map(Number);
+    if (n.length !== 4 || n.some((v) => !Number.isFinite(v))) fail('region 格式应为 "x,y,width,height"');
+    args['region'] = { x: n[0], y: n[1], width: n[2], height: n[3] };
+  }
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.ScreenRecord, args, opts.json, (data) => {
+      const d = data as { dir: string; frames: number; fps: number; elapsed_ms: number; video_path?: string; frames_only: boolean };
+      console.log(`✓ 录制完成：${d.frames} 帧 @ ${d.fps}fps（${d.elapsed_ms}ms）`);
+      console.log(`  目录: ${d.dir}`);
+      if (d.video_path) console.log(`  视频: ${d.video_path}`);
+      else if (d.frames_only) console.log('  提示: 无 ffmpeg，用 `nodeagent pull` 或 `nodeagent ls` 取回帧');
+    }),
+  );
+}
+
 async function cmdClip(opts: Options): Promise<void> {
+  // 图片上传：从本地文件读入（避免超长命令行参数）
+  if (opts.imageFile) {
+    const p = opts.imageFile;
+    if (!existsSync(p)) fail(`文件不存在: ${p}`);
+    const b64 = readFileSync(p).toString('base64');
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.ClipSet, { image_base64: b64 }, opts.json, (data) => {
+        const d = data as { written_bytes: number };
+        console.log(`✓ 图片已写入剪贴板（${d.written_bytes} 字节）`);
+      }),
+    );
+    return;
+  }
   if (opts.set !== undefined) {
     await withClient((c) =>
       callAndPrint(c, CapabilityNames.ClipSet, { text: opts.set }, opts.json, (data) => {
@@ -621,9 +725,29 @@ async function cmdClip(opts: Options): Promise<void> {
     );
     return;
   }
+  // 图片下载：--out 指定保存路径
+  if (opts.out) {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.ClipGet, { format: 'image' }, opts.json, (data) => {
+        const d = data as { image_base64: string; bytes: number; format: string };
+        writeFileSync(opts.out!, Buffer.from(d.image_base64, 'base64'));
+        console.log(`✓ 剪贴板图片已保存 ${opts.out}（${d.bytes} 字节，${d.format}）`);
+      }),
+    );
+    return;
+  }
   await withClient((c) =>
-    callAndPrint(c, CapabilityNames.ClipGet, {}, opts.json, (data) => {
-      const d = data as { text: string };
+    callAndPrint(c, CapabilityNames.ClipGet, { format: opts.format ?? 'auto' }, opts.json, (data) => {
+      const d = data as {
+        type?: string;
+        text?: string;
+        bytes?: number;
+        image_base64?: string;
+      };
+      if (d.type === 'image') {
+        console.log(`(剪贴板为图片，${d.bytes} 字节；用 --out <路径> 保存)`);
+        return;
+      }
       if (d.text) console.log(d.text);
       else console.log('(剪贴板为空或非文本)');
     }),
@@ -740,6 +864,29 @@ async function cmdMouse(action: string | undefined, positionals: string[], opts:
         callAndPrint(c, CapabilityNames.MouseScroll, args, opts.json, (d) => {
           const r = d as { delta: number };
           console.log(`✓ 已滚动 ${r.delta} 格`);
+        }),
+      );
+      return;
+    }
+    case 'drag': {
+      const [x1, y1, x2, y2] = positionals;
+      if (!x1 || !y1 || !x2 || !y2) {
+        fail('用法: nodeagent mouse drag <x1> <y1> <x2> <y2> [--button left|right|middle]');
+      }
+      const args: Record<string, unknown> = {
+        from_x: Number(x1),
+        from_y: Number(y1),
+        to_x: Number(x2),
+        to_y: Number(y2),
+      };
+      if (opts.button) args['button'] = opts.button;
+      if (opts.duration) args['step_delay_ms'] = Number(opts.duration);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseDrag, args, opts.json, (d) => {
+          const r = d as { from: { x: number; y: number }; to: { x: number; y: number }; steps: number };
+          console.log(
+            `✓ 已拖拽 (${r.from.x}, ${r.from.y}) → (${r.to.x}, ${r.to.y})，${r.steps} 步`,
+          );
         }),
       );
       return;
@@ -1054,6 +1201,9 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       kill: { type: 'boolean', default: false },
       offset: { type: 'string' },
       set: { type: 'string' },
+      'image-file': { type: 'string' },
+      fps: { type: 'string' },
+      nodes: { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -1086,6 +1236,9 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       kill: Boolean(values['kill']),
       offset: values['offset'] as string | undefined,
       set: values['set'] as string | undefined,
+      imageFile: values['image-file'] as string | undefined,
+      fps: values['fps'] as string | undefined,
+      nodes: values['nodes'] as string | undefined,
       name: values['name'] as string | undefined,
       note: values['note'] as string | undefined,
       recursive: Boolean(values['recursive']),
@@ -1221,6 +1374,15 @@ async function main(): Promise<void> {
     case 'clip':
       await cmdClip(opts);
       return;
+    case 'record':
+      await cmdRecord(opts);
+      return;
+    case 'fanout': {
+      const cap = positionals[0];
+      if (!cap) fail('用法: nodeagent fanout <能力名> [--nodes a,b] [--args JSON]');
+      await cmdFanout(cap, opts);
+      return;
+    }
     case 'install': {
       const pkg = positionals[0];
       if (!pkg) fail('用法: nodeagent install <包名|ID>');

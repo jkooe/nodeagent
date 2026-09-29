@@ -371,6 +371,22 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_record',
+    description:
+      '录制被控端屏幕为帧序列（JPEG），检测到 ffmpeg 时额外封装 mp4。' +
+      '用于复现间歇性问题或记录 GUI 操作；产物在被控端目录，用 na_fs_read 取回。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        duration_ms: { type: 'integer', description: '时长毫秒（1000~60000，默认 5000）' },
+        fps: { type: 'integer', description: '帧率 1~10（默认 2）' },
+        scale: { type: 'number', description: '全屏缩放 0.1~1（默认 0.5）' },
+        region: { type: 'string', description: '可选 "x,y,width,height" 只录该区域' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_clip',
     description:
       '读写被控端剪贴板：action=get 读取文本；action=set 写入文本。要粘贴到 GUI 输入框时先 set 再用 na_key 按 ctrl+v。',
@@ -484,6 +500,18 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
         if (input['delta'] === undefined) return { error: 'scroll 需要 delta' };
         return { capability: CapabilityNames.MouseScroll, args: { delta: input['delta'] } };
       }
+      if (action === 'drag') {
+        const need = ['from_x', 'from_y', 'to_x', 'to_y'];
+        for (const k of need) {
+          if (input[k] === undefined) return { error: `drag 需要 ${need.join('/')}` };
+        }
+        const args: Record<string, unknown> = {
+          from_x: input['from_x'], from_y: input['from_y'],
+          to_x: input['to_x'], to_y: input['to_y'],
+        };
+        if (input['button'] !== undefined) args['button'] = input['button'];
+        return { capability: CapabilityNames.MouseDrag, args };
+      }
       return { error: `不支持的 action: ${String(action)}` };
     }
     case 'na_key': {
@@ -521,12 +549,35 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
       }
       return { error: `不支持的 action: ${String(action)}` };
     }
+    case 'na_record': {
+      const args: Record<string, unknown> = {};
+      if (input['duration_ms'] !== undefined) args['duration_ms'] = input['duration_ms'];
+      if (input['fps'] !== undefined) args['fps'] = input['fps'];
+      if (input['scale'] !== undefined) args['scale'] = input['scale'];
+      if (input['region'] !== undefined) {
+        const n = String(input['region']).split(',').map(Number);
+        if (n.length !== 4 || n.some((v) => !Number.isFinite(v))) {
+          return { error: 'region 格式应为 "x,y,width,height"' };
+        }
+        args['region'] = { x: n[0], y: n[1], width: n[2], height: n[3] };
+      }
+      return { capability: CapabilityNames.ScreenRecord, args };
+    }
     case 'na_clip': {
       const action = input['action'] ?? 'get';
-      if (action === 'get') return { capability: CapabilityNames.ClipGet, args: {} };
+      if (action === 'get') {
+        const args: Record<string, unknown> = {};
+        if (input['format'] !== undefined) args['format'] = input['format'];
+        return { capability: CapabilityNames.ClipGet, args };
+      }
       if (action === 'set') {
-        if (input['text'] === undefined) return { error: 'set 需要 text' };
-        return { capability: CapabilityNames.ClipSet, args: { text: input['text'] } };
+        if (input['text'] === undefined && input['image_base64'] === undefined) {
+          return { error: 'set 需要 text 或 image_base64' };
+        }
+        const args: Record<string, unknown> = {};
+        if (input['text'] !== undefined) args['text'] = input['text'];
+        if (input['image_base64'] !== undefined) args['image_base64'] = input['image_base64'];
+        return { capability: CapabilityNames.ClipSet, args };
       }
       return { error: `不支持的 action: ${String(action)}` };
     }

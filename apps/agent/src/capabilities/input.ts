@@ -91,6 +91,24 @@ public static class NAInput {
         a[0].type = 1; a[0].U.ki.wVk = vk; a[0].U.ki.dwFlags = up ? 2u : 0u;
         SendInput(1, a, SIZE);
     }
+
+    /** v11：拖拽（按下 → 分步移动 → 抬起），全部在一次调用内完成，避免多次进程开销。 */
+    public static void Drag(uint downFlag, uint upFlag, int x1, int y1, int x2, int y2, int steps, int stepDelayMs) {
+        SetCursorPos(x1, y1);
+        System.Threading.Thread.Sleep(60);
+        var d = new INPUT[1]; d[0].type = 0; d[0].U.mi.dwFlags = downFlag;
+        SendInput(1, d, SIZE);
+        System.Threading.Thread.Sleep(60);
+        if (steps < 1) steps = 1;
+        for (int i = 1; i <= steps; i++) {
+            int xi = x1 + (x2 - x1) * i / steps;
+            int yi = y1 + (y2 - y1) * i / steps;
+            SetCursorPos(xi, yi);
+            if (stepDelayMs > 0) System.Threading.Thread.Sleep(stepDelayMs);
+        }
+        var u = new INPUT[1]; u[0].type = 0; u[0].U.mi.dwFlags = upFlag;
+        SendInput(1, u, SIZE);
+    }
 }`;
 
 /** 组装：加类型定义 + 具体操作。 */
@@ -188,8 +206,38 @@ export async function mouseScroll(args: Args): Promise<unknown> {
   return { scrolled: true, delta };
 }
 
-// ---------------- 键盘 ----------------
+/**
+ * 鼠标拖拽（v11）：从 (from_x,from_y) 拖到 (to_x,to_y)。
+ * 用于拖文件、框选、拖动滑块/窗口。整段动作在一次进程内完成（避免多次 spawn 抖动）。
+ */
+export async function mouseDrag(args: Args): Promise<unknown> {
+  assertAllowed('input.mouse.drag');
+  requireWindows('input.mouse.drag');
+  const x1 = args['from_x'] as number;
+  const y1 = args['from_y'] as number;
+  const x2 = args['to_x'] as number;
+  const y2 = args['to_y'] as number;
+  if ([x1, y1, x2, y2].some((v) => typeof v !== 'number')) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需要 from_x/from_y/to_x/to_y');
+  }
+  const button = (args['button'] as string) ?? 'left';
+  const flags = MOUSE_FLAGS[button];
+  if (!flags) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, `不支持的按钮: ${button}`);
+  }
+  // 默认步数按距离自适应（保证拖动被系统识别为「拖」而不是瞬移）
+  const distance = Math.hypot(x2 - x1, y2 - y1);
+  const steps = (args['steps'] as number | undefined) ?? Math.max(8, Math.min(60, Math.round(distance / 25)));
+  const stepDelay = (args['step_delay_ms'] as number | undefined) ?? 12;
 
+  await runPs(
+    [`[NAInput]::Drag(${flags.down}, ${flags.up}, ${x1}, ${y1}, ${x2}, ${y2}, ${steps}, ${stepDelay})`],
+    Math.max(30_000, steps * stepDelay + 15_000),
+  );
+  return { dragged: true, from: { x: x1, y: y1 }, to: { x: x2, y: y2 }, button, steps };
+}
+
+// ---------------- 键盘 ----------------
 const VK_MAP: Record<string, number> = {
   ctrl: 0x11, control: 0x11, shift: 0x10, alt: 0x12, win: 0x5b, meta: 0x5b,
   enter: 0x0d, return: 0x0d, tab: 0x09, esc: 0x1b, escape: 0x1b, space: 0x20,
@@ -254,6 +302,7 @@ export async function keyPress(args: Args): Promise<unknown> {
   }
 
   const body: string[] = [];
+  const gap = Math.max(0, Math.min(2000, (args['interval_ms'] as number | undefined) ?? 40));
   for (let i = 0; i < chords.length; i += 1) {
     const chord = chords[i]!;
     if (chord.length === 0) continue;
@@ -261,7 +310,7 @@ export async function keyPress(args: Args): Promise<unknown> {
     for (const vk of vks) body.push(`[NAInput]::Vk(${vk}, $false)`);
     // 逆序释放，保证组合键正确
     for (const vk of [...vks].reverse()) body.push(`[NAInput]::Vk(${vk}, $true)`);
-    if (i < chords.length - 1) body.push('Start-Sleep -Milliseconds 40');
+    if (i < chords.length - 1 && gap > 0) body.push(`Start-Sleep -Milliseconds ${gap}`);
   }
   await runPs(body);
   return { pressed: true, chords, times: chords.length };
