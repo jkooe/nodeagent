@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
-import { IS_WINDOWS, buildLaunch, killTree } from '../util/exec.js';
+import { IS_WINDOWS, buildLaunch, childEnv, killTree } from '../util/exec.js';
 
 type Args = Record<string, unknown>;
 
@@ -69,7 +69,7 @@ export function startTask(opts: {
       cwd,
       detached: !IS_WINDOWS,
       windowsHide: true,
-      env: process.env,
+      env: childEnv(),
     });
   } catch (err) {
     rec.state = 'failed';

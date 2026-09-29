@@ -409,8 +409,8 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
   //    无日志写入、旧进程幸存）。
   const LOG = `C:\\Windows\\Temp\\nodeagent-restart-${Date.now()}.log`;
   const steps = [
-    // 清理历史重启日志（正被运行中 agent 持有的会静默失败，无妨）
-    'del /q "C:\\Windows\\Temp\\nodeagent-restart-*.log" >nul 2>&1',
+    // 清理历史重启日志：仅保留最近 5 个（正被运行中 agent 持有的删除会静默失败，无妨）
+    'powershell -NoProfile -Command "Get-ChildItem \'C:\\Windows\\Temp\\nodeagent-restart-*.log\' -EA SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -Skip 5 | Remove-Item -Force -EA SilentlyContinue"',
     `echo [%TIME%] begin > "${LOG}" 2>&1`,
     'ping -n 3 127.0.0.1 >nul',
     `echo [%TIME%] killing ${p.pid} >> "${LOG}" 2>&1`,

@@ -235,14 +235,34 @@ export async function keyType(args: Args): Promise<unknown> {
 export async function keyPress(args: Args): Promise<unknown> {
   assertAllowed('input.key.press');
   requireWindows('input.key.press');
-  const keys = args['keys'] as string[];
-  if (!Array.isArray(keys) || keys.length === 0) {
-    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'keys 必须是非空数组');
+
+  // v10.2：支持三种语义
+  //   1) keys      —— 单个和弦（如 ["ctrl","c"]）
+  //   2) repeat    —— 和弦重复 N 次（解决「连按上键 3 次」这类需求）
+  //   3) sequence  —— 任意和弦序列（如 [["ctrl","c"], ["ctrl","v"]]）
+  const sequence = args['sequence'] as string[][] | undefined;
+  const repeat = Math.max(1, Math.min(50, (args['repeat'] as number | undefined) ?? 1));
+  const keys = args['keys'] as string[] | undefined;
+
+  const chords: string[][] = sequence?.length
+    ? sequence
+    : keys?.length
+      ? Array.from({ length: repeat }, () => keys)
+      : [];
+  if (chords.length === 0) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需提供 keys（可配 repeat）或 sequence');
   }
-  const vks = keys.map(toVk);
-  const body: string[] = vks.map((vk) => `[NAInput]::Vk(${vk}, $false)`);
-  // 逆序释放，保证组合键正确
-  body.push(...[...vks].reverse().map((vk) => `[NAInput]::Vk(${vk}, $true)`));
+
+  const body: string[] = [];
+  for (let i = 0; i < chords.length; i += 1) {
+    const chord = chords[i]!;
+    if (chord.length === 0) continue;
+    const vks = chord.map(toVk);
+    for (const vk of vks) body.push(`[NAInput]::Vk(${vk}, $false)`);
+    // 逆序释放，保证组合键正确
+    for (const vk of [...vks].reverse()) body.push(`[NAInput]::Vk(${vk}, $true)`);
+    if (i < chords.length - 1) body.push('Start-Sleep -Milliseconds 40');
+  }
   await runPs(body);
-  return { pressed: true, keys };
+  return { pressed: true, chords, times: chords.length };
 }
