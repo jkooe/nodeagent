@@ -43,6 +43,7 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent remove <设备名>            移除设备
   nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
                                       查询被控端审计日志 (v3+)
+  nodeagent audit verify              校验审计链完整性（防篡改检测）(v11)
   nodeagent discover [--wait 5]       发现局域网内的被控端（UDP 广播，免手抄 IP）(v4)
 
 文件传输 (v5):
@@ -780,6 +781,28 @@ async function cmdKey(action: string | undefined, positionals: string[], opts: O
 
 // ---------- v3+ 审计 ----------
 
+/** v11：审计链完整性校验。 */
+async function cmdAuditVerify(opts: Options): Promise<void> {
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.AuditVerify, {}, opts.json, (data) => {
+      const d = data as {
+        ok: boolean;
+        checked: number;
+        legacy: number;
+        broken_at?: { file: string; line: number; reason: string };
+      };
+      if (d.ok) {
+        console.log(`✓ 审计链完整（校验 ${d.checked} 条${d.legacy ? `，跳过历史条目 ${d.legacy} 条` : ''}）`);
+        return;
+      }
+      console.error(`✗ 审计链已损坏：${d.broken_at?.reason ?? '未知原因'}`);
+      if (d.broken_at) console.error(`  位置: ${d.broken_at.file}:${d.broken_at.line}`);
+      console.error(`  已校验 ${d.checked} 条`);
+      process.exitCode = 1;
+    }),
+  );
+}
+
 async function cmdAudit(opts: Options): Promise<void> {
   const args: Record<string, unknown> = {};
   if (opts.limit) args['limit'] = Number(opts.limit);
@@ -1223,7 +1246,8 @@ async function main(): Promise<void> {
       await cmdRemove(positionals[0], opts);
       return;
     case 'audit':
-      await cmdAudit(opts);
+      if (positionals[0] === 'verify') await cmdAuditVerify(opts);
+      else await cmdAudit(opts);
       return;
     case 'discover':
       await cmdDiscover(opts);

@@ -33,7 +33,7 @@ test('清单：每条都有 version/description/risk 与封闭的 params_schema'
   }
 });
 
-test('清单：v7~v10 新能力均已登记', () => {
+test('清单：v7~v11 新能力均已登记', () => {
   const expected = [
     'system.agent.restart',
     'window.list',
@@ -44,11 +44,12 @@ test('清单：v7~v10 新能力均已登记', () => {
     'system.task.kill',
     'clip.get',
     'clip.set',
+    'system.audit.verify',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 28, '当前应有 28 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 29, '当前应有 29 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------
