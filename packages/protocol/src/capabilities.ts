@@ -36,6 +36,8 @@ export const CapabilityNames = {
   TaskKill: 'system.task.kill',
   ClipGet: 'clip.get',
   ClipSet: 'clip.set',
+  // v11 安全加固
+  AuditVerify: 'system.audit.verify',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -858,6 +860,32 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     returns_schema: {
       type: 'object',
       properties: { written: { type: 'integer', description: '写入的字符数' } },
+    },
+  },
+  {
+    name: CapabilityNames.AuditVerify,
+    version: '1.0',
+    description:
+      '校验审计日志链完整性（v11 链式哈希）：逐条重算哈希并比对 prev 链接，' +
+      '可发现条目被篡改、删除或替换。轮转跨文件连续校验。',
+    risk: 'low',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        checked: { type: 'integer', description: '参与校验的条目数' },
+        legacy: { type: 'integer', description: '无链字段的历史条目数（跳过校验）' },
+        broken_at: {
+          type: 'object',
+          description: '首个异常位置（ok=false 时存在）',
+          properties: {
+            file: { type: 'string' },
+            line: { type: 'integer' },
+            reason: { type: 'string' },
+          },
+        },
+      },
     },
   },
 ];

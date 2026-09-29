@@ -9,6 +9,10 @@ import {
   verifyNonce,
   authorize,
   authorizedCapabilities,
+  ipAllowed,
+  inTimeWindow,
+  rateLimitFor,
+  normalizeIp,
   ErrorCodes,
   ErrorNames,
   makeError,
@@ -64,16 +68,17 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
 
   /** 按调用方的滑动窗口限速（每分钟）。 */
   const rateBuckets = new Map<string, number[]>();
-  function allowByRate(clientId: string, limitPerMin?: number): boolean {
+  function allowByRate(clientId: string, limitPerMin?: number, bucket?: string): boolean {
     if (!limitPerMin || limitPerMin <= 0) return true;
+    const key = bucket ? `${clientId}|${bucket}` : clientId;
     const now = Date.now();
-    const recent = (rateBuckets.get(clientId) ?? []).filter((t) => now - t < 60_000);
+    const recent = (rateBuckets.get(key) ?? []).filter((t) => now - t < 60_000);
     if (recent.length >= limitPerMin) {
-      rateBuckets.set(clientId, recent);
+      rateBuckets.set(key, recent);
       return false;
     }
     recent.push(now);
-    rateBuckets.set(clientId, recent);
+    rateBuckets.set(key, recent);
     return true;
   }
   const levelOrder: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2 };
@@ -207,9 +212,51 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       }
     }
 
-    // v3+：按调用方滑动窗口限速（来自 ACL 的 max_calls_per_min）
+    // v3+：按调用方滑动窗口限速（ACL 的 rate_limits 按能力覆盖，未命中回退 max_calls_per_min）
     const clientRule = aclPolicy.clients.find((c) => c.client_id === state.clientId);
-    if (!allowByRate(state.clientId ?? '', clientRule?.max_calls_per_min)) {
+
+    // v11：来源 IP 白/黑名单 + 生效时段（仅在已配置该 client 规则时生效）
+    if (hasAcl && clientRule) {
+      const remoteIp = normalizeIp(state.remote);
+      const ipCheck = ipAllowed(clientRule, remoteIp);
+      if (!ipCheck.allowed) {
+        log('warn', `IP 拒绝 client_id=${state.clientId} remote=${remoteIp} — ${ipCheck.reason}`);
+        audit({
+          type: 'acl.denied',
+          client_id: state.clientId ?? undefined,
+          remote: state.remote,
+          capability: name,
+          status: 'denied',
+          reason: ipCheck.reason,
+        });
+        sendError(ws, req.id, ErrorCodes.ACL_DENIED, '来源 IP 不被允许', {
+          capability: name,
+          remote: remoteIp,
+          reason: ipCheck.reason,
+        });
+        return;
+      }
+      const twCheck = inTimeWindow(clientRule.allow_window, new Date());
+      if (!twCheck.allowed) {
+        log('warn', `时段拒绝 client_id=${state.clientId} — ${twCheck.reason}`);
+        audit({
+          type: 'acl.denied',
+          client_id: state.clientId ?? undefined,
+          remote: state.remote,
+          capability: name,
+          status: 'denied',
+          reason: twCheck.reason,
+        });
+        sendError(ws, req.id, ErrorCodes.ACL_DENIED, '当前不在允许的生效时段', {
+          capability: name,
+          reason: twCheck.reason,
+        });
+        return;
+      }
+    }
+
+    const rateLimit = clientRule ? rateLimitFor(clientRule, name) : undefined;
+    if (!allowByRate(state.clientId ?? '', rateLimit, String(rateLimit ?? ''))) {
       log('warn', `限速拒绝 client_id=${state.clientId} capability=${name}`);
       audit({
         type: 'rate.limited',
@@ -217,11 +264,11 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
         remote: state.remote,
         capability: name,
         status: 'denied',
-        reason: `超过 ${clientRule?.max_calls_per_min}/分钟`,
+        reason: `超过 ${rateLimit}/分钟（能力 ${name}）`,
       });
-      sendError(ws, req.id, ErrorCodes.RATE_LIMITED, `调用频率超限（上限 ${clientRule?.max_calls_per_min}/分钟）`, {
+      sendError(ws, req.id, ErrorCodes.RATE_LIMITED, `调用频率超限（${name} 上限 ${rateLimit}/分钟）`, {
         capability: name,
-        limit_per_min: clientRule?.max_calls_per_min,
+        limit_per_min: rateLimit,
       });
       return;
     }

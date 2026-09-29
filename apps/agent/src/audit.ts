@@ -30,6 +30,10 @@ export interface AuditEntry {
   /** 参数预览（默认不记录；开启后自动脱敏） */
   args_preview?: string;
   reason?: string;
+  /** v11 防篡改：上一条记录哈希（首条为 "genesis"） */
+  prev?: string;
+  /** v11 防篡改：本条记录哈希（prev + 规范化正文 的 sha256 前 32 位） */
+  hash?: string;
 }
 
 export interface AuditOptions {
@@ -50,6 +54,39 @@ const DEFAULTS: AuditOptions = {
 let opts: AuditOptions = { ...DEFAULTS };
 let currentPath = '';
 
+/** v11：链式哈希锚点（进程内维护；启动时从日志尾部恢复） */
+const GENESIS = 'genesis';
+let lastHash = GENESIS;
+
+/** 规范化后计算条目哈希：键排序保证跨进程/跨版本稳定。 */
+function hashEntry(record: Record<string, unknown>, prev: string): string {
+  const keys = Object.keys(record).sort();
+  const body = JSON.stringify(record, keys);
+  return createHash('sha256').update(`${prev}|${body}`).digest('hex').slice(0, 32);
+}
+
+/** 从日志尾部恢复链锚点，保证 agent 重启后链不断。 */
+function recoverChainAnchor(): void {
+  try {
+    const p = auditFilePath();
+    if (!existsSync(p)) {
+      lastHash = GENESIS;
+      return;
+    }
+    const lines = readFileSync(p, 'utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      const rec = JSON.parse(line) as AuditEntry;
+      lastHash = rec.hash ?? GENESIS;
+      return;
+    }
+    lastHash = GENESIS;
+  } catch {
+    lastHash = GENESIS;
+  }
+}
+
 /** 初始化审计（返回审计文件路径）。显式 undefined 不会覆盖默认值。 */
 export function initAudit(options: Partial<AuditOptions> = {}, dir?: string): string {
   opts = {
@@ -61,6 +98,7 @@ export function initAudit(options: Partial<AuditOptions> = {}, dir?: string): st
   const base = dir ?? agentDir();
   mkdirSync(base, { recursive: true });
   currentPath = join(base, 'audit.log');
+  recoverChainAnchor();
   return currentPath;
 }
 
@@ -94,15 +132,91 @@ export function describeArgs(args: unknown): { args_digest: string; args_preview
 }
 
 /** 写入一条审计记录。任何异常都被吞掉 —— 审计绝不阻断主流程。 */
-export function audit(entry: Omit<AuditEntry, 'ts'>): void {
+export function audit(entry: Omit<AuditEntry, 'ts' | 'prev' | 'hash'>): void {
   if (!opts.enabled) return;
   try {
     const full: AuditEntry = { ts: Date.now(), ...entry };
+    // v11 链式哈希：prev 指向上一条的 hash，形成不可静默篡改的链
+    const record: AuditEntry = { ...full, prev: lastHash };
+    record.hash = hashEntry(record as unknown as Record<string, unknown>, lastHash);
     rotateIfNeeded();
-    appendFileSync(auditFilePath(), `${JSON.stringify(full)}\n`);
+    appendFileSync(auditFilePath(), `${JSON.stringify(record)}\n`);
+    lastHash = record.hash;
   } catch {
     /* 审计失败不影响业务 */
   }
+}
+
+export interface AuditVerifyResult {
+  ok: boolean;
+  /** 参与校验的条目总数 */
+  checked: number;
+  /** 无链字段的历史条目数（老版本写入，跳过校验） */
+  legacy: number;
+  /** 首个异常位置（文件 + 行号 + 原因） */
+  broken_at?: { file: string; line: number; reason: string };
+}
+
+/**
+ * 校验审计链完整性（v11）。
+ * 按时间顺序遍历「轮转文件（旧→新）+ 当前文件」，逐条重算哈希并比对 prev 链接。
+ * 老版本（无 hash 字段）条目记为 legacy 跳过，保证升级后不误报。
+ */
+export function verifyAudit(): AuditVerifyResult {
+  const p = auditFilePath();
+  const files: string[] = [];
+  for (let i = 20; i >= 1; i -= 1) {
+    const f = `${p}.${i}`;
+    if (existsSync(f)) files.push(f);
+  }
+  files.push(p);
+
+  let checked = 0;
+  let legacy = 0;
+  // null = 尚未锚定。轮转会丢弃最旧文件，故首个带链条目只作锚点、不校验 prev；
+  // 之后逐条比对 prev，链中间被篡改/删除必被发现。
+  let expected: string | null = null;
+
+  for (const f of files) {
+    if (!existsSync(f)) continue;
+    const lines = readFileSync(f, 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i += 1) {
+      const raw = lines[i]?.trim();
+      if (!raw) continue;
+      let rec: AuditEntry;
+      try {
+        rec = JSON.parse(raw) as AuditEntry;
+      } catch {
+        return { ok: false, checked, legacy, broken_at: { file: f, line: i + 1, reason: 'JSON 解析失败（条目被破坏）' } };
+      }
+      if (!rec.hash) {
+        legacy += 1;
+        expected = null; // 链接锚点未知，等待下一条带链字段的记录重新锚定
+        continue;
+      }
+      const { hash, ...body } = rec;
+      const recalculated = hashEntry(body as unknown as Record<string, unknown>, rec.prev ?? GENESIS);
+      if (recalculated !== hash) {
+        return {
+          ok: false,
+          checked,
+          legacy,
+          broken_at: { file: f, line: i + 1, reason: '内容与哈希不符（条目被篡改）' },
+        };
+      }
+      if (expected !== null && rec.prev !== expected) {
+        return {
+          ok: false,
+          checked,
+          legacy,
+          broken_at: { file: f, line: i + 1, reason: '链断裂（prev 与上一条哈希不匹配，可能被删除或替换）' },
+        };
+      }
+      expected = hash;
+      checked += 1;
+    }
+  }
+  return { ok: true, checked, legacy };
 }
 
 /** 大小超限时轮转：audit.log → .1 → .2 …（超出 maxFiles 的最旧文件被丢弃）。 */

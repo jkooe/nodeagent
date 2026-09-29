@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
-import { readAudit } from '../audit.js';
+import { readAudit, verifyAudit } from '../audit.js';
 import { startTask } from './task.js';
 
 type Args = Record<string, unknown>;
@@ -498,4 +498,9 @@ export async function auditList(args: Args): Promise<unknown> {
     type: args['type'] as string | undefined,
   });
   return result;
+}
+
+/** v11：审计链完整性校验（防篡改）。 */
+export async function auditVerify(_args: Args): Promise<unknown> {
+  return verifyAudit();
 }
