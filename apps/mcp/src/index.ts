@@ -24,6 +24,37 @@ let client: NodeAgentClient | null = null;
 /** 会话级目标设备（na_use 切换；不影响 CLI 的默认设备配置）。 */
 let sessionNode: string | null = null;
 
+/**
+ * v12.4：被控端事件到 MCP 的两条通路
+ *   1) **拉取**：事件已由被控端缓冲，用 na_event_poll 增量取（默认，最稳）
+ *   2) **推送**：宿主支持时，经 MCP 标准日志通知（notifications/message）实时送达，
+ *      由 na_event_watch 的 notify=true 开启（宿主若不展示日志，则退化为拉取，无副作用）
+ */
+let eventNotifyEnabled = false;
+let eventNotifyCount = 0;
+
+function forwardEventToHost(evt: Record<string, unknown>): void {
+  if (!eventNotifyEnabled) return;
+  eventNotifyCount += 1;
+  const line = `${String(evt['kind'] ?? '')} ${String(evt['action'] ?? '')} ${String(evt['target'] ?? '')}${
+    evt['detail'] ? ` (${String(evt['detail'])})` : ''
+  }`;
+  try {
+    // 注意：notification() 返回 Promise —— 必须 catch，否则未处理拒绝会**崩掉整个 MCP 服务**
+    // （真机踩过：宿主未声明/不支持 logging 时进程直接退出）
+    Promise.resolve(
+      server.notification({
+        method: 'notifications/message',
+        params: { level: 'info', logger: 'nodeagent.event', data: line },
+      }),
+    ).catch(() => {
+      /* 推送失败时静默降级为拉取通路 */
+    });
+  } catch {
+    /* 同步异常同样忽略 */
+  }
+}
+
 async function ensureClient(): Promise<NodeAgentClient> {
   if (client) return client;
   const cfg = loadConfig();
@@ -39,6 +70,7 @@ async function ensureClient(): Promise<NodeAgentClient> {
   const { profile, clientId } = target;
   const keys = profile.auth_mode === 'ed25519' ? loadKeys() : null;
   const c = new NodeAgentClient({
+    onEvent: (evt) => forwardEventToHost(evt),
     url: toWsUrl(profile),
     key: profile.key ?? '',
     clientId,
@@ -410,6 +442,11 @@ const TOOLS = [
         pattern: { type: 'string', description: '可选：文件名或进程名 glob（如 *.log、chrome*）' },
         recursive: { type: 'boolean', description: 'file 类型：是否递归子目录' },
         interval_ms: { type: 'integer', description: 'process/net 采样间隔（1000~60000，默认 5000）' },
+        notify: {
+          type: 'boolean',
+          description:
+            '开启实时推送（MCP 日志通知）；宿主若不展示日志则退化为 na_event_poll 拉取，无副作用',
+        },
       },
       required: ['kind'],
       additionalProperties: false,
@@ -506,6 +543,15 @@ function toArgs(toolName: string, input: Record<string, unknown>): Record<string
       if (Object.keys(filter).length > 0) args['filter'] = filter;
       return args;
     }
+    case 'na_event_watch': {
+      // notify 是 MCP 层开关（推送），能力侧不认识它 —— 必须剥离，否则被 additionalProperties 拒
+      const args: Record<string, unknown> = { kind: input['kind'] };
+      if (input['path'] !== undefined) args['path'] = input['path'];
+      if (input['pattern'] !== undefined) args['pattern'] = input['pattern'];
+      if (input['recursive'] !== undefined) args['recursive'] = input['recursive'];
+      if (input['interval_ms'] !== undefined) args['interval_ms'] = input['interval_ms'];
+      return args;
+    }
     case 'na_app_list': {
       const args: Record<string, unknown> = {};
       if (input['name_pattern']) args['filter'] = { name_pattern: input['name_pattern'] };
@@ -533,7 +579,6 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_restart: CapabilityNames.AgentRestart,
   na_event_watch: CapabilityNames.EventWatch,
   na_event_poll: CapabilityNames.EventPoll,
-  na_event_list: CapabilityNames.EventList,
   na_event_unwatch: CapabilityNames.EventUnwatch,
   na_window_list: CapabilityNames.WindowList,
   na_window_focus: CapabilityNames.WindowFocus,
@@ -672,7 +717,11 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
 
 const server = new Server(
   { name: 'nodeagent', version: '0.1.0' },
-  { capabilities: { tools: {} } },
+  {
+    // v12.4：声明 logging —— 事件推送走 MCP 标准日志通知（notifications/message）。
+    // 不声明时 SDK 会断言失败并**崩掉进程**（真机踩过），故必须显式声明。
+    capabilities: { tools: {}, logging: {} },
+  },
 );
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS as unknown as [] }));
@@ -695,6 +744,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return {
       content: [{ type: 'text', text: `已配置 ${lines.length} 台设备（● = 当前目标）：\n${lines.join('\n')}` }],
     };
+  }
+
+  // na_event_watch：notify 开关是会话级设置，在入口处处理
+  if (name === 'na_event_watch' && input['notify'] === true) {
+    eventNotifyEnabled = true;
+  }
+
+  // na_event_list：附带推送状态（便于判断是否需要改用拉取）
+  if (name === 'na_event_list') {
+    try {
+      const client = await ensureClient();
+      const r = await client.invoke(CapabilityNames.EventList, {});
+      const d = r.status === 'ok' ? (r.data as Record<string, unknown>) : {};
+      const watches = (d['watches'] as unknown[]) ?? [];
+      const lines = (watches as Array<Record<string, unknown>>).map(
+        (w) => `  ${String(w['watch_id'])}  ${String(w['kind']).padEnd(8)} 事件 ${String(w['events'])}  ${String(w['description'])}`,
+      );
+      const head = watches.length
+        ? `当前 ${watches.length} 个订阅（被控端缓冲 ${String(d['buffered'] ?? 0)} 条）：`
+        : '当前没有事件订阅';
+      const push = eventNotifyEnabled
+        ? `推送：已开启（已转发 ${eventNotifyCount} 条；宿主不展示日志时请改用 na_event_poll）`
+        : '推送：未开启（用 na_event_watch 的 notify=true 可开启；否则用 na_event_poll 拉取）';
+      return { content: [{ type: 'text', text: `${head}\n${lines.join('\n')}\n${push}` }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `✗ ${err instanceof Error ? err.message : String(err)}` }] };
+    }
   }
 
   // na_macro_run：需要直接驱动一个长连接完成多步操作，故在执行入口单独处理
