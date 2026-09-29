@@ -437,8 +437,10 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
   },
   {
     name: CapabilityNames.KeyPress,
-    version: '1.0',
-    description: '按下按键或组合键（如 ["ctrl","c"]）',
+    version: '1.1',
+    description:
+      '按下按键。keys=["ctrl","c"] 表示和弦；配 repeat=3 可连按 3 次；' +
+      'sequence=[["ctrl","c"],["ctrl","v"]] 表示按键序列',
     risk: 'high',
     params_schema: {
       type: 'object',
@@ -448,10 +450,15 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
           items: { type: 'string' },
           minItems: 1,
           maxItems: 4,
-          description: '按键列表，如 ["ctrl","shift","esc"]',
+          description: '和弦按键列表，如 ["ctrl","shift","esc"]',
+        },
+        repeat: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: '和弦重复次数' },
+        sequence: {
+          type: 'array',
+          items: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 },
+          description: '和弦序列，如 [["up"],["up"],["enter"]]；提供时忽略 keys/repeat',
         },
       },
-      required: ['keys'],
       additionalProperties: false,
     },
     returns_schema: {
@@ -613,6 +620,8 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
       properties: {
         delay_ms: {
           type: 'integer',
+          minimum: 1,
+          maximum: 3600000,
           description: '延时多少毫秒后重启（默认 2000，给调用方留出返回结果的时间）',
           default: 2000,
         },

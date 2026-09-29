@@ -68,6 +68,16 @@ export function buildLaunch(command: string, shell: ShellKind): Launch {
   return { file: bin, args: ['-c', command] };
 }
 
+/** 子进程统一环境：输出强制 UTF-8（Node 侧按 UTF-8 解码，两端须一致）。 */
+export function childEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PYTHONIOENCODING: 'utf-8',
+    LANG: process.env['LANG'] ?? 'en_US.UTF-8',
+    LC_ALL: process.env['LC_ALL'] ?? 'en_US.UTF-8',
+  };
+}
+
 /**
  * 执行命令，带超时强杀与输出截断。
  * 超时后杀「整个进程组」，防止孙进程残留。
@@ -85,13 +95,7 @@ export function execCommand(opts: ExecOptions): Promise<ExecResult> {
         cwd,
         detached: !IS_WINDOWS, // POSIX: 独立进程组，便于整组杀死
         windowsHide: true,
-        env: {
-          ...process.env,
-          // 统一子进程输出为 UTF-8（Node 侧按 UTF-8 解码，二者须一致）
-          PYTHONIOENCODING: 'utf-8',
-          LANG: process.env['LANG'] ?? 'en_US.UTF-8',
-          LC_ALL: process.env['LC_ALL'] ?? 'en_US.UTF-8',
-        },
+        env: childEnv(),
       });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
