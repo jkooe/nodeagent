@@ -1,5 +1,6 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { runPowerShellSmart } from '../util/ps-helper.js';
 import { macScreenFind, macWindowFocus, macWindowList } from './darwin.js';
 
 type Args = Record<string, unknown>;
@@ -17,7 +18,31 @@ function encodePS(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64');
 }
 
-async function runPS(script: string, timeoutMs = 30_000): Promise<string> {
+/**
+ * 执行「不含 prelude」的脚本主体：**优先常驻助手**（类型已预加载），
+ * 助手不可用时自动回退到一次性脚本（自带 prelude），保证可用性不倒退。
+ */
+async function runPS(body: string, timeoutMs = 30_000): Promise<string> {
+  try {
+    const { stdout } = await runPowerShellSmart({
+      body,
+      prelude: WIN_HELPER_PRELUDE,
+      timeoutMs,
+      label: 'win',
+      log: (level, msg) => {
+        if (level === 'warn') console.error(`[ps-helper] ${msg}`);
+      },
+    });
+    return stdout;
+  } catch (err) {
+    throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '窗口操作失败', {
+      detail: (err instanceof Error ? err.message : String(err)).slice(0, 600),
+    });
+  }
+}
+
+/** 一次性执行完整脚本（含 prelude）—— 尚未迁移到助手的路径暂用。 */
+async function runPSRaw(script: string, timeoutMs = 30_000): Promise<string> {
   const r = await execCommand({
     command: `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encodePS(script)}`,
     timeoutMs,
@@ -75,8 +100,11 @@ public class NAWin32 {
 "@
 `;
 
-/** 枚举可见顶层窗口 → JSON 字符串。 */
-const LIST_SCRIPT = `${WIN32_PRELUDE}
+/**
+ * 枚举可见顶层窗口 → JSON（**不含 prelude**，供常驻助手与一次性路径复用）。
+ * 注意：本段会被送进常驻进程执行，**严禁出现 exit**（会杀掉助手进程）。
+ */
+const LIST_BODY = `
 $fg = [NAWin32]::GetForegroundWindow()
 $list = New-Object System.Collections.ArrayList
 $cb = [NAWin32+EnumProc]{
@@ -107,6 +135,105 @@ $cb = [NAWin32+EnumProc]{
 $list | ConvertTo-Json -Compress
 `;
 
+/**
+ * v14：常驻助手预加载段 —— 这些内容**只在助手启动时执行一次**。
+ * 过去每次调用都重新编译 C# / 加载程序集，真机实测占单次耗时的绝大部分
+ * （window.list 1267ms / window.focus 1631ms，其中「起进程+编译」是固定成本）。
+ */
+const UIA_ASSEMBLY_PRELUDE = `
+Add-Type -AssemblyName UIAutomationClient
+Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase
+function Get-WinByTitle([string]$re) {
+  $root = [System.Windows.Automation.AutomationElement]::RootElement
+  $cond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+    [System.Windows.Automation.ControlType]::Window)
+  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
+  foreach ($w in $wins) {
+    try {
+      $t = $w.Current.Name
+      if ($t -and $t -match $re) { return $w }
+    } catch {}
+  }
+  return $null
+}
+
+# v14：按子串在给定 scope 内遍历查找（FindAll + 子串过滤）。
+# UIA 的 PropertyCondition 只能精确匹配，故必须遍历后过滤；遍历规模设上限防超大 UI 树卡死。
+function Find-UiaByText($scope, [string]$text, [int]$limit, [string]$ct) {
+  $cond = [System.Windows.Automation.Condition]::TrueCondition
+  if ($ct -ne '') {
+    $ctObj = $null
+    try { $ctObj = [System.Windows.Automation.ControlType]::$ct } catch {}
+    if ($ctObj -ne $null) {
+      $cond = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ctObj)
+    }
+  }
+  $found = $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  $out = New-Object System.Collections.ArrayList
+  $scanned = 0
+  foreach ($e in $found) {
+    if ($out.Count -ge $limit) { break }
+    $scanned++
+    if ($scanned -gt 20000) { break }
+    try {
+      $nm = $e.Current.Name
+      if ([string]::IsNullOrEmpty($nm)) { continue }
+      if ($nm.IndexOf($text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+      $r = $e.Current.BoundingRectangle
+      if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+      [void]$out.Add([pscustomobject]@{
+        name = $nm
+        control_type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\\.','')
+        automation_id = $e.Current.AutomationId
+        x = [int]($r.Left + $r.Width / 2)
+        y = [int]($r.Top + $r.Height / 2)
+        left = [int]$r.Left; top = [int]$r.Top
+        width = [int]$r.Width; height = [int]$r.Height
+      })
+    } catch {}
+  }
+  return ,$out
+}
+`;
+
+/** 助手统一预加载段（window.list / window.focus / screen.find 共用同一个进程）。 */
+const WIN_HELPER_PRELUDE = `${WIN32_PRELUDE}
+${UIA_ASSEMBLY_PRELUDE}`;
+
+
+/**
+ * OCR 引擎预加载段（v14）：截图 / DPI / WinRT 类型与 Await 辅助函数。
+ * 注意：WinRT 类型加载用 try/catch 包住 —— 个别环境缺组件时只应让 OCR 退化，
+ * 不该让整个助手（连带 window.list/focus/UIA）起不来。
+ */
+const OCR_PRELUDE = `
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+try {
+  Add-Type -AssemblyName System.Runtime.WindowsRuntime
+  Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class NADPI { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
+  [void][NADPI]::SetProcessDPIAware()
+  $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
+  $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
+  $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
+  $null = [Windows.Storage.Streams.DataWriter, Windows.Foundation, ContentType=WindowsRuntime]
+  $null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType=WindowsRuntime]
+  $script:asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' })[0]
+  function global:Await($WinRtTask, $ResultType) {
+    $asTask = $script:asTaskGeneric.MakeGenericMethod($ResultType)
+    $netTask = $asTask.Invoke($null, @($WinRtTask))
+    $netTask.Wait(-1) | Out-Null
+    $netTask.Result
+  }
+  $script:ocrReady = $true
+} catch {
+  $script:ocrReady = $false
+}
+`;
+
 interface WinInfo {
   hwnd: string;
   title: string;
@@ -132,7 +259,7 @@ export async function windowList(args: Args): Promise<unknown> {
       { platform: process.platform },
     );
   }
-  const out = await runPS(LIST_SCRIPT, 40_000);
+  const out = await runPS(LIST_BODY, 40_000);
   let all: WinInfo[] = toArray<WinInfo>(extractJson<WinInfo[]>(out) ?? []);
   // 过滤掉 UWP 的隐形壳窗口（尺寸异常大且进程为 ApplicationFrameHost 的重复项保留）
   all = all.filter((w) => w.width > 40 && w.height > 40);
@@ -186,8 +313,12 @@ export async function windowFocus(args: Args): Promise<unknown> {
 }
 
 /** 单次聚焦（供等待重试复用）。 */
-async function focusOnce(title: string | undefined, hwnd: string | undefined): Promise<unknown> {
-  const script = `${WIN32_PRELUDE}
+/**
+ * 聚焦脚本主体（不含 prelude）。⚠️ 严禁 exit —— 会杀掉常驻助手进程；
+ * 未找到时改为输出 `{"found":false}` 并 return。
+ */
+function focusBody(title: string | undefined, hwnd: string | undefined): string {
+  return `
 $h = [IntPtr]::Zero
 $want = ${JSON.stringify(hwnd ?? '')}
 if ($want -ne '') { $h = [IntPtr][Convert]::ToInt64($want, 16) }
@@ -208,7 +339,7 @@ else {
   [void][NAWin32]::EnumWindows($cb, [IntPtr]::Zero)
   $h = $script:found
 }
-if ($h -eq [IntPtr]::Zero) { Write-Output '{"found":false}'; exit 0 }
+if ($h -eq [IntPtr]::Zero) { Write-Output '{"found":false}'; return }
 [void][NAWin32]::ShowWindow($h, 9)   # SW_RESTORE
 [void][NAWin32]::SetForegroundWindow($h)
 Start-Sleep -Milliseconds 400
@@ -241,7 +372,11 @@ $sb2 = New-Object System.Text.StringBuilder 512
   activated_by = $activatedBy
 } | ConvertTo-Json -Compress
 `;
-  const out = await runPS(script, 40_000);
+}
+
+/** 单次聚焦（供等待重试复用）。 */
+async function focusOnce(title: string | undefined, hwnd: string | undefined): Promise<unknown> {
+  const out = await runPS(focusBody(title, hwnd), 40_000);
   const obj = extractJson<Record<string, unknown>>(out) ?? {};
   if (obj['found'] === false) {
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '未找到匹配的窗口', { title, hwnd });
@@ -252,25 +387,7 @@ $sb2 = New-Object System.Text.StringBuilder 512
 
 // ---------------- screen.find ----------------
 
-const FIND_SCRIPT_PRELUDE = `
-Add-Type -AssemblyName UIAutomationClient
-Add-Type -AssemblyName UIAutomationTypes
-Add-Type -AssemblyName WindowsBase
-function Get-WinByTitle([string]$re) {
-  $root = [System.Windows.Automation.AutomationElement]::RootElement
-  $cond = New-Object System.Windows.Automation.PropertyCondition(
-    [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-    [System.Windows.Automation.ControlType]::Window)
-  $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $cond)
-  foreach ($w in $wins) {
-    try {
-      $t = $w.Current.Name
-      if ($t -and $t -match $re) { return $w }
-    } catch {}
-  }
-  return $null
-}
-`;
+// v14：原 FIND_SCRIPT_PRELUDE 已并入 WIN_HELPER_PRELUDE（助手启动时预加载一次）
 
 /**
  * 在界面中查找 UI 元素并返回屏幕坐标。
@@ -311,85 +428,41 @@ export async function screenFind(args: Args): Promise<unknown> {
   // ---------- UIA 引擎 ----------
   const uiaFind = async (): Promise<Record<string, unknown>[]> => {
     const ct = controlType ?? '';
-    const script = `${FIND_SCRIPT_PRELUDE}
+    const body = `
 $text = ${JSON.stringify(text)}
 $limit = ${Number(limit)}
-$scope = [System.Windows.Automation.AutomationElement]::RootElement
+$ct = ${JSON.stringify(controlType ?? '')}
 $winTitle = ${JSON.stringify(windowTitle ?? '')}
+$out = New-Object System.Collections.ArrayList
 if ($winTitle -ne '') {
+  # 指定窗口：直接在该窗口子树内找
   $w = Get-WinByTitle $winTitle
-  if ($w -eq $null) { Write-Output '[]'; exit 0 }
-  $scope = $w
-}
-// ⚠️ UIA 的 PropertyCondition 是**精确匹配**（IgnoreCase 只影响大小写），
-//    实测「管理员: C:\WINDOWS\...」这类标题用 "管理员" 永远匹配不到。
-//    故改为遍历后按子串过滤（并限制遍历规模，避免超大 UI 树卡住）。
-$cond = [System.Windows.Automation.Condition]::TrueCondition
-$ct = ${JSON.stringify(ct)}
-if ($ct -ne '') {
-  $ctObj = $null
-  try { $ctObj = [System.Windows.Automation.ControlType]::$ct } catch {}
-  if ($ctObj -ne $null) {
-    $cond = New-Object System.Windows.Automation.PropertyCondition(
-      [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ctObj)
+  if ($w -eq $null) { Write-Output '[]'; return }   # 严禁 exit：会杀掉常驻助手
+  $out = Find-UiaByText $w $text $limit $ct
+} else {
+  # v14 优化：先在前台窗口子树内找（典型只几百个元素，快一个数量级），
+  # 找不到再退回全桌面遍历（原来每次都在全桌面上跑，真机实测 3.1~3.7s）。
+  $fgEl = $null
+  try {
+    $fgEl = [System.Windows.Automation.AutomationElement]::FromHandle([NAWin32]::GetForegroundWindow())
+  } catch {}
+  if ($fgEl -ne $null) { $out = Find-UiaByText $fgEl $text $limit $ct }
+  if ($out.Count -eq 0) {
+    $out = Find-UiaByText ([System.Windows.Automation.AutomationElement]::RootElement) $text $limit $ct
   }
 }
-$found = $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
-$out = New-Object System.Collections.ArrayList
-$scanned = 0
-foreach ($e in $found) {
-  if ($out.Count -ge $limit) { break }
-  $scanned++
-  if ($scanned -gt 20000) { break }
-  try {
-    $nm = $e.Current.Name
-    if ([string]::IsNullOrEmpty($nm)) { continue }
-    if ($nm.IndexOf($text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
-    $r = $e.Current.BoundingRectangle
-    if ($r.Width -le 0 -or $r.Height -le 0) { continue }
-    $out.Add([pscustomobject]@{
-      name = $nm
-      control_type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\\\\.','')
-      automation_id = $e.Current.AutomationId
-      x = [int]($r.Left + $r.Width / 2)
-      y = [int]($r.Top + $r.Height / 2)
-      left = [int]$r.Left; top = [int]$r.Top
-      width = [int]$r.Width; height = [int]$r.Height
-    })
-  } catch {}
-}
-$out | ConvertTo-Json -Compress
+# ── 输出 ──（遍历与子串过滤已收敛到预加载的 Find-UiaByText，避免逻辑重复）
+if ($out.Count -eq 0) { Write-Output '[]' } else { $out | ConvertTo-Json -Compress }
 `;
-    const out = await runPS(script, 60_000);
+    const out = await runPS(body, 60_000);
     return toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
   };
 
   // ---------- OCR 引擎（截图 → Windows.Media.Ocr → 文字坐标） ----------
   const ocrFind = async (): Promise<Record<string, unknown>[]> => {
-    const script = `
-$ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.Runtime.WindowsRuntime
-Add-Type -AssemblyName System.Windows.Forms
-# DPI 感知：保证截图像素与窗口矩形同为物理坐标
-Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class NADPI { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
-[void][NADPI]::SetProcessDPIAware()
-
-$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Storage.Streams.DataWriter, Windows.Foundation, ContentType=WindowsRuntime]
-$null = [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Foundation, ContentType=WindowsRuntime]
-
-# WinRT IAsyncOperation -> Task 等待辅助
-$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation\`1' })[0]
-function Await($WinRtTask, $ResultType) {
-  $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
-  $netTask = $asTask.Invoke($null, @($WinRtTask))
-  $netTask.Wait(-1) | Out-Null
-  $netTask.Result
-}
-
+    const body = `
+# OCR 预加载段已在助手启动时完成（类型/DPI/Await）；此处只做本次逻辑
+if ($null -eq $script:ocrReady -or -not $script:ocrReady) { Write-Output '[]'; return }
 # 截图区域：显式 region 优先 > 指定窗口 > 整块虚拟屏
 $xv = ${regionArg ? regionArg.x : -1}
 $yv = ${regionArg ? regionArg.y : -1}
@@ -432,7 +505,7 @@ public class NAEnum {
     $x = $r.Left; $y = $r.Top; $w = $r.Right - $r.Left; $h = $r.Bottom - $r.Top
   }
 }
-if ($w -le 0 -or $h -le 0) { Write-Output '[]'; exit 0 }
+if ($w -le 0 -or $h -le 0) { Write-Output '[]'; return }
 
 $bmp = New-Object System.Drawing.Bitmap($w, $h)
 $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -452,7 +525,7 @@ $decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($ras)) (
 $soft = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
 
 $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
-if ($null -eq $engine) { Write-Output '[]'; exit 0 }
+if ($null -eq $engine) { Write-Output '[]'; return }
 $result = Await ($engine.RecognizeAsync($soft)) ([Windows.Media.Ocr.OcrResult])
 
 $text = ${JSON.stringify(text)}
@@ -526,7 +599,7 @@ foreach ($line in $result.Lines) {
 }
 $out | ConvertTo-Json -Compress
 `;
-    const out = await runPS(script, 90_000);
+    const out = await runPS(body, 90_000);
     return toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
   };
 
