@@ -66,6 +66,8 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent task <id> [--offset N] [--kill]  读取/终止后台任务（支持增量续读）
   nodeagent clip [--set "文本"] [--out <路径>] [--image-file <路径>]
                                       读/写剪贴板文本或图片（--out 保存图片）(v11)
+  nodeagent events [--kind file|process|net] [--path <路径>] [--pattern G] [--seconds 15]
+                                      订阅事件并实时接收推送（无 --kind 则列出订阅）(v12)
   nodeagent record [--duration 5000] [--fps 2] [--scale 0.5] [--region x,y,w,h]
                                       录屏为帧序列（有 ffmpeg 则封装 mp4）(v11)
   nodeagent deploy <agent.mjs> [--path <远端路径>]
@@ -146,6 +148,10 @@ interface Options {
   nodes?: string;
   /** v11 部署目标路径 */
   path?: string;
+  /** v12 事件订阅 */
+  kind?: string;
+  seconds?: string;
+  intervalMs?: string;
 }
 
 function getClientConfig(): ClientConfig {
@@ -770,6 +776,102 @@ async function cmdDeploy(localFile: string, opts: Options): Promise<void> {
   });
 }
 
+/**
+ * v12 / E1+E2：订阅被控端事件并实时接收推送。
+ * 与普通命令不同，它需要**保持连接**一段时间（长连接 + 推送），因此不走 withClient 的「用完即关」。
+ */
+async function cmdEvents(opts: Options): Promise<void> {
+  const cfg = getClientConfig();
+  let target: ResolvedTarget;
+  try {
+    target = resolveTarget(cfg, currentNodeOverride);
+  } catch (err) {
+    fail(err instanceof Error ? err.message : String(err));
+  }
+
+  // 无 --kind 时列出当前订阅
+  if (!opts.kind) {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.EventList, {}, opts.json, (data) => {
+        const d = data as {
+          watches: Array<{ watch_id: string; kind: string; description: string; events: number }>;
+          buffered: number;
+        };
+        if (d.watches.length === 0) {
+          console.log(`当前没有事件订阅（缓冲 ${d.buffered} 条）`);
+          console.log('用法: nodeagent events --kind file --path <路径> [--seconds 20]');
+          return;
+        }
+        console.log(`${'订阅ID'.padEnd(24)} ${'类型'.padEnd(8)} 事件数  说明`);
+        for (const w of d.watches) {
+          console.log(`${w.watch_id.padEnd(24)} ${w.kind.padEnd(8)} ${String(w.events).padStart(6)}  ${w.description}`);
+        }
+      }),
+    );
+    return;
+  }
+
+  const seconds = Math.max(1, Math.min(600, Number(opts.seconds ?? 15)));
+  const { profile, clientId } = target;
+  const keys = profile.auth_mode === 'ed25519' ? loadKeys() : null;
+  const received: Array<Record<string, unknown>> = [];
+
+  const client = new NodeAgentClient({
+    url: toWsUrl(profile),
+    key: profile.key ?? '',
+    clientId,
+    insecure: profile.insecure,
+    authMode: profile.auth_mode,
+    privateKey: keys?.privateKey,
+    hub: profile.hub ? { token: profile.hub.token, nodeId: profile.hub.node_id } : undefined,
+    onEvent: (evt) => {
+      received.push(evt);
+      const ts = new Date(Number(evt['ts'] ?? Date.now())).toLocaleTimeString('zh-CN');
+      const line = `${ts}  ${String(evt['action'] ?? '').padEnd(20)} ${String(evt['target'] ?? '')}${evt['detail'] ? `  (${evt['detail']})` : ''}`;
+      if (opts.json) console.log(JSON.stringify(evt));
+      else console.log(`  ${line}`);
+    },
+  });
+
+  try {
+    await client.connect();
+    const args: Record<string, unknown> = { kind: opts.kind };
+    if (opts.path) args['path'] = opts.path;
+    if (opts.pattern) args['pattern'] = opts.pattern;
+    if (opts.recursive) args['recursive'] = true;
+    if (opts.intervalMs) args['interval_ms'] = Number(opts.intervalMs);
+
+    const r = await client.invoke<{ watch_id: string; description: string }>(
+      CapabilityNames.EventWatch,
+      args,
+    );
+    if (r.status === 'failed') fail(`${r.error?.name}: ${r.error?.message}`);
+    const watchId = (r.data as { watch_id: string }).watch_id;
+    if (!opts.json) {
+      console.log(`已订阅：${(r.data as { description: string }).description}`);
+      console.log(`订阅 ID: ${watchId}    监听 ${seconds}s（Ctrl+C 可提前结束）\n`);
+    }
+
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, seconds * 1000);
+      process.once('SIGINT', () => {
+        clearTimeout(t);
+        resolve();
+      });
+    });
+
+    await client.invoke(CapabilityNames.EventUnwatch, { watch_id: watchId });
+    if (!opts.json) {
+      console.log(`\n共收到 ${received.length} 个事件（订阅已取消）`);
+    }
+  } catch (err) {
+    if (err instanceof ClientError) fail(`${err.name}: ${err.message}`);
+    throw err;
+  } finally {
+    client.close();
+  }
+}
+
 async function cmdClip(opts: Options): Promise<void> {
   // 图片上传：从本地文件读入（避免超长命令行参数）
   if (opts.imageFile) {
@@ -1273,6 +1375,9 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       fps: { type: 'string' },
       nodes: { type: 'string' },
       path: { type: 'string' },
+      kind: { type: 'string' },
+      seconds: { type: 'string' },
+      'interval-ms': { type: 'string' },
     },
     allowPositionals: true,
     strict: false,
@@ -1309,6 +1414,9 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       fps: values['fps'] as string | undefined,
       nodes: values['nodes'] as string | undefined,
       path: values['path'] as string | undefined,
+      kind: values['kind'] as string | undefined,
+      seconds: values['seconds'] as string | undefined,
+      intervalMs: values['interval-ms'] as string | undefined,
       name: values['name'] as string | undefined,
       note: values['note'] as string | undefined,
       recursive: Boolean(values['recursive']),
@@ -1446,6 +1554,9 @@ async function main(): Promise<void> {
       return;
     case 'record':
       await cmdRecord(opts);
+      return;
+    case 'events':
+      await cmdEvents(opts);
       return;
     case 'fanout': {
       const cap = positionals[0];

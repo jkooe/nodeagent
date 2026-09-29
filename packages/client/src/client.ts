@@ -56,6 +56,8 @@ export interface ClientOptions {
   hub?: { token: string; nodeId: string };
   /** 日志回调 */
   onLog?: (msg: string) => void;
+  /** v12：接收被控端主动推送的事件（无 id 的 JSON-RPC 通知） */
+  onEvent?: (event: Record<string, unknown>) => void;
 }
 
 interface Pending {
@@ -215,7 +217,21 @@ export class NodeAgentClient {
     }
 
     const id = (msg as { id?: string | null }).id;
-    if (!id) return;
+    if (!id) {
+      // v12：无 id = 通知（事件推送），交给 onEvent；控制端不应回复
+      const method = (msg as { method?: string }).method;
+      if (method === Methods.Event) {
+        const params = (msg as { params?: Record<string, unknown> }).params;
+        if (params) {
+          try {
+            this.opts.onEvent?.(params);
+          } catch (err) {
+            this.opts.onLog?.(`onEvent 回调异常: ${String(err)}`);
+          }
+        }
+      }
+      return;
+    }
     const pending = this.pending.get(id);
     if (!pending) return;
 

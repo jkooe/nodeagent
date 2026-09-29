@@ -7,10 +7,21 @@ import { windowList, windowFocus, screenFind } from './window.js';
 import { screenRecord } from './record.js';
 import { taskList, taskGet, taskKill } from './task.js';
 import { clipGet, clipSet } from './clipboard.js';
+import { eventWatch, eventUnwatch, eventList, eventPoll } from '../events.js';
 import { mouseMove, mouseClick, mouseScroll, mouseDrag, keyType, keyPress, setInputPolicy } from './input.js';
 import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 
-export type CapabilityHandler = (args: Record<string, unknown>) => Promise<unknown>;
+export interface HandlerContext {
+  /** 连接标识（事件订阅归属 / 断开清理） */
+  owner: string;
+  /** 向该连接推送事件 */
+  emit: (evt: unknown) => void;
+}
+
+export type CapabilityHandler = (
+  args: Record<string, unknown>,
+  ctx?: HandlerContext,
+) => Promise<unknown>;
 
 /**
  * 装配能力注册表。
@@ -60,5 +71,11 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.TaskKill]: taskKill,
     [CapabilityNames.ClipGet]: clipGet,
     [CapabilityNames.ClipSet]: clipSet,
+    // v12 事件订阅
+    [CapabilityNames.EventWatch]: (args, ctx) =>
+      eventWatch(args, ctx ?? { owner: 'unknown', emit: () => undefined }),
+    [CapabilityNames.EventUnwatch]: eventUnwatch,
+    [CapabilityNames.EventList]: eventList,
+    [CapabilityNames.EventPoll]: eventPoll,
   };
 }

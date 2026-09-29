@@ -47,11 +47,15 @@ test('清单：v7~v11 新能力均已登记', () => {
     'system.audit.verify',
     'input.mouse.drag',
     'screen.record',
+    'event.watch',
+    'event.unwatch',
+    'event.list',
+    'event.poll',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 31, '当前应有 31 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 35, '当前应有 35 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------
@@ -128,6 +132,23 @@ test('system.shell.exec：async 与 wait_forever 为合法布尔', () => {
     0,
   );
   assert.ok(check('system.shell.exec', { command: 'x', async: 'yes' }).length > 0, '类型错误应被拒');
+});
+
+test('event.watch：kind 枚举受控，file 需 path，interval 有上下限', () => {
+  assert.equal(check('event.watch', { kind: 'file', path: 'C:\\tmp' }).length, 0);
+  assert.equal(check('event.watch', { kind: 'process', pattern: 'chrome*' }).length, 0);
+  assert.equal(check('event.watch', { kind: 'net', interval_ms: 2000 }).length, 0);
+  assert.ok(check('event.watch', { kind: 'disk' }).length > 0, '非法 kind 应被拒');
+  assert.ok(check('event.watch', { kind: 'net', interval_ms: 100 }).length > 0, 'interval 下限 1s');
+  assert.ok(check('event.watch', { kind: 'net', interval_ms: 99999 }).length > 0, 'interval 上限 60s');
+});
+
+test('event.poll：游标与条数可省略，且不接受未知参数', () => {
+  assert.equal(check('event.poll', {}).length, 0);
+  assert.equal(check('event.poll', { since: 12, limit: 100 }).length, 0);
+  assert.ok(check('event.poll', { limit: 0 }).length > 0, 'limit 下限 1');
+  assert.ok(check('event.poll', { limit: 999 }).length > 0, 'limit 上限 500');
+  assert.ok(check('event.poll', { bogus: 1 }).length > 0, '未知参数应被拒');
 });
 
 // ---------- 默认值 ----------
