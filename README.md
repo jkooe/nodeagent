@@ -24,8 +24,8 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **自持** | `system.agent.restart` | **受控重启自身**（配置变更后让它生效，不会失联） |
 | **异步任务** | `system.task.list` · `system.task.get` · `system.task.kill` | 长命令后台执行 + 增量续读 + 终止（`exec` 加 `async:true`） |
 | **软件** | `app.list` · `app.install` | 已装软件（注册表 + winget）、winget 静默安装 |
-| **屏幕** | `screen.info` · `screen.capture` · `screen.record` · `screen.find` | 显示器 / 截屏 / **录屏为帧序列** / **按名字找元素取坐标** |
-| **窗口** | `window.list` · `window.focus` | 枚举可见窗口（精确矩形）/ 置前聚焦 |
+| **屏幕** | `screen.info` · `screen.capture` · `screen.record` · `screen.find` | 显示器 / 截屏 / **录屏为帧序列** / **按名字找元素取坐标**（含区域与等待） |
+| **窗口** | `window.list` · `window.focus` | 枚举可见窗口（精确矩形）/ 置前聚焦（**Windows + macOS**） |
 | **文件** | `fs.list` · `fs.stat` · `fs.read` · `fs.write` | 列目录 / 元信息 / 分块读 / 原子写 |
 | **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**与**按键序列/连按** |
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
@@ -421,6 +421,8 @@ nodeagent/
 | **v11+** | **操作面补完**：鼠标拖拽 / 录屏 / 剪贴板图片 / 多设备并发 / 一键升级 | ✅ |
 | **v12** | **事件订阅**（file/process/net 主动推送）+ **GUI 宏**（步骤序列回放）+ **Hub 并发多控制端** + 设备分组 | ✅ |
 | **v12.1** | **Hub 侧按控制端授权**（多令牌 + 按设备白/黑名单 + 注册准入） | ✅ |
+| **v12.2** | GUI **等待/重试语义**（`wait_ms`）—— 界面加载/动画不再假失败 | ✅ |
+| **v12.3** | **macOS 端 GUI 对齐**：AppleScript 窗口枚举/聚焦 + Vision OCR 元素定位（含 Retina 坐标换算） | ✅ |
 | **待办** | v7~v12 能力入 CI（需 workflow scope 才能推 CI 改动）、macOS 端 GUI 能力对齐、事件订阅推给 MCP 客户端（当前为缓冲拉取） | 🚧 |
 
 ## 文档
