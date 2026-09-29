@@ -87,12 +87,14 @@ $cb = [NAWin32+EnumProc]{
   if (-not [NAWin32]::GetWindowRect($h, [ref]$r)) { return $true }
   $w = $r.Right - $r.Left; $ht = $r.Bottom - $r.Top
   if ($w -le 0 -or $ht -le 0) { return $true }
-  $pid = 0
-  [void][NAWin32]::GetWindowThreadProcessId($h, [ref]$pid)
+  # ⚠️ 变量名不能叫 $pid —— 它是 PowerShell 的自动变量（当前进程 ID），赋值会被忽略，
+  #    导致所有窗口都报成 powershell 进程（真机踩过）。
+  $procId = 0
+  [void][NAWin32]::GetWindowThreadProcessId($h, [ref]$procId)
   $pn = ''
-  try { $pn = (Get-Process -Id $pid -ErrorAction Stop).ProcessName } catch {}
+  try { $pn = (Get-Process -Id $procId -ErrorAction Stop).ProcessName } catch {}
   [void]$list.Add([pscustomobject]@{
-    hwnd = ('0x{0:X}' -f $h.ToInt64()); title = $title; process = $pn; pid = $pid
+    hwnd = ('0x{0:X}' -f $h.ToInt64()); title = $title; process = $pn; pid = $procId
     x = $r.Left; y = $r.Top; width = $w; height = $ht
     is_foreground = ($h -eq $fg); is_minimized = [NAWin32]::IsIconic($h)
   })
@@ -260,28 +262,34 @@ if ($winTitle -ne '') {
   if ($w -eq $null) { Write-Output '[]'; exit 0 }
   $scope = $w
 }
-$nameCond = New-Object System.Windows.Automation.PropertyCondition(
-  [System.Windows.Automation.AutomationElement]::NameProperty, $text,
-  [System.Windows.Automation.PropertyConditionFlags]::IgnoreCase)
+// ⚠️ UIA 的 PropertyCondition 是**精确匹配**（IgnoreCase 只影响大小写），
+//    实测「管理员: C:\WINDOWS\...」这类标题用 "管理员" 永远匹配不到。
+//    故改为遍历后按子串过滤（并限制遍历规模，避免超大 UI 树卡住）。
+$cond = [System.Windows.Automation.Condition]::TrueCondition
 $ct = ${JSON.stringify(ct)}
 if ($ct -ne '') {
   $ctObj = $null
   try { $ctObj = [System.Windows.Automation.ControlType]::$ct } catch {}
   if ($ctObj -ne $null) {
-    $ctCond = New-Object System.Windows.Automation.PropertyCondition(
+    $cond = New-Object System.Windows.Automation.PropertyCondition(
       [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ctObj)
-    $cond = New-Object System.Windows.Automation.AndCondition($nameCond, $ctCond)
-  } else { $cond = $nameCond }
-} else { $cond = $nameCond }
+  }
+}
 $found = $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 $out = New-Object System.Collections.ArrayList
+$scanned = 0
 foreach ($e in $found) {
   if ($out.Count -ge $limit) { break }
+  $scanned++
+  if ($scanned -gt 20000) { break }
   try {
+    $nm = $e.Current.Name
+    if ([string]::IsNullOrEmpty($nm)) { continue }
+    if ($nm.IndexOf($text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
     $r = $e.Current.BoundingRectangle
     if ($r.Width -le 0 -or $r.Height -le 0) { continue }
     $out.Add([pscustomobject]@{
-      name = $e.Current.Name
+      name = $nm
       control_type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\\\\.','')
       automation_id = $e.Current.AutomationId
       x = [int]($r.Left + $r.Width / 2)
