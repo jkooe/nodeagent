@@ -37,6 +37,54 @@ export interface ClientConfig {
   current: string;
   /** 设备表：设备名 → 连接配置 */
   nodes: Record<string, NodeProfile>;
+  /**
+   * v12 / E3：设备分组（组名 → 设备名数组）。
+   * 便于按用途批量下发：`nodeagent fanout system.info --nodes @办公机`
+   * 也支持在组名内引用其它组（最多展开 3 层，避免环）。
+   */
+  groups?: Record<string, string[]>;
+}
+
+/**
+ * 展开设备选择器：`@组名` 展开为组内设备名（支持嵌套与去重），
+ * 普通名字原样保留。未知名字保留原样，交由调用方报「设备不存在」。
+ */
+export function resolveNodeSelector(
+  cfg: ClientConfig,
+  selector: string[],
+): { nodes: string[]; resolvedGroups: Record<string, string[]> } {
+  const out: string[] = [];
+  const resolvedGroups: Record<string, string[]> = {};
+  const seen = new Set<string>();
+
+  const expandGroup = (name: string, depth: number): string[] => {
+    if (depth > 3) return [];
+    const members = cfg.groups?.[name] ?? [];
+    const acc: string[] = [];
+    for (const m of members) {
+      if (m.startsWith('@')) acc.push(...expandGroup(m.slice(1), depth + 1));
+      else acc.push(m);
+    }
+    return acc;
+  };
+
+  for (const sel of selector) {
+    if (sel.startsWith('@')) {
+      const group = sel.slice(1);
+      const members = expandGroup(group, 0);
+      resolvedGroups[group] = members;
+      for (const m of members) {
+        if (!seen.has(m)) {
+          seen.add(m);
+          out.push(m);
+        }
+      }
+    } else if (!seen.has(sel)) {
+      seen.add(sel);
+      out.push(sel);
+    }
+  }
+  return { nodes: out, resolvedGroups };
 }
 
 export interface ResolvedTarget {

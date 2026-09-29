@@ -601,6 +601,30 @@ async function testHubMode() {
     const st = await c2.invoke('system.status');
     assert.equal(st.status, 'ok', '被控端应仍在线可再次接入');
     c2.close();
+
+    // 5. v12 并发多控制端：两个控制端**同时**在线，各自都能调用（旧版会 E_NODE_BUSY）
+    //    等常备槽位就绪（预热到 2 条约 150ms）
+    await new Promise((r) => setTimeout(r, 600));
+    const cc1 = mk(HUB_TOKEN, 'hub_node');
+    const cc2 = mk(HUB_TOKEN, 'hub_node');
+    const caps1 = await cc1.connect();
+    const caps2 = await cc2.connect();
+    assert.ok(caps1.length >= 19 && caps2.length >= 19, '两个控制端都应完成握手');
+    const [r1, r2] = await Promise.all([
+      cc1.invoke('system.info'),
+      cc2.invoke('system.status'),
+    ]);
+    assert.equal(r1.status, 'ok', '控制端 1 的调用应成功');
+    assert.equal(r2.status, 'ok', '控制端 2 的调用应成功');
+    // 交替再调一次，确认两条链路互不干扰
+    const [r3, r4] = await Promise.all([
+      cc1.invoke('system.status'),
+      cc2.invoke('system.info'),
+    ]);
+    assert.equal(r3.status, 'ok', '控制端 1 第二次调用应成功');
+    assert.equal(r4.status, 'ok', '控制端 2 第二次调用应成功');
+    cc1.close();
+    cc2.close();
   } finally {
     hubProc.kill();
     agentProc.kill();
@@ -802,7 +826,7 @@ async function main() {
     await test('v5 文件传输：写入→读回→列表→分块重组→append→白名单', testFileTransfer);
 
     // ---------- v6 Hub 中转 ----------
-    await test('v6 Hub 中转：注册→配对→端到端握手→多次接入', testHubMode);
+    await test('v6 Hub 中转：注册→配对→端到端握手→多次接入→v12 并发双控制端', testHubMode);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

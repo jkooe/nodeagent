@@ -29,7 +29,7 @@ interface AgentEntry {
   platform?: string;
   version?: string;
   connected_at: number;
-  /** 当前配对的客户端；同一时刻仅允许一个，避免多路复用复杂度 */
+  /** 该槽位当前配对的客户端；一个槽位同时只服务一个控制端 */
   paired: WebSocket | null;
 }
 
@@ -37,6 +37,27 @@ export interface HubServer {
   url: string;
   agents(): AgentView[];
   close(): Promise<void>;
+}
+
+/** 聚合成「一节点一行」的对外视图。 */
+function viewAgentsOf(agents: Map<string, AgentEntry[]>): Array<AgentView & { slots: number; paired_slots: number }> {
+  const out: Array<AgentView & { slots: number; paired_slots: number }> = [];
+  for (const [nodeId, pool] of agents) {
+    const live = pool.filter((e) => e.ws.readyState === WebSocket.OPEN);
+    if (live.length === 0) continue;
+    const first = live[0]!;
+    const pairedSlots = live.filter((e) => e.paired !== null).length;
+    out.push({
+      node_id: nodeId,
+      platform: first.platform,
+      version: first.version,
+      connected_at: Math.min(...live.map((e) => e.connected_at)),
+      paired: pairedSlots > 0,
+      slots: live.length,
+      paired_slots: pairedSlots,
+    });
+  }
+  return out;
 }
 
 export function createHubServer(cfg: HubConfig): Promise<HubServer> {
@@ -47,7 +68,50 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
     }
   };
 
-  const agents = new Map<string, AgentEntry>();
+  /**
+   * v12 / E3：`node_id → 槽位池`。
+   * 过去是「一个节点一条连接 → 同时只能一个控制端」（E_NODE_BUSY）。
+   * 现在每个节点可持有多条连接（槽位），每条服务一个控制端，从而实现**并发多控制端**；
+   * 槽位不足时向被控端发 need_slot 请它再开一条（有上限，超限仍回 E_NODE_BUSY）。
+   */
+  const agents = new Map<string, AgentEntry[]>();
+  const maxSlots = Math.max(1, Math.min(10, cfg.max_slots_per_node ?? 3));
+  /** 等待 need_slot 生效的等待者：node_id → 回调 */
+  const slotWaiters = new Map<string, Array<(ok: boolean) => void>>();
+
+  const poolOf = (nodeId: string): AgentEntry[] => agents.get(nodeId) ?? [];
+  const idleOf = (nodeId: string): AgentEntry | undefined =>
+    poolOf(nodeId).find((e) => e.paired === null && e.ws.readyState === WebSocket.OPEN);
+  const liveCount = (nodeId: string): number =>
+    poolOf(nodeId).filter((e) => e.ws.readyState === WebSocket.OPEN).length;
+
+  function notifySlot(nodeId: string, ok: boolean): void {
+    const waiters = slotWaiters.get(nodeId);
+    if (!waiters) return;
+    slotWaiters.delete(nodeId);
+    for (const w of waiters) w(ok);
+  }
+
+  /** 请求被控端新开一个槽位，最多等 waitMs。 */
+  function askForSlot(nodeId: string, waitMs = 3000): Promise<boolean> {
+    const pool = poolOf(nodeId).filter((e) => e.ws.readyState === WebSocket.OPEN);
+    if (pool.length === 0) return Promise.resolve(false);
+    if (pool.length >= maxSlots) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const list = slotWaiters.get(nodeId) ?? [];
+      list.push(resolve);
+      slotWaiters.set(nodeId, list);
+      const need: HubOutbound = { type: 'need_slot', slots: pool.length, max_slots: maxSlots };
+      for (const e of pool) send(e.ws, need);
+      log('info', `向被控端 ${nodeId} 请求新槽位（现有 ${pool.length}/${maxSlots}）`);
+      setTimeout(() => {
+        const w = slotWaiters.get(nodeId);
+        if (!w) return;
+        slotWaiters.delete(nodeId);
+        for (const fn of w) fn(false);
+      }, waitMs).unref?.();
+    });
+  }
 
   const httpServer = cfg.tls
     ? createHttpsServer({ cert: readFileSync(cfg.tls.cert_file), key: readFileSync(cfg.tls.key_file) })
@@ -128,10 +192,11 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
       }
 
       const nodeId = msg.node_id;
-      const existing = agents.get(nodeId);
-      if (existing && existing.ws.readyState === WebSocket.OPEN) {
-        log('warn', `节点 ${nodeId} 重复注册，踢掉旧连接`);
-        existing.ws.close();
+      const pool = poolOf(nodeId).filter((e) => e.ws.readyState === WebSocket.OPEN);
+      if (pool.length >= maxSlots) {
+        log('warn', `节点 ${nodeId} 槽位已满（${pool.length}/${maxSlots}），拒绝新连接`);
+        fail(ws, 'E_TOO_MANY_SLOTS', `节点 ${nodeId} 槽位已达上限 ${maxSlots}`);
+        return;
       }
 
       const entry: AgentEntry = {
@@ -142,18 +207,21 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
         connected_at: Date.now(),
         paired: null,
       };
-      agents.set(nodeId, entry);
+      pool.push(entry);
+      agents.set(nodeId, pool);
       registeredId = nodeId;
       send(ws, { type: 'registered', node_id: nodeId } satisfies HubRegistered);
-      log('info', `被控端已注册 ${nodeId} from ${remote}（platform=${msg.meta?.platform ?? '?'}）`);
+      log('info', `被控端已注册 ${nodeId} from ${remote}（槽位 ${pool.length}/${maxSlots}，platform=${msg.meta?.platform ?? '?'}）`);
+      notifySlot(nodeId, true);
     };
 
     ws.on('message', onMessage);
     ws.once('close', () => {
-      if (registeredId && agents.get(registeredId)?.ws === ws) {
-        agents.delete(registeredId);
-        log('info', `被控端已离线 ${registeredId}`);
-      }
+      if (!registeredId) return;
+      const pool = poolOf(registeredId).filter((e) => e.ws !== ws);
+      if (pool.length > 0) agents.set(registeredId, pool);
+      else agents.delete(registeredId);
+      log('info', `被控端槽位离线 ${registeredId}（剩余 ${pool.length}/${maxSlots}）`);
     });
   }
 
@@ -165,15 +233,7 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
       if (!msg) return;
 
       if (msg.type === 'list') {
-        send(ws, {
-          type: 'list.result',
-          agents: [...agents.values()].map((a) => ({
-            node_id: a.node_id,
-            platform: a.platform,
-            connected_at: a.connected_at,
-            paired: a.paired !== null,
-          })),
-        });
+        send(ws, { type: 'list.result', agents: viewAgents() });
         return;
       }
 
@@ -182,21 +242,39 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
         return;
       }
 
-      const entry = agents.get((msg as HubClientConnect).node_id);
-      if (!entry || entry.ws.readyState !== WebSocket.OPEN) {
-        fail(ws, 'E_NODE_OFFLINE', `设备离线: ${msg.node_id}`);
+      const nodeId = (msg as HubClientConnect).node_id;
+      if (liveCount(nodeId) === 0) {
+        fail(ws, 'E_NODE_OFFLINE', `设备离线: ${nodeId}`);
         return;
       }
-      if (entry.paired) {
-        fail(ws, 'E_NODE_BUSY', `设备正被其他控制端占用: ${msg.node_id}`);
-        return;
-      }
-      log('info', `控制端请求接入 ${msg.node_id} from ${remote}`);
-      pair(ws, entry);
+      void (async () => {
+        log('info', `控制端请求接入 ${nodeId} from ${remote}`);
+        // 1) 有空闲槽位直接配
+        const idle = idleOf(nodeId);
+        if (idle) {
+          pair(ws, idle);
+          return;
+        }
+        // 2) 无空闲：请被控端再开一条（有上限）
+        if (liveCount(nodeId) < maxSlots) {
+          const ok = await askForSlot(nodeId);
+          if (ok) {
+            const fresh = idleOf(nodeId);
+            if (fresh) {
+              pair(ws, fresh);
+              return;
+            }
+          }
+        }
+        // 3) 仍无 → 真的满了
+        fail(ws, 'E_NODE_BUSY', `设备并发槽位已满（${liveCount(nodeId)}/${maxSlots}）: ${nodeId}`);
+      })();
     };
 
     ws.on('message', onMessage);
   }
+
+  const viewAgents = (): Array<AgentView & { slots: number; paired_slots: number }> => viewAgentsOf(agents);
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
     const url = new URL(req.url ?? '/', 'http://localhost');
@@ -215,17 +293,10 @@ export function createHubServer(cfg: HubConfig): Promise<HubServer> {
       log('info', `Hub 已监听 ${scheme}://${cfg.host}:${cfg.port}`);
       resolve({
         url: `${scheme}://${cfg.host}:${cfg.port}`,
-        agents: () =>
-          [...agents.values()].map((a) => ({
-            node_id: a.node_id,
-            platform: a.platform,
-            version: a.version,
-            connected_at: a.connected_at,
-            paired: a.paired !== null,
-          })),
+        agents: () => viewAgents(),
         close: () =>
           new Promise<void>((res) => {
-            for (const a of agents.values()) a.ws.terminate();
+            for (const pool of agents.values()) for (const a of pool) a.ws.terminate();
             for (const ws of wss.clients) ws.terminate();
             wss.close(() => httpServer.close(() => res()));
           }),

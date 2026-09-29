@@ -19,6 +19,7 @@ import {
   keysFilePath,
   discoverOnce,
   resolveTarget,
+  resolveNodeSelector,
   emptyConfig,
   type ClientConfig,
   type ResolvedTarget,
@@ -77,7 +78,8 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
                                       录屏为帧序列（有 ffmpeg 则封装 mp4）(v11)
   nodeagent deploy <agent.mjs> [--path <远端路径>]
                                       一键升级被控端（备份 → 上传 → 重启 → 复验）(v11)
-  nodeagent fanout <能力名> [--nodes a,b] [--args JSON]
+  nodeagent group [add <组名> <设备...> | remove <组名>]  设备分组管理 (v12)
+  nodeagent fanout <能力名> [--nodes a,b|@组名] [--args JSON]
                                       多设备并发调用并汇总 (v11)
   nodeagent daemon [start|stop|status] 常驻连接池（批量操作提速 5~10 倍）(v10)
   nodeagent list                      列出被控端可用能力
@@ -650,8 +652,13 @@ async function cmdFanout(capability: string, opts: Options): Promise<void> {
     .split(',')
     .map((x) => x.trim())
     .filter(Boolean);
-  const targets = names.length > 0 ? names : Object.keys(cfg.nodes);
-  if (targets.length === 0) fail('没有可用的设备，请先 nodeagent connect');
+  const selector = names.length > 0 ? names : Object.keys(cfg.nodes);
+  // v12：支持 @组名（组内可嵌套引用其它组）
+  const { nodes: targets, resolvedGroups } = resolveNodeSelector(cfg, selector);
+  if (targets.length === 0) fail('没有可用的设备，请先 nodeagent connect 或检查分组定义');
+  for (const [g, members] of Object.entries(resolvedGroups)) {
+    if (members.length === 0) fail(`分组「${g}」为空或不存在（可用: ${Object.keys(cfg.groups ?? {}).join(', ') || '无'}）`);
+  }
 
   let args: Record<string, unknown> = {};
   if (opts.args) {
@@ -1659,6 +1666,44 @@ async function main(): Promise<void> {
     case 'macro': {
       const sub = positionals[0];
       await cmdMacro(sub, positionals[1], opts);
+      return;
+    }
+    case 'group': {
+      const sub = positionals[0];
+      const cfg = getClientConfig();
+      if (sub === 'add') {
+        const name = positionals[1];
+        const members = positionals.slice(2).join(',').split(',').map((x) => x.trim()).filter(Boolean);
+        if (!name || members.length === 0) fail('用法: nodeagent group add <组名> <设备1,设备2,...>');
+        for (const m of members) {
+          if (!m.startsWith('@') && !cfg.nodes[m]) fail(`设备不存在: ${m}（先 nodeagent connect 添加，或写 @另一组名）`);
+        }
+        cfg.groups = { ...(cfg.groups ?? {}), [name]: members };
+        saveConfig(cfg);
+        console.log(`✓ 分组「${name}」已保存：${members.join(', ')}`);
+        return;
+      }
+      if (sub === 'remove' || sub === 'rm') {
+        const name = positionals[1];
+        if (!name) fail('用法: nodeagent group remove <组名>');
+        if (!cfg.groups?.[name]) fail(`分组不存在: ${name}`);
+        delete cfg.groups[name];
+        saveConfig(cfg);
+        console.log(`✓ 已删除分组「${name}」`);
+        return;
+      }
+      // 默认：列出分组
+      const groups = cfg.groups ?? {};
+      const names2 = Object.keys(groups);
+      if (names2.length === 0) {
+        console.log('尚未定义设备分组');
+        console.log('用法: nodeagent group add <组名> <设备1,设备2,...>   （成员可写 @其它组名）');
+        return;
+      }
+      for (const g of names2) {
+        const { nodes } = resolveNodeSelector(cfg, [`@${g}`]);
+        console.log(`  @${g.padEnd(14)} → ${nodes.join(', ')}   （${nodes.length} 台）`);
+      }
       return;
     }
     case 'fanout': {

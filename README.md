@@ -29,8 +29,9 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **文件** | `fs.list` · `fs.stat` · `fs.read` · `fs.write` | 列目录 / 元信息 / 分块读 / 原子写 |
 | **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**与**按键序列/连按** |
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
+| **事件订阅** | `event.watch` · `event.unwatch` · `event.list` · `event.poll` | 文件变动 / 进程启停 / 端口开闭，**主动推送**（无需轮询） |
 
-**31 项能力** · **26 个 MCP 工具** · **61 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
+**35 项能力** · **31 个 MCP 工具** · **79 项单元测试** · **21 项端到端用例**（CI 在真实 Windows 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -265,6 +266,19 @@ nodeagent clip [--set "文本"] [--out <路径>] [--image-file <路径>]  # 剪�
 nodeagent record [--duration 5000] [--fps 2] [--region x,y,w,h]     # 录屏为帧序列
 ```
 
+### 事件订阅与宏
+
+```bash
+nodeagent events --kind file --path C:\logs --seconds 20   # 实时接收文件变动推送
+nodeagent events --kind process --pattern chrome*            # 进程启停
+nodeagent events                                              # 列出当前订阅
+nodeagent macro init demo.json                               # 生成示例宏
+nodeagent macro run demo.json --var STAMP=hello               # 回放（逐步校验）
+nodeagent macro validate demo.json                            # 仅校验文件
+nodeagent group add 办公机 win_a,win_b                        # 设备分组
+nodeagent fanout system.info --nodes @办公机                  # 按组并发下发
+```
+
 ### GUI 语义（找到元素再点，不猜坐标）
 
 ```bash
@@ -288,6 +302,8 @@ nodeagent mouse drag 300 200 700 500                # 拖拽（拖文件/框选�
 | `na_fs_list` · `na_fs_read` · `na_fs_write` · `na_fs_stat` | 读目录 / 读文件 / 写文件 / 元信息 |
 | `na_restart` | 受控重启被控端 |
 | `na_audit` · `na_discover` · `na_nodes` · `na_use` | 查审计、发现设备、多设备切换 |
+| `na_event_watch` · `na_event_poll` · `na_event_list` · `na_event_unwatch` | 事件订阅与增量拉取 |
+| `na_macro_run` | 回放 GUI 宏（步骤序列，逐步校验） |
 
 ## Hub 中转（跨网段 / 公网）
 
@@ -310,6 +326,10 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
      --hub-node win_01 --key <设备密钥> --name win_01
 ```
 
+**并发多控制端**：Hub 为每个被控端维护**槽位池**（`max_slots_per_node`，默认 3），
+被控端侧常备 2 条连接（`hub.warm_slots`）并在被占用时自动扩容 —— 因此
+「AI + 人同时在线」不再互斥（旧版是独占，会返回 `E_NODE_BUSY`）。
+
 **安全边界**：Hub **只做字节透传**，不解析内容、不持有设备密钥 —— 控制端与被控端之间仍执行端到端握手，因此 **Hub 无法窃听也无法伪造**（Hub 被攻陷也不等于设备被接管）。生产环境建议在 Hub 前挂 Caddy / Nginx 终止 TLS。
 
 ## 开发
@@ -317,7 +337,7 @@ node apps/cli/dist/index.js connect hub.example.com --port 443 --hub-token <Hub 
 ```bash
 pnpm build        # 构建全部包
 pnpm typecheck    # 类型检查
-pnpm test:unit    # 单元测试（61 项：协议纯函数 / 清单守护 / 审计链 / ACL v11）
+pnpm test:unit    # 单元测试（79 项：协议纯函数 / 清单守护 / 审计链 / ACL v11 / 宏引擎 / 设备分组）
 pnpm test:e2e     # 端到端测试（21 项，含 TLS / 零信任 / 发现 / 文件 / Hub）
 pnpm test:windows # Windows 专属能力（服务 / 软件 / winget 真实装软件）
 pnpm verify       # 对已配置的被控端跑全套验收并输出报告
@@ -379,7 +399,8 @@ nodeagent/
 | **v10** | **长任务异步化**（`system.task.*`）+ 剪贴板 + CLI 常驻连接池 daemon | ✅ |
 | **v11** | **安全加固**：私钥入系统密钥库（Keychain/DPAPI）+ 审计链防篡改 + ACL 细化（IP/时段/按能力限速） | ✅ |
 | **v11+** | **操作面补完**：鼠标拖拽 / 录屏 / 剪贴板图片 / 多设备并发 / 一键升级 | ✅ |
-| **待办** | 事件订阅（push）、v7~v11 能力入 CI、macOS 端 GUI 能力对齐 | 🚧 |
+| **v12** | **事件订阅**（file/process/net 主动推送）+ **GUI 宏**（步骤序列回放）+ **Hub 并发多控制端** + 设备分组 | ✅ |
+| **待办** | v7~v12 能力入 CI（需 workflow scope 才能推 CI 改动）、macOS 端 GUI 能力对齐、Hub 侧按设备授权 | 🚧 |
 
 ## 文档
 
