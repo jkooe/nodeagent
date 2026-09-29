@@ -733,6 +733,13 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
       properties: {
         title: { type: 'string', description: '窗口标题（正则，匹配第一个）' },
         hwnd: { type: 'string', description: '或直接给窗口句柄' },
+        wait_ms: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 30000,
+          default: 0,
+          description: '等待窗口出现（应用启动有延迟时用；仅 title 模式有效）',
+        },
       },
       additionalProperties: false,
     },
@@ -773,6 +780,14 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
           description: 'auto=UIA 优先+OCR 兜底；uia=仅 UIA；ocr=仅截图识别',
         },
         limit: { type: 'integer', default: 20 },
+        wait_ms: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 30000,
+          default: 0,
+          description: '等待元素出现的上限毫秒（0=只查一次）。界面有动画/加载时用',
+        },
+        interval_ms: { type: 'integer', minimum: 100, maximum: 2000, default: 400 },
       },
       required: ['text'],
       additionalProperties: false,
@@ -781,6 +796,7 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
       type: 'object',
       properties: {
         engine: { type: 'string', description: '实际使用的引擎：uia | ocr' },
+        waited_ms: { type: 'integer', description: '实际等待时长（便于诊断是否命中等待窗口）' },
         matches: {
           type: 'array',
           items: {

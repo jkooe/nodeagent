@@ -106,7 +106,10 @@ async function runStep(ctx: MacroContext, step: MacroStep): Promise<string> {
     case 'focus': {
       const title = String(step['title'] ?? '');
       if (!title) throw new Error('focus 需要 title');
-      const d = (await invoke(c, CapabilityNames.WindowFocus, { title })) as { title?: string; x: number; y: number; width: number; height: number };
+      const d = (await invoke(c, CapabilityNames.WindowFocus, {
+        title,
+        ...(step['wait_ms'] !== undefined ? { wait_ms: step['wait_ms'] } : {}),
+      }, Number(step['timeout_ms'] ?? 60_000))) as { title?: string; x: number; y: number; width: number; height: number; activated_by?: string };
       return `已聚焦「${d.title ?? title}」(${d.x},${d.y} ${d.width}x${d.height})`;
     }
     case 'find': {
@@ -116,13 +119,18 @@ async function runStep(ctx: MacroContext, step: MacroStep): Promise<string> {
       if (step['method']) args['method'] = step['method'];
       if (step['window']) args['window'] = step['window'];
       if (step['control_type']) args['control_type'] = step['control_type'];
+      // v12.2：等待语义（界面有加载/动画时必备，避免假失败）
+      if (step['wait_ms'] !== undefined) args['wait_ms'] = step['wait_ms'];
+      if (step['interval_ms'] !== undefined) args['interval_ms'] = step['interval_ms'];
       const d = (await invoke(c, CapabilityNames.ScreenFind, args, 120_000)) as {
         engine: string;
         matches: Array<{ name: string; x: number; y: number }>;
+        waited_ms?: number;
       };
       if (d.matches.length === 0) throw new Error(`未找到「${text}」（引擎 ${d.engine}）`);
       const m = d.matches[0]!;
-      const detail = `命中「${m.name}」@(${m.x},${m.y}) via ${d.engine}`;
+      const waited = d.waited_ms && d.waited_ms > 800 ? `（等待 ${d.waited_ms}ms）` : '';
+      const detail = `命中「${m.name}」@(${m.x},${m.y}) via ${d.engine}${waited}`;
       if (step['click'] === true || step['dblclick'] === true) {
         await invoke(c, CapabilityNames.MouseClick, {
           x: m.x,
@@ -221,11 +229,13 @@ async function runStep(ctx: MacroContext, step: MacroStep): Promise<string> {
         if (d.windows.length === 0) throw new Error(`未找到标题匹配「${expect}」的窗口`);
         return `窗口断言通过（${d.windows.length} 个）`;
       }
-      // screen：用 screen.find 判定元素是否存在
+      // screen：用 screen.find 判定元素是否存在（支持 wait_ms 等待出现）
       const d = (await invoke(c, CapabilityNames.ScreenFind, {
         text: expect,
         method: step['method'] ?? 'auto',
         limit: 1,
+        ...(step['wait_ms'] !== undefined ? { wait_ms: step['wait_ms'] } : {}),
+        ...(step['interval_ms'] !== undefined ? { interval_ms: step['interval_ms'] } : {}),
       }, 120_000)) as { engine: string; matches: unknown[] };
       if (d.matches.length === 0) throw new Error(`屏幕上未找到「${expect}」（引擎 ${d.engine}）`);
       return `屏幕断言通过（via ${d.engine}）`;

@@ -312,6 +312,7 @@ const TOOLS = [
       type: 'object',
       properties: {
         title: { type: 'string', description: '窗口标题（正则，匹配第一个）' },
+        wait_ms: { type: 'integer', description: '等待窗口出现（应用刚启动时用）' },
       },
       required: ['title'],
       additionalProperties: false,
@@ -337,6 +338,10 @@ const TOOLS = [
           description: 'auto=UIA 优先+OCR 兜底；uia=仅 UIA；ocr=仅截图识别',
         },
         limit: { type: 'integer', description: '返回上限（默认 20）' },
+        wait_ms: {
+          type: 'integer',
+          description: '等待元素出现的上限毫秒（0=只查一次）。界面有动画/加载时建议 3000~8000',
+        },
       },
       required: ['text'],
       additionalProperties: false,

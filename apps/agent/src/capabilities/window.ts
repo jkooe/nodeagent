@@ -160,7 +160,29 @@ export async function windowFocus(args: Args): Promise<unknown> {
   if (!title && !hwnd) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需提供 title（正则）或 hwnd');
   }
+  // v12.2：等窗口出现（应用启动有延迟，一次性查找极易假失败）
+  const waitMs = Math.max(0, Math.min(30_000, (args['wait_ms'] as number | undefined) ?? 0));
+  if (waitMs > 0 && !hwnd) {
+    const t0 = Date.now();
+    let lastErr: unknown = null;
+    while (Date.now() - t0 < waitMs) {
+      try {
+        return await focusOnce(title, hwnd);
+      } catch (err) {
+        lastErr = err;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    }
+    throw lastErr instanceof Error
+      ? lastErr
+      : new CapabilityError(ErrorCodes.EXECUTION_FAILED, `等待 ${waitMs}ms 仍未找到窗口`, { title });
+  }
 
+  return focusOnce(title, hwnd);
+}
+
+/** 单次聚焦（供等待重试复用）。 */
+async function focusOnce(title: string | undefined, hwnd: string | undefined): Promise<unknown> {
   const script = `${WIN32_PRELUDE}
 $h = [IntPtr]::Zero
 $want = ${JSON.stringify(hwnd ?? '')}
@@ -271,6 +293,10 @@ export async function screenFind(args: Args): Promise<unknown> {
   const controlType = args['control_type'] as string | undefined;
   const limit = (args['limit'] as number | undefined) ?? 20;
   const method = (args['method'] as string | undefined) ?? 'auto'; // auto | uia | ocr
+  // v12.2：等待语义 —— 界面常有动画/加载延迟，一次性查找极易假失败。
+  // wait_ms > 0 时轮询直到命中或超时（返回 waited_ms 让调用方知情）。
+  const waitMs = Math.max(0, Math.min(30_000, (args['wait_ms'] as number | undefined) ?? 0));
+  const intervalMs = Math.max(100, Math.min(2000, (args['interval_ms'] as number | undefined) ?? 400));
 
   // ---------- UIA 引擎 ----------
   const uiaFind = async (): Promise<Record<string, unknown>[]> => {
@@ -488,17 +514,27 @@ $out | ConvertTo-Json -Compress
     return toArray<Record<string, unknown>>(extractJson<Record<string, unknown>[]>(out) ?? []);
   };
 
-  if (method === 'uia') {
-    return { matches: (await uiaFind()).slice(0, limit), engine: 'uia' };
+  /** 单次尝试（按 method 选择引擎）。 */
+  const attempt = async (): Promise<{ matches: Record<string, unknown>[]; engine: string }> => {
+    if (method === 'uia') return { matches: (await uiaFind()).slice(0, limit), engine: 'uia' };
+    if (method === 'ocr') return { matches: (await ocrFind()).slice(0, limit), engine: 'ocr' };
+    // auto：UIA 优先（快且带控件语义），找不到再 OCR 兜底（自绘 UI）
+    const uiaMatches = await uiaFind();
+    if (uiaMatches.length > 0) return { matches: uiaMatches.slice(0, limit), engine: 'uia' };
+    const ocrMatches = await ocrFind();
+    return { matches: ocrMatches.slice(0, limit), engine: 'ocr' };
+  };
+
+  const startedAt = Date.now();
+  let last = await attempt();
+  while (last.matches.length === 0 && Date.now() - startedAt < waitMs) {
+    await new Promise((r) => setTimeout(r, intervalMs));
+    last = await attempt();
   }
-  if (method === 'ocr') {
-    return { matches: (await ocrFind()).slice(0, limit), engine: 'ocr' };
-  }
-  // auto：UIA 优先（快且带控件语义），找不到再 OCR 兜底（自绘 UI）
-  const uiaMatches = await uiaFind();
-  if (uiaMatches.length > 0) {
-    return { matches: uiaMatches.slice(0, limit), engine: 'uia' };
-  }
-  const ocrMatches = await ocrFind();
-  return { matches: ocrMatches.slice(0, limit), engine: 'ocr' };
+  return {
+    matches: last.matches,
+    engine: last.engine,
+    waited_ms: Date.now() - startedAt,
+    ...(waitMs > 0 ? { wait_ms: waitMs } : {}),
+  };
 }
