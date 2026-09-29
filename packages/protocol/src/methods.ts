@@ -16,6 +16,11 @@ export const Methods = {
   Ping: 'ping',
   /** 双向：心跳响应 */
   Pong: 'pong',
+  /**
+   * 被控端 → 控制端：主动推送事件（v12 事件订阅）。
+   * 这是协议中唯一的**无 id 通知**（JSON-RPC notification）——控制端不应回复。
+   */
+  Event: 'event',
 } as const;
 
 export type MethodName = (typeof Methods)[keyof typeof Methods];

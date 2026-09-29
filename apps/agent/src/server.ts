@@ -28,6 +28,7 @@ import {
 } from '@nodeagent/protocol';
 import { createCapabilityRegistry } from './capabilities/index.js';
 import { audit, describeArgs } from './audit.js';
+import { disposeWatchesByOwner } from './events.js';
 import type { AgentConfig } from './config.js';
 import type { TlsMaterial } from './certs.js';
 
@@ -42,6 +43,8 @@ interface ConnState {
   authorized: string[] | null;
   /** 来源地址（审计用） */
   remote: string;
+  /** v12：连接标识，用于清理该连接创建的事件订阅 */
+  connId: string;
 }
 
 export interface AgentServer {
@@ -291,7 +294,11 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     const started = Date.now();
     const argsInfo = describeArgs(finalArgs);
     try {
-      const data = await handler(finalArgs);
+      // v12：把连接上下文交给能力处理器（事件订阅需要「谁订阅的」与「往哪推」）
+      const data = await handler(finalArgs, {
+        owner: state.connId,
+        emit: (evt: unknown) => send(ws, { jsonrpc: '2.0', method: 'event', params: evt }),
+      });
       const duration = Date.now() - started;
       log('info', `invoke ${name} → ok (${duration}ms)`);
       audit({
@@ -373,6 +380,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
 
   function attachConnection(ws: WebSocket, remote: string): void {
     log('info', `新连接: ${remote}`);
+    const connId = `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     states.set(ws, {
       authenticated: false,
       nonce: null,
@@ -380,11 +388,17 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       clientId: null,
       authorized: null,
       remote,
+      connId,
     });
     ws.on('message', (raw: RawData) => {
       void handleMessage(ws, raw.toString());
     });
-    ws.on('close', () => log('info', `连接关闭: ${remote}`));
+    ws.on('close', () => {
+      log('info', `连接关闭: ${remote}`);
+      // v12：连接断开即释放其事件订阅，避免 watcher 泄漏
+      const n = disposeWatchesByOwner(connId);
+      if (n > 0) log('debug', `已清理 ${n} 个事件订阅（连接 ${connId}）`);
+    });
     ws.on('error', (err: Error) => log('warn', `连接错误: ${err.message}`));
   }
 

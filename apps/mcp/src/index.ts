@@ -371,6 +371,54 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_event_watch',
+    description:
+      '订阅被控端事件：file=文件变动、process=进程启停、net=监听端口开闭。' +
+      'MCP 无法接收推送，事件会进入服务端缓冲，用 na_event_poll 拉取。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['file', 'process', 'net'] },
+        path: { type: 'string', description: 'file 类型：监控的目录/文件路径' },
+        pattern: { type: 'string', description: '可选：文件名或进程名 glob（如 *.log、chrome*）' },
+        recursive: { type: 'boolean', description: 'file 类型：是否递归子目录' },
+        interval_ms: { type: 'integer', description: 'process/net 采样间隔（1000~60000，默认 5000）' },
+      },
+      required: ['kind'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_event_poll',
+    description:
+      '拉取已缓冲的被控端事件（增量：传上次返回的 next_cursor）。' +
+      '典型用法：先 na_event_watch 订阅，稍后 na_event_poll 查看期间发生了什么。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: '最多返回条数（默认 50）' },
+        since: { type: 'integer', description: '游标：上次返回的 next_cursor' },
+        watch_id: { type: 'string', description: '可选：只看某个订阅' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_event_list',
+    description: '列出当前生效的事件订阅（含各自已产生的事件数）与缓冲区大小。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'na_event_unwatch',
+    description: '取消一个事件订阅（长时间不用的订阅应主动取消，避免浪费被控端资源）。',
+    inputSchema: {
+      type: 'object',
+      properties: { watch_id: { type: 'string' } },
+      required: ['watch_id'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_record',
     description:
       '录制被控端屏幕为帧序列（JPEG），检测到 ffmpeg 时额外封装 mp4。' +
@@ -456,6 +504,10 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_fs_write: CapabilityNames.FsWrite,
   na_fs_stat: CapabilityNames.FsStat,
   na_restart: CapabilityNames.AgentRestart,
+  na_event_watch: CapabilityNames.EventWatch,
+  na_event_poll: CapabilityNames.EventPoll,
+  na_event_list: CapabilityNames.EventList,
+  na_event_unwatch: CapabilityNames.EventUnwatch,
   na_window_list: CapabilityNames.WindowList,
   na_window_focus: CapabilityNames.WindowFocus,
   na_screen_find: CapabilityNames.ScreenFind,

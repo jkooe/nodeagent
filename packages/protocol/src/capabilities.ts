@@ -40,6 +40,11 @@ export const CapabilityNames = {
   ClipSet: 'clip.set',
   // v11 安全加固
   AuditVerify: 'system.audit.verify',
+  // v12 事件订阅与监控
+  EventWatch: 'event.watch',
+  EventUnwatch: 'event.unwatch',
+  EventList: 'event.list',
+  EventPoll: 'event.poll',
 } as const;
 
 export type CapabilityName = (typeof CapabilityNames)[keyof typeof CapabilityNames];
@@ -982,6 +987,121 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
             reason: { type: 'string' },
           },
         },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.EventWatch,
+    version: '1.0',
+    description:
+      '订阅被控端事件：file=文件变动（增删改）、process=进程启停、net=监听端口开闭。' +
+      '被控端通过 event 通知主动推送（无需轮询）；事件同时进入环形缓冲，可用 event.poll 拉取。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['file', 'process', 'net'] },
+        path: { type: 'string', description: 'file 类型：监控的目录/文件路径' },
+        pattern: { type: 'string', description: '可选：文件名 glob（如 *.log）或进程名子串' },
+        recursive: { type: 'boolean', default: false, description: 'file 类型：是否递归子目录' },
+        interval_ms: {
+          type: 'integer',
+          minimum: 1000,
+          maximum: 60000,
+          default: 5000,
+          description: 'process/net 类型的采样间隔',
+        },
+      },
+      required: ['kind'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        watch_id: { type: 'string' },
+        kind: { type: 'string' },
+        description: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.EventUnwatch,
+    version: '1.0',
+    description: '取消一个事件订阅（连接断开时也会自动清理）。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: { watch_id: { type: 'string' } },
+      required: ['watch_id'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: { removed: { type: 'boolean' } },
+    },
+  },
+  {
+    name: CapabilityNames.EventList,
+    version: '1.0',
+    description: '列出当前生效的事件订阅及其已产生事件数。',
+    risk: 'low',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        watches: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              watch_id: { type: 'string' },
+              kind: { type: 'string' },
+              description: { type: 'string' },
+              events: { type: 'integer' },
+              created_at: { type: 'integer' },
+            },
+          },
+        },
+        buffered: { type: 'integer', description: '环形缓冲中的事件总数' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.EventPoll,
+    version: '1.0',
+    description:
+      '拉取已缓冲的事件（适合无法接收推送的调用方，如 MCP：先 watch 再 poll）。' +
+      'since 传入上次返回的 next_cursor 可增量拉取。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', minimum: 1, maximum: 500, default: 50 },
+        since: { type: 'integer', description: '游标（上次返回的 next_cursor）' },
+        watch_id: { type: 'string', description: '可选：只看某订阅' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        events: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              seq: { type: 'integer' },
+              watch_id: { type: 'string' },
+              kind: { type: 'string' },
+              ts: { type: 'integer' },
+              action: { type: 'string' },
+              target: { type: 'string' },
+              detail: { type: 'string' },
+            },
+          },
+        },
+        next_cursor: { type: 'integer' },
+        dropped: { type: 'integer', description: '因缓冲上限被丢弃的事件数' },
       },
     },
   },
