@@ -4,6 +4,7 @@ import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { readAudit, readAuditAll, verifyAudit } from '../audit.js';
 import { computeMetrics } from '../metrics.js';
+import { allPsShellStats } from '../util/ps-helper.js';
 import { startTask } from './task.js';
 
 type Args = Record<string, unknown>;
@@ -60,6 +61,8 @@ export async function systemInfo(args: Args): Promise<unknown> {
     agent_script: process.argv[1] ?? '',
     agent_home: process.env['NODEAGENT_HOME'] ?? '',
     node_path: process.execPath,
+    // v15：PowerShell 常驻助手状态（排查 GUI 能力性能/降级时用）
+    ps_helper: allPsShellStats(),
   };
 
   if (fields && fields.length > 0) {

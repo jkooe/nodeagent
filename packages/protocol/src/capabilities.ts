@@ -99,6 +99,10 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         agent_script: { type: 'string', description: '被控端入口脚本路径，供一键升级定位（v11）' },
         agent_home: { type: 'string', description: '被控端数据目录 NODEAGENT_HOME（v11）' },
         node_path: { type: 'string', description: '被控端 Node 可执行文件路径（v11）' },
+        ps_helper: {
+          type: 'object',
+          description: 'PowerShell 常驻助手状态（v15）：spawned/hits/failures/consecutiveFailures/avg_ms 等',
+        },
       },
     },
   },
@@ -776,9 +780,23 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         },
         method: {
           type: 'string',
-          enum: ['auto', 'uia', 'ocr'],
+          enum: ['auto', 'uia', 'ocr', 'image'],
           default: 'auto',
-          description: 'auto=UIA 优先+OCR 兜底；uia=仅 UIA；ocr=仅截图识别',
+          description:
+            'auto=UIA 优先+OCR 兜底；uia=仅控件树；ocr=仅文字识别；image=仅图像模板匹配（需 template）',
+        },
+        template: {
+          type: 'string',
+          description:
+            'method=image 时必填：被控端上的模板图片路径（png/jpg/bmp）。' +
+            '用于纯图标/无文字控件 —— UIA 无控件树、OCR 无文字可读的场景',
+        },
+        threshold: {
+          type: 'number',
+          minimum: 0.3,
+          maximum: 0.999,
+          default: 0.85,
+          description: 'method=image 的匹配阈值（零均值归一化互相关，越高越严格）',
         },
         limit: { type: 'integer', default: 20 },
         wait_ms: {
@@ -797,10 +815,9 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
             width: { type: 'integer' },
             height: { type: 'integer' },
           },
-          description: '可选：只在该屏幕区域查找（OCR 更快更准；UIA 忽略此参数）',
+          description: '可选：只在该屏幕区域查找（OCR/图像匹配更快更准；UIA 忽略此参数）',
         },
       },
-      required: ['text'],
       additionalProperties: false,
     },
     returns_schema: {

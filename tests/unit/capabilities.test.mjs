@@ -108,7 +108,16 @@ test('screen.find：method 枚举受控，非法值被拒', () => {
   assert.equal(check('screen.find', { text: '确定' }).length, 0);
   assert.equal(check('screen.find', { text: 'x', method: 'ocr' }).length, 0);
   assert.ok(check('screen.find', { text: 'x', method: 'magic' }).length > 0, '非法 method 应被拒');
-  assert.ok(check('screen.find', {}).length > 0, '缺 text 应报错');
+});
+
+test('screen.find：v15 图像模板 —— method=image 与 template/threshold', () => {
+  assert.equal(check('screen.find', { method: 'image', template: 'C:\\icon.png' }).length, 0);
+  assert.equal(check('screen.find', { text: 'x', method: 'image', threshold: 0.9 }).length, 0);
+  // text 改为可选（image 模式不需要），但 handler 仍会校验「非 image 模式必须有 text」
+  assert.equal(check('screen.find', {}).length, 0, 'schema 层允许空对象（由 handler 判定 text/template）');
+  assert.ok(check('screen.find', { text: 'x', threshold: 0.1 }).length > 0, 'threshold 下限 0.3');
+  assert.ok(check('screen.find', { text: 'x', threshold: 1.5 }).length > 0, 'threshold 上限 0.999');
+  assert.ok(check('screen.find', { text: 'x', bogus: 1 }).length > 0, '未知参数应被拒');
 });
 
 test('input.key.press：支持 repeat 与 sequence', () => {
