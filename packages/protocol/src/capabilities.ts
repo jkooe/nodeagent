@@ -688,7 +688,7 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     name: CapabilityNames.WindowList,
     version: '1.0',
     description:
-      '列出当前可见的顶层窗口（标题、所属进程、精确矩形、是否前台窗口）。' +
+      '列出当前可见的顶层窗口（标题、所属进程、精确矩形、是否前台窗口）。Windows 用 Win32，macOS 用 AppleScript（需辅助功能权限）。' +
       '配合 screen.capture 可在**已知窗口范围内**相对定位，避免全屏猜坐标。',
     risk: 'low',
     params_schema: {
@@ -761,8 +761,8 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
     name: CapabilityNames.ScreenFind,
     version: '1.1',
     description:
-      '在界面中查找 UI 元素并返回其**屏幕坐标**。默认 UIA（Windows UI Automation），' +
-      '找不到时自动降级为 OCR（截图识别，支持自绘 UI 如 Electron/Qt）。返回中心点坐标，直接喂给 input.mouse.click。',
+      '在界面中查找 UI 元素并返回其**屏幕坐标**。Windows：UIA 优先，找不到自动降级 OCR（截图识别，支持自绘 UI）。' +
+      'macOS：统一走 Vision OCR（无 UIA 等价物）。返回中心点坐标，直接喂给 input.mouse.click。',
     risk: 'low',
     params_schema: {
       type: 'object',
@@ -788,6 +788,16 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
           description: '等待元素出现的上限毫秒（0=只查一次）。界面有动画/加载时用',
         },
         interval_ms: { type: 'integer', minimum: 100, maximum: 2000, default: 400 },
+        region: {
+          type: 'object',
+          properties: {
+            x: { type: 'integer' },
+            y: { type: 'integer' },
+            width: { type: 'integer' },
+            height: { type: 'integer' },
+          },
+          description: '可选：只在该屏幕区域查找（OCR 更快更准；UIA 忽略此参数）',
+        },
       },
       required: ['text'],
       additionalProperties: false,

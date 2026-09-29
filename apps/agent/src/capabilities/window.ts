@@ -1,5 +1,6 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { macScreenFind, macWindowFocus, macWindowList } from './darwin.js';
 
 type Args = Record<string, unknown>;
 
@@ -123,9 +124,11 @@ interface WinInfo {
 
 export async function windowList(args: Args): Promise<unknown> {
   if (!IS_WINDOWS) {
+    // v12.3：macOS 走 AppleScript 实现（需辅助功能权限），其余平台明确不支持
+    if (process.platform === 'darwin') return macWindowList(args);
     throw new CapabilityError(
       ErrorCodes.UNSUPPORTED_PLATFORM,
-      'window.list 仅在被控端为 Windows 时可用',
+      'window.list 仅支持 Windows / macOS 被控端',
       { platform: process.platform },
     );
   }
@@ -149,9 +152,10 @@ export async function windowList(args: Args): Promise<unknown> {
 
 export async function windowFocus(args: Args): Promise<unknown> {
   if (!IS_WINDOWS) {
+    if (process.platform === 'darwin') return macWindowFocus(args);
     throw new CapabilityError(
       ErrorCodes.UNSUPPORTED_PLATFORM,
-      'window.focus 仅在被控端为 Windows 时可用',
+      'window.focus 仅支持 Windows / macOS 被控端',
       { platform: process.platform },
     );
   }
@@ -279,9 +283,11 @@ function Get-WinByTitle([string]$re) {
  */
 export async function screenFind(args: Args): Promise<unknown> {
   if (!IS_WINDOWS) {
+    // macOS：无 UIA 等价物 → 截图 + Vision OCR（见 darwin.ts 的权限说明）
+    if (process.platform === 'darwin') return macScreenFind(args);
     throw new CapabilityError(
       ErrorCodes.UNSUPPORTED_PLATFORM,
-      'screen.find 仅在被控端为 Windows 时可用',
+      'screen.find 仅支持 Windows / macOS 被控端',
       { platform: process.platform },
     );
   }
@@ -297,6 +303,10 @@ export async function screenFind(args: Args): Promise<unknown> {
   // wait_ms > 0 时轮询直到命中或超时（返回 waited_ms 让调用方知情）。
   const waitMs = Math.max(0, Math.min(30_000, (args['wait_ms'] as number | undefined) ?? 0));
   const intervalMs = Math.max(100, Math.min(2000, (args['interval_ms'] as number | undefined) ?? 400));
+  // v12.3：显式区域（优先于 window）：OCR 只截这一块，更快也更准
+  const regionArg = args['region'] as
+    | { x: number; y: number; width: number; height: number }
+    | undefined;
 
   // ---------- UIA 引擎 ----------
   const uiaFind = async (): Promise<Record<string, unknown>[]> => {
@@ -380,12 +390,18 @@ function Await($WinRtTask, $ResultType) {
   $netTask.Result
 }
 
-# 截图区域：指定窗口则截该窗口，否则整块虚拟屏
-$winRe = ${JSON.stringify(windowTitle ?? '')}
+# 截图区域：显式 region 优先 > 指定窗口 > 整块虚拟屏
+$xv = ${regionArg ? regionArg.x : -1}
+$yv = ${regionArg ? regionArg.y : -1}
+$wv = ${regionArg ? regionArg.width : -1}
+$hv = ${regionArg ? regionArg.height : -1}
+$winRe = ${JSON.stringify(regionArg ? '' : windowTitle ?? '')}
 $x = 0; $y = 0
 $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
 $w = $vs.Width; $h = $vs.Height
-if ($winRe -ne '') {
+if ($xv -ge 0 -and $wv -gt 0) {
+  $x = $xv; $y = $yv; $w = $wv; $h = $hv
+} elseif ($winRe -ne '') {
   Add-Type @"
 using System;
 using System.Text;
