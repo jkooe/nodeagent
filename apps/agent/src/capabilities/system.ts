@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
-import { readAudit, verifyAudit } from '../audit.js';
+import { readAudit, readAuditAll, verifyAudit } from '../audit.js';
+import { computeMetrics } from '../metrics.js';
 import { startTask } from './task.js';
 
 type Args = Record<string, unknown>;
@@ -508,4 +509,11 @@ export async function auditList(args: Args): Promise<unknown> {
 /** v11：审计链完整性校验（防篡改）。 */
 export async function auditVerify(_args: Args): Promise<unknown> {
   return verifyAudit();
+}
+
+/** v13：成功指标聚合（对齐 PRD 2.2）—— 数据源为审计日志，无需额外埋点。 */
+export async function metricsReport(args: Args): Promise<unknown> {
+  const since = args['since'] as number | undefined;
+  const entries = readAuditAll(since);
+  return computeMetrics(entries);
 }

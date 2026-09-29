@@ -40,6 +40,7 @@ export const CapabilityNames = {
   ClipSet: 'clip.set',
   // v11 安全加固
   AuditVerify: 'system.audit.verify',
+  Metrics: 'system.metrics',
   // v12 事件订阅与监控
   EventWatch: 'event.watch',
   EventUnwatch: 'event.unwatch',
@@ -1014,6 +1015,42 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
             reason: { type: 'string' },
           },
         },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.Metrics,
+    version: '1.0',
+    description:
+      '按 PRD 2.2 汇总成功指标（数据源为审计日志）：闭环成功率、装软件成功率、P95 时延、安全拦截率，' +
+      '并给出与目标阈值的达标判定；同时返回按能力细分统计。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        since: { type: 'integer', description: '可选：只统计该时间戳（Unix 毫秒）之后的审计条目' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        close_loop: {
+          type: 'object',
+          properties: {
+            attempts: { type: 'integer' },
+            ok: { type: 'integer' },
+            failed: { type: 'integer' },
+            success_rate: { type: 'number' },
+          },
+        },
+        app_install: { type: 'object' },
+        latency: { type: 'object' },
+        security: { type: 'object' },
+        verdict: { type: 'object', description: '四项指标的达标判定' },
+        targets: { type: 'object' },
+        by_capability: { type: 'object' },
+        window: { type: 'object' },
       },
     },
   },

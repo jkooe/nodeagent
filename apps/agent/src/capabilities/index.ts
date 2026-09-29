@@ -1,6 +1,6 @@
 import { CapabilityNames } from '@nodeagent/protocol';
 import type { AgentConfig } from '../config.js';
-import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList, auditVerify, agentRestart } from './system.js';
+import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList, auditVerify, metricsReport, agentRestart } from './system.js';
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
 import { windowList, windowFocus, screenFind } from './window.js';
@@ -53,6 +53,8 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.AuditList]: auditList,
     // v11 审计防篡改
     [CapabilityNames.AuditVerify]: auditVerify,
+    // v13 成功指标
+    [CapabilityNames.Metrics]: metricsReport,
     // v5 文件传输
     [CapabilityNames.FsList]: fsList,
     [CapabilityNames.FsStat]: fsStat,

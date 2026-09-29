@@ -271,6 +271,33 @@ function readEntriesFromFile(file: string): AuditEntry[] {
  * 读取审计记录（取最新 limit 条，按时间升序返回）。
  * 会同时读取轮转文件（audit.log.1/.2/…），避免历史记录被遗漏。
  */
+/**
+ * 读取全部审计条目（跨轮转文件，按时间升序）。
+ * 供指标聚合等「需要全窗口样本」的场景使用 —— readAudit 有 limit 上限（最多 1000 条）。
+ * 安全上限 20 万条，防止极端情况下把内存吃爆。
+ */
+export function readAuditAll(since?: number): AuditEntry[] {
+  const p = auditFilePath();
+  const files: string[] = [];
+  for (let i = 20; i >= 1; i -= 1) {
+    const f = `${p}.${i}`;
+    if (existsSync(f)) files.push(f);
+  }
+  files.push(p);
+
+  const out: AuditEntry[] = [];
+  for (const f of files) {
+    for (const e of readEntriesFromFile(f)) {
+      if (since !== undefined && e.ts <= since) continue;
+      out.push(e);
+      if (out.length >= 200_000) break;
+    }
+    if (out.length >= 200_000) break;
+  }
+  out.sort((a, b) => a.ts - b.ts);
+  return out;
+}
+
 export function readAudit(query: AuditQuery = {}): { entries: AuditEntry[]; total: number; file: string } {
   const p = auditFilePath();
   if (!existsSync(p)) return { entries: [], total: 0, file: p };
