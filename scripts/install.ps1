@@ -17,6 +17,10 @@
 
 .EXAMPLE
     .\install.ps1 -Port 8765 -NodeId my-pc
+
+.EXAMPLE
+    # 无人值守：重启/注销后仍运行（无图形界面能力）
+    .\install.ps1 -Unattended -AtStartup -AllowInput:$false
 #>
 [CmdletBinding()]
 param(
@@ -25,7 +29,13 @@ param(
     [string]$Key = "",
     [switch]$NoTls,
     [switch]$AllowInput,
-    [string]$ProjectRoot = ""
+    [string]$ProjectRoot = "",
+    # 无人值守模式：用 S4U 登录类型注册任务 —— 无需保存密码、注销/重启后仍自动运行。
+    # 代价：进程运行在非交互会话（Session 0），**图形能力不可用**
+    # （截屏 / UIA 找元素 / 鼠标键盘注入都依赖交互桌面）。
+    [switch]$Unattended,
+    # 追加「开机即启动」触发器（不依赖用户登录）
+    [switch]$AtStartup
 )
 
 $ErrorActionPreference = "Stop"
@@ -129,21 +139,50 @@ New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow `
     -Protocol TCP -LocalPort $Port -Profile Any | Out-Null
 Write-Ok "Inbound rule allowed on TCP $Port"
 
-# 6. Scheduled task (auto start on logon, highest privileges)
+# 6. Scheduled task
 Write-Step "Registering scheduled task..."
 $taskName = "nodeagent"
 $action   = New-ScheduledTaskAction -Execute $nodeExe -Argument "`"$agentJs`"" -WorkingDirectory $ProjectRoot
-$trigger  = New-ScheduledTaskTrigger -AtLogOn
+
+# 触发器：登录时（默认）+ 可选开机时；无人值守模式下开机触发器才真正有意义
+$triggers = @(New-ScheduledTaskTrigger -AtLogOn)
+if ($AtStartup -or $Unattended) {
+    $triggers += New-ScheduledTaskTrigger -AtStartup
+}
+
+# 自愈：异常退出后自动重启（最多 3 次，间隔 1 分钟），且不设执行时长上限
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
-    -RunLevel Highest -LogonType Interactive
+    -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -StartWhenAvailable
+
+# 登录类型决定「能干什么」：
+#   Interactive —— 运行在交互会话，**图形能力可用**，但注销后停
+#   S4U         —— 无需密码、注销/重启后仍运行，但**图形能力不可用**（见 -Unattended 说明）
+if ($Unattended) {
+    if ($AllowInput) {
+        Write-Warn "-Unattended 与 -AllowInput 冲突：Session 0 无法注入输入，已强制关闭输入控制"
+        $AllowInput = $false
+        # 回写配置，避免配置与运行模式不一致
+        $cfg = Get-Content $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $cfg.allow_input = $false
+        [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
+    }
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+        -RunLevel Highest -LogonType S4U
+    Write-Warn "无人值守模式：agent 将在非交互会话运行"
+    Write-Warn "  → 可用：exec / 文件传输 / 进程与服务 / 审计 / 重启 / 异步任务 / 剪贴板"
+    Write-Warn "  → 不可用：截屏、UIA 找元素、鼠标键盘注入（需交互桌面）"
+} else {
+    $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" `
+        -RunLevel Highest -LogonType Interactive
+}
 
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers `
     -Settings $settings -Principal $principal `
     -Description "nodeagent - cross-machine AI takeover agent" | Out-Null
-Write-Ok "Scheduled task '$taskName' registered (auto-start on logon)"
+$modeLabel = if ($Unattended) { "unattended (S4U, survives logoff)" } else { "interactive (logon)" }
+Write-Ok "Scheduled task '$taskName' registered — mode: $modeLabel"
 
 # 7. Start now
 Write-Step "Starting agent..."
