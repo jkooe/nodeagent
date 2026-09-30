@@ -96,7 +96,7 @@ export function maskToPrefix(mask: string): number {
 }
 
 /** 结构化快照（回滚脚本据此用**原生 cmdlet** 重建配置）。 */
-interface IfaceSnapshot {
+export interface IfaceSnapshot {
   alias: string;
   dhcp: boolean;
   ipv4: Array<{ ip: string; prefix: number }>;
@@ -143,7 +143,7 @@ $o | ConvertTo-Json -Compress -Depth 4
 }
 
 /** 由结构化快照生成**原生 cmdlet** 回滚脚本（不用 netsh set —— 它在 Win11 上会挂起）。 */
-function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logPath: string): string {
+export function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logPath: string): string {
   const a = JSON.stringify(snap.alias);
   const L = JSON.stringify(logPath);
   const lines = [
@@ -384,7 +384,7 @@ export async function netApply(args: Args): Promise<unknown> {
  * 而 `Set-NetIPAddress` / `Set-NetIPInterface` / `Set-DnsClientServerAddress` 同场景 <1s。
  * netsh 仅保留用于「读取」与人工恢复用的 dump 备份（对操作者友好）。
  */
-function buildApplyCommand(mode: string, iface: string, args: Args, snap: IfaceSnapshot): string {
+export function buildApplyCommand(mode: string, iface: string, args: Args, snap: IfaceSnapshot): string {
   const a = JSON.stringify(iface);
   if (mode === 'command') {
     const cmd = args['command'] as string | undefined;
@@ -443,7 +443,7 @@ function buildApplyCommand(mode: string, iface: string, args: Args, snap: IfaceS
  * ⚠️ 这段是**事故换来的**：没有自检时，变更失败会静默把机器留在「无地址」状态，
  * 而调用方还以为变更成功了（真机事故：机器掉到 APIPA 彻底失联）。
  */
-function buildSelfCheck(iface: string, expectIp: string | null, rollbackScriptPath: string): string {
+export function buildSelfCheck(iface: string, expectIp: string | null, rollbackScriptPath: string): string {
   const a = JSON.stringify(iface);
   const rb = JSON.stringify(rollbackScriptPath);
   const cond = expectIp
