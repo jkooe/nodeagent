@@ -11,7 +11,9 @@ export type AuditType =
   | 'invoke'
   | 'acl.denied'
   | 'capability.disabled'
-  | 'rate.limited';
+  | 'rate.limited'
+  /** v16：网络配置变更（两阶段提交） */
+  | 'net.change';
 
 /** 一条审计记录（JSONL 单行）。 */
 export interface AuditEntry {

@@ -430,6 +430,44 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_net_status',
+    description:
+      '查看被控端网络现状：各网卡 IP/网关、**待确认的网络变更**（含剩余秒数）、历史配置备份。' +
+      '改网络前后都应先看它。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'na_net_apply',
+    description:
+      '**改被控端网络**（高危）：两阶段提交 —— 先备份当前配置，再应用变更，并注册 OS 级定时回滚任务；' +
+      '你必须在 confirm_within_ms 内（可能要在新地址上重连后）用 na_net_confirm 确认，' +
+      '否则自动回滚到变更前配置。用于远程改 IP / 切 DHCP 这类「改错就失联」的操作。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['static', 'dhcp', 'command'] },
+        interface: { type: 'string', description: '网卡别名；省略则用带默认网关的那块' },
+        ip: { type: 'string' },
+        mask: { type: 'string' },
+        gateway: { type: 'string' },
+        dns: { type: 'array', items: { type: 'string' } },
+        command: { type: 'string', description: 'mode=command 时执行的自定义变更命令' },
+        confirm_within_ms: { type: 'integer', description: '确认窗口毫秒（默认 60000，最小 15000）' },
+      },
+      required: ['mode'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_net_confirm',
+    description: '确认（提交）网络变更，取消自动回滚。不传 task_name 则取消全部待确认项。',
+    inputSchema: {
+      type: 'object',
+      properties: { task_name: { type: 'string' } },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_metrics',
     description:
       '按 PRD 2.2 汇总被控端成功指标（闭环成功率 / 装软件成功率 / P95 时延 / 安全拦截率）' +
@@ -591,6 +629,9 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_fs_stat: CapabilityNames.FsStat,
   na_restart: CapabilityNames.AgentRestart,
   na_metrics: CapabilityNames.Metrics,
+  na_net_status: CapabilityNames.NetStatus,
+  na_net_apply: CapabilityNames.NetApply,
+  na_net_confirm: CapabilityNames.NetConfirm,
   na_event_watch: CapabilityNames.EventWatch,
   na_event_poll: CapabilityNames.EventPoll,
   na_event_unwatch: CapabilityNames.EventUnwatch,

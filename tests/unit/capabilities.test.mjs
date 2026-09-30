@@ -52,11 +52,14 @@ test('清单：v7~v11 新能力均已登记', () => {
     'event.list',
     'event.poll',
     'system.metrics',
+    'system.net.apply',
+    'system.net.confirm',
+    'system.net.status',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 36, '当前应有 36 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 39, '当前应有 39 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------
@@ -159,6 +162,25 @@ test('event.poll：游标与条数可省略，且不接受未知参数', () => {
   assert.ok(check('event.poll', { limit: 0 }).length > 0, 'limit 下限 1');
   assert.ok(check('event.poll', { limit: 999 }).length > 0, 'limit 上限 500');
   assert.ok(check('event.poll', { bogus: 1 }).length > 0, '未知参数应被拒');
+});
+
+test('system.net.apply：mode 枚举受控，static 需 ip/mask，确认窗有上下限', () => {
+  assert.equal(check('system.net.apply', { mode: 'dhcp' }).length, 0);
+  assert.equal(
+    check('system.net.apply', { mode: 'static', ip: '192.168.1.50', mask: '255.255.255.0', gateway: '192.168.1.1' }).length,
+    0,
+  );
+  assert.equal(check('system.net.apply', { mode: 'command', command: 'x' }).length, 0);
+  assert.ok(check('system.net.apply', { mode: 'teleport' }).length > 0, '非法 mode 应被拒');
+  assert.ok(check('system.net.apply', { mode: 'static', ip: '1.2.3.4', mask: '255.255.255.0', confirm_within_ms: 1000 }).length > 0, '确认窗下限 15s');
+  assert.ok(check('system.net.apply', { mode: 'static', ip: '1.2.3.4', mask: '255.255.255.0', confirm_within_ms: 9999999 }).length > 0, '确认窗上限 10min');
+});
+
+test('system.net.confirm / status：参数形状', () => {
+  assert.equal(check('system.net.confirm', {}).length, 0, 'task_name 可省略（取消全部）');
+  assert.equal(check('system.net.confirm', { task_name: 'nodeagent-netrollback-1' }).length, 0);
+  assert.equal(check('system.net.status', {}).length, 0);
+  assert.ok(check('system.net.status', { bogus: 1 }).length > 0, '未知参数应被拒');
 });
 
 // ---------- 默认值 ----------
