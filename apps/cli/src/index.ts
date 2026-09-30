@@ -48,6 +48,10 @@ const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
                                       查询被控端审计日志 (v3+)
   nodeagent audit verify              校验审计链完整性（防篡改检测）(v11)
   nodeagent metrics [--since <ms>]    成功指标：闭环率/装软件率/P95/拦截率 (v13)
+  nodeagent net [status]              网络现状 + 待确认变更 (v16)
+  nodeagent net apply --mode static --ip <ip> --mask <m> [--gateway g] --yes
+                                      改网络（两阶段提交：未确认则自动回滚，不会失联）
+  nodeagent net confirm [--task-name X]  确认提交网络变更（取消自动回滚）
   nodeagent discover [--wait 5]       发现局域网内的被控端（UDP 广播，免手抄 IP）(v4)
 
 文件传输 (v5):
@@ -160,6 +164,17 @@ interface Options {
   kind?: string;
   /** v12 宏变量 */
   vars?: string[];
+  /** v16 网络变更 */
+  mode?: string;
+  iface?: string;
+  ip?: string;
+  mask?: string;
+  gateway?: string;
+  dns?: string;
+  command?: string;
+  confirmWithin?: string;
+  taskName?: string;
+  yes?: boolean;
   seconds?: string;
   intervalMs?: string;
 }
@@ -308,8 +323,9 @@ async function callAndPrint(
   args: Record<string, unknown>,
   json: boolean,
   render: (data: unknown) => void,
+  timeoutMs?: number,
 ): Promise<void> {
-  const result = await client.invoke(capability, args);
+  const result = await client.invoke(capability, args, timeoutMs);
   if (result.status === 'failed') {
     fail(`${result.error?.name ?? 'E_EXECUTION_FAILED'}: ${result.error?.message ?? '执行失败'}`);
   }
@@ -1030,6 +1046,88 @@ async function cmdMetrics(opts: Options): Promise<void> {
   );
 }
 
+/** v16：网络变更两阶段提交（备份 → 应用 → 定时回滚 → 确认提交）。 */
+async function cmdNet(sub: string | undefined, opts: Options): Promise<void> {
+  if (sub === 'status' || sub === undefined) {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.NetStatus, {}, opts.json, (data) => {
+        const d = data as {
+          interfaces: Array<Record<string, unknown>>;
+          pending: Array<{ task_name: string; seconds_left: number; rollback_at: number }>;
+          pending_count: number;
+          note: string;
+        };
+        console.log('网卡地址：');
+        for (const i of d.interfaces ?? []) {
+          console.log(`  ${String(i['InterfaceAlias'] ?? '?')}  ip=${String(i['ip'] ?? '-')}  gw=${String(i['gw'] ?? '-')}`);
+        }
+        if (d.pending_count > 0) {
+          console.log('\n⏳ 待确认的网络变更（逾期自动回滚）：');
+          for (const p of d.pending) {
+            console.log(`  ${p.task_name}  剩余 ${p.seconds_left}s`);
+          }
+          console.log('  确认提交：nodeagent net confirm');
+        } else {
+          console.log('\n（无待确认变更）');
+        }
+      }),
+    );
+    return;
+  }
+
+  if (sub === 'confirm') {
+    const args: Record<string, unknown> = {};
+    if (opts.taskName) args['task_name'] = opts.taskName;
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.NetConfirm, args, opts.json, (data) => {
+        const d = data as { confirmed: number; cancelled: string[]; remaining: string[]; note?: string };
+        if (d.confirmed === 0) console.log(`✓ 无需确认：${d.note ?? '没有待确认的网络变更'}`);
+        else console.log(`✓ 已确认（提交）${d.confirmed} 项：${d.cancelled.join(', ')}`);
+        if ((d.remaining ?? []).length > 0) console.error(`⚠️ 仍有未取消：${d.remaining.join(', ')}`);
+      }),
+    );
+    return;
+  }
+
+  if (sub === 'apply') {
+    const modeRaw = opts.mode ?? 'static';
+    const args: Record<string, unknown> = { mode: modeRaw };
+    if (opts.iface) args['interface'] = opts.iface;
+    if (opts.ip) args['ip'] = opts.ip;
+    if (opts.mask) args['mask'] = opts.mask;
+    if (opts.gateway) args['gateway'] = opts.gateway;
+    if (opts.dns) args['dns'] = String(opts.dns).split(',').map((x) => x.trim());
+    if (opts.command) args['command'] = opts.command;
+    if (opts.confirmWithin) args['confirm_within_ms'] = Number(opts.confirmWithin);
+    if (!opts.yes) {
+      fail(
+        '网络变更属高危操作，需显式加 --yes 确认。\n' +
+          '行为：备份当前配置 → 应用变更 → 注册 OS 级定时回滚任务 → 你在窗口期内 net confirm 即提交；\n' +
+          '      逾期未确认则自动回滚到变更前配置（不会把自己关在门外）。',
+      );
+    }
+    // 网络变更本身耗时较长（netsh 重配网卡 + 注册计划任务），默认 60s 不够
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.NetApply, args, opts.json, (data) => {
+        const d = data as {
+          applied: boolean;
+          interface: string;
+          backup_path: string;
+          task_name: string;
+          confirm_within_ms: number;
+          hint: string;
+        };
+        console.log(`✓ 已应用变更（网卡 ${d.interface}），备份：${d.backup_path}`);
+        console.log(`  自动回滚任务：${d.task_name}（${Math.round(d.confirm_within_ms / 1000)}s 后触发）`);
+        console.log(`  ${d.hint}`);
+      }, 200_000),
+    );
+    return;
+  }
+
+  fail('用法: nodeagent net [status] | net apply --mode static|dhcp|command [...] --yes | net confirm [--task-name X]');
+}
+
 async function cmdClip(opts: Options): Promise<void> {
   // 图片上传：从本地文件读入（避免超长命令行参数）
   if (opts.imageFile) {
@@ -1535,6 +1633,16 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       path: { type: 'string' },
       kind: { type: 'string' },
       var: { type: 'string', multiple: true },
+      mode: { type: 'string' },
+      iface: { type: 'string' },
+      ip: { type: 'string' },
+      mask: { type: 'string' },
+      gateway: { type: 'string' },
+      dns: { type: 'string' },
+      command: { type: 'string' },
+      'confirm-within': { type: 'string' },
+      'task-name': { type: 'string' },
+      yes: { type: 'boolean', default: false },
       seconds: { type: 'string' },
       'interval-ms': { type: 'string' },
     },
@@ -1575,6 +1683,16 @@ function parseOptions(rest: string[]): { opts: Options; positionals: string[] } 
       path: values['path'] as string | undefined,
       kind: values['kind'] as string | undefined,
       vars: (values['var'] as string[] | undefined) ?? [],
+      mode: values['mode'] as string | undefined,
+      iface: values['iface'] as string | undefined,
+      ip: values['ip'] as string | undefined,
+      mask: values['mask'] as string | undefined,
+      gateway: values['gateway'] as string | undefined,
+      dns: values['dns'] as string | undefined,
+      command: values['command'] as string | undefined,
+      confirmWithin: values['confirm-within'] as string | undefined,
+      taskName: values['task-name'] as string | undefined,
+      yes: Boolean(values['yes']),
       seconds: values['seconds'] as string | undefined,
       intervalMs: values['interval-ms'] as string | undefined,
       name: values['name'] as string | undefined,
@@ -1709,6 +1827,9 @@ async function main(): Promise<void> {
       }
       return;
     }
+    case 'net':
+      await cmdNet(positionals[0], opts);
+      return;
     case 'metrics':
       await cmdMetrics(opts);
       return;

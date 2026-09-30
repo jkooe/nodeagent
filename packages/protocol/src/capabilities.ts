@@ -41,6 +41,10 @@ export const CapabilityNames = {
   // v11 安全加固
   AuditVerify: 'system.audit.verify',
   Metrics: 'system.metrics',
+  // v16 网络变更两阶段提交
+  NetApply: 'system.net.apply',
+  NetConfirm: 'system.net.confirm',
+  NetStatus: 'system.net.status',
   // v12 事件订阅与监控
   EventWatch: 'event.watch',
   EventUnwatch: 'event.unwatch',
@@ -1068,6 +1072,88 @@ export const CAPABILITY_MANIFEST: CapabilityDescriptor[] = [
         targets: { type: 'object' },
         by_capability: { type: 'object' },
         window: { type: 'object' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.NetApply,
+    version: '1.0',
+    description:
+      '**网络变更两阶段提交**（commit-confirm）：备份当前网络配置 → 应用变更 → 注册一个 OS 级' +
+      '一次性计划任务到点自动回滚（不依赖 agent 进程存活）→ 控制端调用 system.net.confirm 确认即提交。' +
+      '用于远程改 IP / 切 DHCP 这类「改错就失联」的操作 —— 未确认则自动回滚，不会把自己关在门外。',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['static', 'dhcp', 'command'], description: '变更类型；command=自定义命令（POSIX 仅支持此项）' },
+        interface: { type: 'string', description: '网卡别名（如「Ethernet」）；不填则自动取带默认网关的那块' },
+        ip: { type: 'string', description: 'mode=static：新 IPv4' },
+        mask: { type: 'string', description: 'mode=static：子网掩码（如 255.255.255.0）' },
+        gateway: { type: 'string', description: 'mode=static：网关（可选）' },
+        dns: { type: 'array', items: { type: 'string' }, description: 'mode=static：DNS 列表（可选）' },
+        command: { type: 'string', description: 'mode=command：要执行的变更命令' },
+        confirm_within_ms: {
+          type: 'integer',
+          minimum: 15000,
+          maximum: 600000,
+          default: 60000,
+          description: '确认窗口；逾期自动回滚（默认 60 秒）',
+        },
+      },
+      required: ['mode'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        applied: { type: 'boolean' },
+        backup_path: { type: 'string', description: '变更前配置备份（netsh dump，可用 netsh -f 恢复）' },
+        rollback_scheduled: { type: 'boolean' },
+        task_name: { type: 'string' },
+        rollback_at: { type: 'integer', description: '自动回滚时间戳（Unix 毫秒）' },
+        confirm_within_ms: { type: 'integer' },
+        before: { type: 'object', description: '变更前地址信息' },
+        after: { type: 'object', description: '变更后地址信息' },
+        hint: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.NetConfirm,
+    version: '1.0',
+    description:
+      '确认（提交）网络变更：取消自动回滚任务。控制端通常在新地址上重连成功后调用。' +
+      '不传 task_name 则取消全部待确认项。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: { task_name: { type: 'string', description: 'net.apply 返回的任务名；省略则取消全部' } },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        confirmed: { type: 'integer' },
+        cancelled: { type: 'array', items: { type: 'string' } },
+        remaining: { type: 'array', items: { type: 'string' } },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.NetStatus,
+    version: '1.0',
+    description: '查看网络现状：各网卡地址、待确认的变更（含剩余秒数）、历史备份文件。',
+    risk: 'low',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        interfaces: { type: 'array', items: { type: 'object' } },
+        pending: { type: 'array', items: { type: 'object' } },
+        pending_count: { type: 'integer' },
+        backups: { type: 'array', items: { type: 'object' } },
+        note: { type: 'string' },
       },
     },
   },
