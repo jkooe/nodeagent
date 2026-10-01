@@ -1,0 +1,182 @@
+import { closeSync, existsSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import fsSync from 'node:fs';
+import net from 'node:net';
+import os from 'node:os';
+import path, { join } from 'node:path';
+import {
+  NodeAgentClient,
+  loadMacroFile,
+  runMacro,
+  ClientError,
+  loadConfig,
+  saveConfig,
+  configPath,
+  toWsUrl,
+  loadKeys,
+  createKeys,
+  keysFilePath,
+  discoverOnce,
+  resolveTarget,
+  resolveNodeSelector,
+  emptyConfig,
+  type ClientConfig,
+  type ResolvedTarget,
+  type NodeProfile,
+} from '@nodeagent/client';
+import {
+  CapabilityNames,
+  matchPattern,
+  DEFAULT_DISCOVERY_PORT,
+  type CapabilityDescriptor,
+  type InvokeResult,
+} from '@nodeagent/protocol';
+import {
+  callAndPrint,
+  fail,
+  getClientConfig,
+  humanSize,
+  printJson,
+  riskIcon,
+  withClient,
+  withClientDirect,
+} from '../core.js';
+import { CHUNK_BYTES, type Options } from '../types.js';
+
+// CLI 命令组：cmd/gui.ts
+export async function cmdScreen(opts: Options): Promise<void> {
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.ScreenInfo, {}, opts.json, (data) => {
+      const rows = (
+        data as { displays: Array<{ id: number; name: string; width: number; height: number; is_primary: boolean }> }
+      ).displays;
+      for (const d of rows) {
+        console.log(
+          `  #${d.id}  ${String(d.width).padStart(5)}x${String(d.height).padEnd(5)} ${d.is_primary ? '[主屏]' : '      '}  ${d.name}`,
+        );
+      }
+    }),
+  );
+}
+
+export async function cmdScreenshot(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.format) args['format'] = opts.format;
+  if (opts.scale) args['scale'] = Number(opts.scale);
+  if (opts.region) {
+    const nums = opts.region.split(',').map(Number);
+    if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n))) fail('--region 格式应为 x,y,width,height');
+    args['region'] = { x: nums[0], y: nums[1], width: nums[2], height: nums[3] };
+  }
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.ScreenCapture, args, opts.json, (data) => {
+      const d = data as { image: string; format: string; width: number; height: number; bytes: number };
+      const out = opts.out ?? `screenshot.${d.format === 'png' ? 'png' : 'jpg'}`;
+      writeFileSync(out, Buffer.from(d.image, 'base64'));
+      console.log(`✓ 已保存 ${out}  ${d.width}x${d.height}  ${humanSize(d.bytes)}`);
+    }),
+  );
+}
+
+export async function cmdMouse(action: string | undefined, positionals: string[], opts: Options): Promise<void> {
+  const [a, b] = positionals;
+  switch (action) {
+    case 'move': {
+      if (!a || !b) fail('用法: nodeagent mouse move <x> <y> [--duration 300]');
+      const args: Record<string, unknown> = { x: Number(a), y: Number(b) };
+      if (opts.duration) args['duration_ms'] = Number(opts.duration);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseMove, args, opts.json, (d) => {
+          const r = d as { x: number; y: number };
+          console.log(`✓ 鼠标已移动到 (${r.x}, ${r.y})`);
+        }),
+      );
+      return;
+    }
+    case 'click': {
+      const args: Record<string, unknown> = {};
+      if (a && b) {
+        args['x'] = Number(a);
+        args['y'] = Number(b);
+      }
+      if (opts.button) args['button'] = opts.button;
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseClick, args, opts.json, (d) => {
+          const r = d as { x: number; y: number; button: string };
+          console.log(`✓ 已${r.button}键点击 (${r.x}, ${r.y})`);
+        }),
+      );
+      return;
+    }
+    case 'scroll': {
+      if (!a) fail('用法: nodeagent mouse scroll <delta> [y]');
+      const args: Record<string, unknown> = { delta: Number(a) };
+      if (b) args['y'] = Number(b);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseScroll, args, opts.json, (d) => {
+          const r = d as { delta: number };
+          console.log(`✓ 已滚动 ${r.delta} 格`);
+        }),
+      );
+      return;
+    }
+    case 'drag': {
+      const [x1, y1, x2, y2] = positionals;
+      if (!x1 || !y1 || !x2 || !y2) {
+        fail('用法: nodeagent mouse drag <x1> <y1> <x2> <y2> [--button left|right|middle]');
+      }
+      const args: Record<string, unknown> = {
+        from_x: Number(x1),
+        from_y: Number(y1),
+        to_x: Number(x2),
+        to_y: Number(y2),
+      };
+      if (opts.button) args['button'] = opts.button;
+      if (opts.duration) args['step_delay_ms'] = Number(opts.duration);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MouseDrag, args, opts.json, (d) => {
+          const r = d as { from: { x: number; y: number }; to: { x: number; y: number }; steps: number };
+          console.log(
+            `✓ 已拖拽 (${r.from.x}, ${r.from.y}) → (${r.to.x}, ${r.to.y})，${r.steps} 步`,
+          );
+        }),
+      );
+      return;
+    }
+    default:
+      fail('用法: nodeagent mouse <move|click|scroll> ...');
+  }
+}
+
+export async function cmdKey(action: string | undefined, positionals: string[], opts: Options): Promise<void> {
+  switch (action) {
+    case 'type': {
+      const text = positionals.join(' ');
+      if (!text) fail('用法: nodeagent key type "<文本>"');
+      const args: Record<string, unknown> = { text };
+      if (opts.interval) args['interval_ms'] = Number(opts.interval);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.KeyType, args, opts.json, (d) => {
+          const r = d as { length: number };
+          console.log(`✓ 已输入 ${r.length} 个字符`);
+        }),
+      );
+      return;
+    }
+    case 'press': {
+      if (positionals.length === 0) fail('用法: nodeagent key press <键1> [键2] ...（如 ctrl c）');
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.KeyPress, { keys: positionals }, opts.json, (d) => {
+          const r = d as { keys: string[] };
+          console.log(`✓ 已按下 ${r.keys.join('+')}`);
+        }),
+      );
+      return;
+    }
+    default:
+      fail('用法: nodeagent key <type|press> ...');
+  }
+}
+
+// ---------- v3+ 审计 ----------
+
+/** v11：审计链完整性校验。 */
