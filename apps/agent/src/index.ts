@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { warmupWindowHelper } from './capabilities/window.js';
 import { CAPABILITY_MANIFEST } from '@nodeagent/protocol';
 import { loadAgentConfig, agentConfigPath } from './config.js';
 import { ensureCert } from './certs.js';
@@ -100,6 +101,10 @@ async function main(): Promise<void> {
     console.log(`     命令 : nodeagent connect <本机IP> --port ${config.port} --key <密钥>`);
   }
   console.log('');
+
+  // 后台预热 GUI 能力的常驻 PowerShell 助手：把「首次调用」的启动+类型预加载成本
+  // （~1-3s）挪到启动后无人等待的时刻，避免算在第一个真实调用头上（真机指标可见）。
+  warmupWindowHelper();
 
   const shutdown = async (): Promise<void> => {
     console.log('\n正在关闭...');
