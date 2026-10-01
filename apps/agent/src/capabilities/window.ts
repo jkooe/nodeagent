@@ -461,6 +461,28 @@ public class NAImageMatch {
  * 漏拼会被 esbuild tree-shake，直到运行时才报「找不到类型」（真机踩过）。
  * tests/unit/win-prelude.test.mjs 对此有回归断言。
  */
+/**
+ * 后台预热常驻助手（agent 启动后调用一次，不阻塞、失败无副作用）。
+ *
+ * 动机：助手的「首次调用」要付启动 + 类型预加载的固定成本（~1-3s）。
+ * 若不预热，这笔成本会算在**第一个真实用户调用**头上（真机指标里能明显看到
+ * window.list 的 P95 被抬高）。启动后主动预热，把成本挪到无人等待的时刻。
+ */
+export function warmupWindowHelper(): void {
+  if (!IS_WINDOWS || process.env['NODEAGENT_NO_PS_HELPER']) return;
+  setTimeout(() => {
+    void runPowerShellSmart({
+      body: "Write-Output 'warmup'",
+      prelude: WIN_HELPER_PRELUDE,
+      timeoutMs: 90_000,
+      label: 'win',
+      log: () => undefined,
+    }).catch(() => {
+      /* 预热失败无所谓：真实调用时仍会按原路径重试 */
+    });
+  }, 1500).unref?.();
+}
+
 export const WIN_HELPER_PRELUDE = `${WIN32_PRELUDE}
 ${UIA_ASSEMBLY_PRELUDE}
 ${OCR_PRELUDE}
