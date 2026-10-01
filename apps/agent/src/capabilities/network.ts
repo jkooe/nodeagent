@@ -4,6 +4,7 @@ import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { agentDir } from '../config.js';
 import { audit } from '../audit.js';
+import { extractPsError } from '../util/ps-helper.js';
 
 type Args = Record<string, unknown>;
 
@@ -43,6 +44,71 @@ export interface PendingRollback {
   mode: string;
   backup_path: string;
   requested_by?: string;
+}
+
+/**
+ * 执行一段 PowerShell：**落地临时脚本 + -File**。
+ *
+ * ⚠️ 为什么不用 `-EncodedCommand`：真机实测同一段注册计划任务的脚本，
+ *    `-File` 稳定成功并回显 `Scheduled`；`-EncodedCommand` 下 PowerShell 把进度流
+ *    以 CLIXML 写 stderr、且 stdout 拿不到预期输出，导致「明明成功却被判失败」，
+ *    个别场景还直接报账号映射错误。计划任务类操作一律走 -File。
+ */
+async function runPsFile(script: string, timeoutMs: number, tag = 'ps'): Promise<{ exit_code: number; stdout: string; stderr: string }> {
+  const dir = ensureDir();
+  const path = join(dir, `${tag}-${Date.now()}.ps1`);
+  writeFileSync(path, withBom(script), 'utf8');
+  return execCommand({
+    command: `powershell -NoProfile -ExecutionPolicy Bypass -File ${JSON.stringify(path)}`,
+    timeoutMs,
+  });
+}
+
+/**
+ * 生成的 .ps1 **必须带 UTF-8 BOM**。
+ *
+ * ⚠️ 真机踩过：PowerShell 5.1 读**无 BOM** 的 .ps1 会按系统 ANSI(GBK) 解析，
+ *    脚本里的中文（如网卡名「Ethernet」）会吃掉后面的闭合引号 →
+ *    报「The string is missing the terminator」→ 计划任务退出码 1 且不留日志。
+ *    所有落盘的 PowerShell 脚本一律经此函数。
+ */
+export function withBom(content: string): string {
+  return `\uFEFF${content}`;
+}
+
+/**
+ * 把字符串包成 PowerShell **单引号字面量**。
+ *
+ * ⚠️ 单引号内一切都是字面量：**反斜杠不需要任何转义**。
+ *    曾经用 JSON.stringify（双引号）或手动把 \ 翻倍当转义，结果生成 `C:\\Users\\...`
+ *    这种非法路径 → Out-File 失败 → 计划任务退出码 1 且不留日志（真机踩过）。
+ *    需要字面量时一律走本函数；需要插值时用双引号但避免反斜杠。
+ */
+export function psLit(v: string): string {
+  return `'${v.replace(/'/g, "''")}'`;
+}
+
+/**
+ * 生成「注册一次性计划任务」的 PowerShell 脚本（唯一实现，两处复用）。
+ *
+ * ⚠️ 两个真机教训都固化在这里：
+ *   1) **账号名必须用 WindowsIdentity 取**，不要用 "$env:USERDOMAIN\$env:USERNAME" 拼 ——
+ *      在 TS 模板串里 `\$` 会被当转义吃掉反斜杠，拼出「机器名<user>」这种不可解析的账号，
+ *      Register-ScheduledTask 报 HRESULT 0x80070534「No mapping between account names...」。
+ *   2) 复用同一实现：此前回滚/延时两处各写一份，改了一处漏了另一处（真机踩过）。
+ */
+export function buildTaskRegistration(taskName: string, scriptPath: string, atIso: string): string {
+  return [
+    `$ErrorActionPreference='Stop'`,
+    `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "${scriptPath}"'`,
+    `$t = New-ScheduledTaskTrigger -Once -At ([datetime]::Parse('${atIso}'))`,
+    `$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)`,
+    // 用权威身份，绝不拼环境变量（见函数注释）
+    `$me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name`,
+    `$p = New-ScheduledTaskPrincipal -UserId $me -RunLevel Highest -LogonType S4U`,
+    `Register-ScheduledTask -TaskName '${taskName}' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null`,
+    `Write-Output 'Scheduled'`,
+  ].join('\n');
 }
 
 function ensureDir(): string {
@@ -145,7 +211,7 @@ $o | ConvertTo-Json -Compress -Depth 4
 /** 由结构化快照生成**原生 cmdlet** 回滚脚本（不用 netsh set —— 它在 Win11 上会挂起）。 */
 export function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logPath: string): string {
   const a = JSON.stringify(snap.alias);
-  const L = JSON.stringify(logPath);
+  const L = psLit(logPath);
   const lines = [
     `# nodeagent 自动回滚（生成于 ${new Date().toISOString()}）`,
     `$ErrorActionPreference = 'Continue'`,
@@ -185,7 +251,7 @@ export function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logP
     lines.push(`  W 'restored: static'`);
   }
   lines.push(`} catch { W ("rollback failed: " + $_) }`);
-  lines.push(`W ('netsh dump for manual recovery: ' + ${JSON.stringify(backupTxt)})`);
+  lines.push(`W ('netsh dump for manual recovery: ' + ${psLit(backupTxt)})`);
   lines.push(`W 'rollback done'`);
   return lines.join('\n');
 }
@@ -270,7 +336,7 @@ export async function netApply(args: Args): Promise<unknown> {
   const snapshot = await snapshotIface(iface);
   const rollbackLog = join(dir, `rollback-${ts}.log`);
   const rollbackPath = join(dir, `rollback-${ts}.ps1`);
-  writeFileSync(rollbackPath, buildRollbackScript(snapshot, backupPath, rollbackLog), 'utf8');
+  writeFileSync(rollbackPath, withBom(buildRollbackScript(snapshot, backupPath, rollbackLog)), 'utf8');
 
   // ③ 先注册一次性回滚任务（OS 级，S4U —— 不依赖登录会话与 agent 进程）
   //    **先武装后开火**：即使 apply 慢或挂起，保护也已经就位。
@@ -278,24 +344,16 @@ export async function netApply(args: Args): Promise<unknown> {
   // 回滚时间 = 现在 + 延时执行 + 确认窗口（窗口从变更真正生效时算起）
   const at = new Date(Date.now() + APPLY_DELAY_MS + confirmWithinMs);
   const taskName = `${TASK_PREFIX}${at.getTime()}`;
-  const register = [
-    `$ErrorActionPreference='Stop'`,
-    `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "${rollbackPath}"'`,
-    `$t = New-ScheduledTaskTrigger -Once -At ([datetime]::Parse('${at.toISOString()}'))`,
-    `$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)`,
-    `$p = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\\$env:USERNAME" -RunLevel Highest -LogonType S4U`,
-    `Register-ScheduledTask -TaskName '${taskName}' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null`,
-    `Write-Output 'Scheduled'`,
-  ].join('\n');
-  const reg = await execCommand({
-    command: `powershell -NoProfile -EncodedCommand ${Buffer.from(register, 'utf16le').toString('base64')}`,
-    timeoutMs: 60_000,
-  });
+  const register = buildTaskRegistration(taskName, rollbackPath, at.toISOString());
+  const reg = await runPsFile(register, 60_000, 'reg-rollback');
   if (!reg.stdout.includes('Scheduled')) {
     throw new CapabilityError(
       ErrorCodes.EXECUTION_FAILED,
       '**回滚任务注册失败，已中止变更**（宁可不变更也不做无保护的网络改动）',
-      { detail: (reg.stderr || reg.stdout).slice(0, 400), backup_path: backupPath },
+      {
+        detail: `exit=${reg.exit_code} ` + (extractPsError(reg.stderr) || reg.stdout.slice(0, 400) || '(无输出)'),
+        backup_path: backupPath,
+      },
     );
   }
 
@@ -308,41 +366,34 @@ export async function netApply(args: Args): Promise<unknown> {
   const applyScriptPath = join(dir, `apply-${ts}.ps1`);
   writeFileSync(
     applyScriptPath,
-    [
+    withBom([
       `$ErrorActionPreference='Stop'`,
-      `$log = '${join(dir, `apply-${ts}.log`).replace(/\\/g, '\\\\')}'`,
+      `$log = ${psLit(join(dir, `apply-${ts}.log`))}`,
       `try {`,
       ...applyCmd.split('\n').map((l) => `  ${l}`),
       `  "apply ok" | Out-File -Append -Encoding utf8 $log`,
       `} catch { ("apply failed: " + $_) | Out-File -Append -Encoding utf8 $log }`,
       // 自检 + 失败自愈（没有它就会静默把机器留在无地址状态 —— 真机事故根因之一）
       buildSelfCheck(iface, mode === 'static' ? (args['ip'] as string) : null, rollbackPath),
-    ].join('\n'),
+    ].join('\n')),
     'utf8',
   );
   const applyAt = new Date(Date.now() + APPLY_DELAY_MS);
   const applyTask = `${APPLY_TASK_PREFIX}${applyAt.getTime()}`;
-  const regApply = [
-    `$ErrorActionPreference='Stop'`,
-    `$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "${applyScriptPath}"'`,
-    `$t = New-ScheduledTaskTrigger -Once -At ([datetime]::Parse('${applyAt.toISOString()}'))`,
-    `$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)`,
-    `$p = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -RunLevel Highest -LogonType S4U`,
-    `Register-ScheduledTask -TaskName '${applyTask}' -Action $a -Trigger $t -Settings $s -Principal $p -Force | Out-Null`,
-    `Write-Output 'Scheduled'`,
-  ].join('\n');
-  const regA = await execCommand({
-    command: `powershell -NoProfile -EncodedCommand ${Buffer.from(regApply, 'utf16le').toString('base64')}`,
-    timeoutMs: 60_000,
-  });
+  const regApply = buildTaskRegistration(applyTask, applyScriptPath, applyAt.toISOString());
+  const regA = await runPsFile(regApply, 60_000, 'reg-apply');
   if (!regA.stdout.includes('Scheduled')) {
     // 排程失败：撤销已注册的回滚任务，保证状态干净
-    await execCommand({
-      command: `powershell -NoProfile -EncodedCommand ${Buffer.from(`Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction SilentlyContinue`, 'utf16le').toString('base64')}`,
-      timeoutMs: 30_000,
-    });
+    await runPsFile(
+      `Unregister-ScheduledTask -TaskName '${taskName}' -Confirm:$false -ErrorAction SilentlyContinue`,
+      30_000,
+      'unreg',
+    );
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '变更排程失败，已撤销回滚任务（配置未改动）', {
-      detail: (regA.stderr || regA.stdout).slice(0, 300),
+      detail:
+        `exit=${regA.exit_code} ` +
+        (extractPsError(regA.stderr) || '(无 stderr) ') +
+        ` | out=${regA.stdout.replace(/\s+/g, ' ').slice(0, 200)}`,
     });
   }
 
@@ -489,14 +540,14 @@ async function posixCommandApply(
   const rollbackPath = join(dir, `rollback-${ts}.sh`);
   writeFileSync(
     rollbackPath,
-    [
+    withBom([
       '#!/bin/sh',
       `# nodeagent 自动回滚（${new Date(ts).toISOString()}）`,
       `sleep ${Math.round(confirmWithinMs / 1000)}`,
       `# 若确认文件存在则跳过回滚`,
       `[ -f '${join(dir, `confirmed-${ts}`)}' ] && exit 0`,
       rollbackCmd,
-    ].join('\n'),
+    ].join('\n')),
     'utf8',
   );
   const launched = await execCommand({
@@ -560,11 +611,12 @@ export async function netConfirm(args: Args): Promise<unknown> {
     return { confirmed: 0, cancelled: [], note: '没有待确认的网络变更（可能已确认或已回滚）' };
   }
 
-  const unreg = targets.map((t) => `Unregister-ScheduledTask -TaskName '${t}' -Confirm:$false -ErrorAction SilentlyContinue`).join('\n');
-  const r = await execCommand({
-    command: `powershell -NoProfile -EncodedCommand ${Buffer.from(unreg, 'utf16le').toString('base64')}`,
-    timeoutMs: 60_000,
-  });
+  const unreg = [
+    ...targets.map((t) => `Unregister-ScheduledTask -TaskName '${t}' -Confirm:$false -ErrorAction SilentlyContinue`),
+    // 顺带清理已执行过的 netapply 任务（一次性、已完成，留着只会让任务计划程序变乱）
+    `Get-ScheduledTask -TaskName '${APPLY_TASK_PREFIX}*' -ErrorAction SilentlyContinue | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue`,
+  ].join('\n');
+  const r = await runPsFile(unreg, 60_000, 'unreg-all');
   const stillThere = await execCommand({
     command: `powershell -NoProfile -EncodedCommand ${Buffer.from(listScript, 'utf16le').toString('base64')}`,
     timeoutMs: 30_000,
