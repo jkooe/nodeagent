@@ -158,3 +158,35 @@ WorkBuddy 解析代理慢 + 部分请求走了不通的代理链路 → `Respons
 - 它回避：**断后路、需判断、需凭证**的事 —— 这是设计取舍，不是缺陷
 
 明确这条边界，才能既用好它，又不至于在关键故障时**因为"以为能远程修"而耽误时间**。
+
+## 杀软误拦（主流杀软 / 杀软 / 360）
+
+**现象**：远程接管类工具的典型特征（未知 exe + 建计划任务 + 开防火墙 + 常驻监听 + 注入键鼠/截屏）
+**必然**触发杀软拦截。真机实证：主流杀软会拦下 `install.ps1` 执行、计划任务注册，或直接处置 `node.exe`，
+表现为「下载成功但装不上」或「装上后 agent 起不来」。
+
+**逐项放行清单**（把下面这些都加进杀软的信任/白名单，而不是整机关防护）：
+
+| 对象 | 说明 |
+|---|---|
+| 安装目录 | 解压出来的整个文件夹（含 `node.exe`、`agent.mjs`、`install.ps1`） |
+| `node.exe` | 被控端自带的 Node 运行时（免装 Node 就是因为这个文件） |
+| `agent.mjs` | agent 主体（常驻监听 8765） |
+| 计划任务 `nodeagent` | 开机/登录自启任务；主流杀软的「启动项拦截」会静默拦掉它 |
+| 入站端口 8765/TCP | `install.ps1` 已建防火墙规则；杀软的**独立网络防护**可能仍拦 |
+| PowerShell 脚本执行 | 主流杀软「系统加固」会拦脚本解释执行；至少放行上面的安装目录 |
+| 键鼠/截屏行为 | 开启 `allow_input` 后才会出现；若被拦，`screen.capture`/`input.*` 会失败 |
+
+**自检命令**（在 Windows 上跑，确认三件事：任务在不在、进程活不活、端口听没听）：
+```powershell
+Get-ScheduledTask -TaskName 'nodeagent*' -ErrorAction SilentlyContinue | Select-Object TaskName, State
+Get-Process node -ErrorAction SilentlyContinue | Select-Object Id, Path
+netstat -ano | findstr :8765
+Invoke-WebRequest 'http://127.0.0.1:8765' -UseBasicParsing -TimeoutSec 2   # 有响应即端口通
+```
+
+**排查顺序**：先看任务与进程（被杀软处置则两者都缺）→ 再看端口（进程在但端口不通 = 防火墙/杀软网络防护）
+→ 最后从控制端用 `nodeagent discover` 或 ping 确认**两台机器确实在同一网络**。
+
+> ⚠️ 最后一环最容易忽略：真机踩过 —— 控制端换了 Wi-Fi（酒店/热点）后仍在扫旧网段，
+> 排查半天「失联」，实际是**两台机器不在同一网络**。先用 `ipconfig`/`ifconfig` 对齐网段再谈其他。
