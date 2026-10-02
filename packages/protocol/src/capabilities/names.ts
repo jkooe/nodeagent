@@ -41,6 +41,9 @@ export const CapabilityNames = {
   // v11 安全加固
   AuditVerify: 'system.audit.verify',
   Metrics: 'system.metrics',
+  // v17 音频控制
+  AudioGet: 'system.audio.get',
+  AudioSet: 'system.audio.set',
   // v16 网络变更两阶段提交
   NetApply: 'system.net.apply',
   NetConfirm: 'system.net.confirm',

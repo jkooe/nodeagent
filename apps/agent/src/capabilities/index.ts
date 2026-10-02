@@ -9,6 +9,7 @@ import { taskList, taskGet, taskKill } from './task.js';
 import { clipGet, clipSet } from './clipboard.js';
 import { eventWatch, eventUnwatch, eventList, eventPoll } from '../events.js';
 import { netApply, netConfirm, netStatus } from './network.js';
+import { audioGet, audioSet } from './audio.js';
 import { mouseMove, mouseClick, mouseScroll, mouseDrag, keyType, keyPress, setInputPolicy } from './input.js';
 import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 
@@ -74,6 +75,9 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.TaskKill]: taskKill,
     [CapabilityNames.ClipGet]: clipGet,
     [CapabilityNames.ClipSet]: clipSet,
+    // v17 音频控制
+    [CapabilityNames.AudioGet]: audioGet,
+    [CapabilityNames.AudioSet]: audioSet,
     // v16 网络变更两阶段提交
     [CapabilityNames.NetApply]: netApply,
     [CapabilityNames.NetConfirm]: netConfirm,
