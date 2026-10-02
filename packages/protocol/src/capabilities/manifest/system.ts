@@ -300,4 +300,45 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
       },
     },
   },
+  {
+    name: CapabilityNames.AudioGet,
+    version: '1.0',
+    description:
+      '读取被控端默认播放设备的**静音状态与主音量**。Windows 走 Core Audio COM，macOS 走 osascript。',
+    risk: 'low',
+    params_schema: { type: 'object', properties: {}, additionalProperties: false },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        muted: { type: 'boolean', description: '是否静音' },
+        volume: { type: 'integer', description: '主音量 0-100' },
+        platform: { type: 'string' },
+        backend: { type: 'string', description: '实现后端（CoreAudio / osascript）' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.AudioSet,
+    version: '1.0',
+    description:
+      '设置被控端**静音开关或主音量**。返回设置后的实际状态（可读回，故为确定性设置而非切换）。' +
+      '常用于「远程把那台机器静音」或配合宏播放媒体时控制音量。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        mute: { type: 'boolean', description: 'true=静音，false=取消静音' },
+        volume: { type: 'integer', minimum: 0, maximum: 100, description: '主音量 0-100' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        muted: { type: 'boolean' },
+        volume: { type: 'integer' },
+        applied: { type: 'object', description: '本次实际应用的值（未提供的为 null）' },
+      },
+    },
+  },
 ];

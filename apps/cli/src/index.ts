@@ -34,7 +34,7 @@ import { HELP } from './help.js';
 import { parseOptions } from './options.js';
 import { cmdConnect, cmdDiscover, cmdKeygen, cmdNodes, cmdRemove, cmdUse } from './cmd/conn.js';
 import {
-  cmdApps, cmdAudit, cmdAuditVerify, cmdExec, cmdInfo, cmdInstall, cmdInvoke, cmdList,
+  cmdApps, cmdAudio, cmdAudit, cmdAuditVerify, cmdExec, cmdInfo, cmdInstall, cmdInvoke, cmdList,
   cmdMetrics, cmdPs, cmdRestart, cmdServices, cmdStatus,
 } from './cmd/system.js';
 import {
@@ -168,6 +168,9 @@ async function main(): Promise<void> {
     }
     case 'net':
       await cmdNet(positionals[0], opts);
+      return;
+    case 'audio':
+      await cmdAudio(positionals[0], opts);
       return;
     case 'metrics':
       await cmdMetrics(opts);

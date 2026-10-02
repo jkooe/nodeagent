@@ -468,6 +468,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_audio_get',
+    description: '读取被控端默认播放设备的静音状态与主音量（Windows: Core Audio / macOS: osascript）。',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'na_audio_set',
+    description:
+      '设置被控端静音开关或主音量（可读回实际状态，故为确定性设置而非切换）。' +
+      '常用于「把远端那台机器静音」。mute 与 volume 至少给一个。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mute: { type: 'boolean', description: 'true=静音，false=取消静音' },
+        volume: { type: 'integer', description: '主音量 0-100' },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_metrics',
     description:
       '按 PRD 2.2 汇总被控端成功指标（闭环成功率 / 装软件成功率 / P95 时延 / 安全拦截率）' +
@@ -629,6 +648,8 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_fs_stat: CapabilityNames.FsStat,
   na_restart: CapabilityNames.AgentRestart,
   na_metrics: CapabilityNames.Metrics,
+  na_audio_get: CapabilityNames.AudioGet,
+  na_audio_set: CapabilityNames.AudioSet,
   na_net_status: CapabilityNames.NetStatus,
   na_net_apply: CapabilityNames.NetApply,
   na_net_confirm: CapabilityNames.NetConfirm,

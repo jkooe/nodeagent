@@ -55,6 +55,9 @@ export interface Options {
   kind?: string;
   /** v12 宏变量 */
   vars?: string[];
+  /** v17 音频 */
+  mute?: string;
+  volume?: string;
   /** v16 网络变更 */
   mode?: string;
   iface?: string;

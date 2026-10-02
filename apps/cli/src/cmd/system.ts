@@ -285,3 +285,38 @@ export async function cmdInstall(pkg: string, opts: Options): Promise<void> {
     }),
   );
 }
+
+/** v17：音频控制（静音 / 主音量）。 */
+export async function cmdAudio(sub: string | undefined, opts: Options): Promise<void> {
+  if (sub === 'set') {
+    const args: Record<string, unknown> = {};
+    if (opts.mute !== undefined) {
+      const v = String(opts.mute).toLowerCase();
+      if (!['on', 'off', 'true', 'false', '1', '0'].includes(v)) {
+        fail('--mute 只接受 on|off');
+      }
+      args['mute'] = ['on', 'true', '1'].includes(v);
+    }
+    if (opts.volume !== undefined) args['volume'] = Number(opts.volume);
+    if (Object.keys(args).length === 0) fail('用法: nodeagent audio set [--mute on|off] [--volume 0-100]');
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.AudioSet, args, opts.json, (data) => {
+        const d = data as { muted: boolean; volume: number; backend: string };
+        console.log(`✓ 已应用：${d.muted ? '🔇 静音' : '🔊 未静音'} · 音量 ${d.volume}%（${d.backend}）`);
+      }),
+    );
+    return;
+  }
+
+  if (sub === undefined || sub === 'get') {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.AudioGet, {}, opts.json, (data) => {
+        const d = data as { muted: boolean; volume: number; backend: string };
+        console.log(`${d.muted ? '🔇 静音' : '🔊 未静音'} · 主音量 ${d.volume}%（${d.backend}）`);
+      }),
+    );
+    return;
+  }
+
+  fail('用法: nodeagent audio [get] | audio set [--mute on|off] [--volume 0-100]');
+}

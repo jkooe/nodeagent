@@ -14,6 +14,8 @@ export const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
                                       查询被控端审计日志 (v3+)
   nodeagent audit verify              校验审计链完整性（防篡改检测）(v11)
   nodeagent metrics [--since <ms>]    成功指标：闭环率/装软件率/P95/拦截率 (v13)
+  nodeagent audio [get]                 查看被控端静音状态与主音量 (v17)
+  nodeagent audio set [--mute on|off] [--volume 0-100]   设置静音 / 音量
   nodeagent net [status]              网络现状 + 待确认变更 (v16)
   nodeagent net apply --mode static --ip <ip> --mask <m> [--gateway g] --yes
                                       改网络（两阶段提交：未确认则自动回滚，不会失联）

@@ -878,6 +878,47 @@ async function testMacroReplay() {
   }
 }
 
+/**
+ * v17：音频控制。
+ * 注意：本机（CI/macOS）也会跑这条用例，故**只把音量设为当前值**，
+ * 走通写入路径但不改变实际音量（避免测试把机器静音了）。
+ */
+async function testAudio() {
+  const c = await connect();
+  try {
+    const g = await c.invoke('system.audio.get', {});
+    if (g.status === 'failed') {
+      // 无音频设备的环境（部分 CI 容器）允许明确报错，但不能是崩溃
+      assert.ok(
+        ['E_EXECUTION_FAILED', 'E_UNSUPPORTED_PLATFORM'].includes(g.error.name),
+        `非预期错误: ${g.error.name}`,
+      );
+      return;
+    }
+    assert.equal(typeof g.data.muted, 'boolean', 'muted 应为布尔');
+    assert.equal(typeof g.data.volume, 'number', 'volume 应为数字');
+    assert.ok(g.data.volume >= 0 && g.data.volume <= 100, 'volume 应在 0-100');
+
+    // 写回原值：验证写入路径，但不产生可感知变化
+    const s1 = await c.invoke('system.audio.set', { volume: g.data.volume, mute: g.data.muted });
+    assert.equal(s1.status, 'ok');
+    assert.equal(s1.data.volume, g.data.volume, '设置后音量应与原值一致');
+    assert.equal(s1.data.muted, g.data.muted, '设置后静音态应与原值一致');
+    assert.ok(s1.data.applied, '应回报本次实际应用的值');
+
+    // 空参数：schema 允许（无必填项），由 handler 判定 → **能力层失败**（返回 failed，不抛异常）
+    const empty = await c.invoke('system.audio.set', {});
+    assert.equal(empty.status, 'failed', '两者都不给应失败');
+    assert.equal(empty.error.name, 'E_PARAM_INVALID');
+
+    // 越界：schema 有 minimum/maximum → **协议层**拒绝（抛 ClientError）
+    await expectProtocolError(() => c.invoke('system.audio.set', { volume: 999 }), 'E_PARAM_INVALID');
+    await expectProtocolError(() => c.invoke('system.audio.set', { volume: -1 }), 'E_PARAM_INVALID');
+  } finally {
+    c.close();
+  }
+}
+
 /** v13：成功指标形状与达标判定 + 审计链完整性（防篡改）。 */
 async function testMetricsAndAudit() {
   const c = await connect();
@@ -1110,6 +1151,7 @@ async function main() {
     await test('v12 事件订阅：文件监控 → 推送 + 拉取双通路 → 取消', testEventWatch);
     await test('v12 GUI 宏引擎：步骤回放 / 断言中止定位 / optional 继续', testMacroReplay);
     await test('v13 成功指标与审计链：形状 + 分层时延 + 达标判定 + 链完整', testMetricsAndAudit);
+    await test('v17 音频控制：读状态 / 写回原值 / 参数校验', testAudio);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

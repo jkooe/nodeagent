@@ -55,11 +55,13 @@ test('清单：v7~v11 新能力均已登记', () => {
     'system.net.apply',
     'system.net.confirm',
     'system.net.status',
+    'system.audio.get',
+    'system.audio.set',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 39, '当前应有 39 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 41, '当前应有 41 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------
@@ -174,6 +176,18 @@ test('system.net.apply：mode 枚举受控，static 需 ip/mask，确认窗有�
   assert.ok(check('system.net.apply', { mode: 'teleport' }).length > 0, '非法 mode 应被拒');
   assert.ok(check('system.net.apply', { mode: 'static', ip: '1.2.3.4', mask: '255.255.255.0', confirm_within_ms: 1000 }).length > 0, '确认窗下限 15s');
   assert.ok(check('system.net.apply', { mode: 'static', ip: '1.2.3.4', mask: '255.255.255.0', confirm_within_ms: 9999999 }).length > 0, '确认窗上限 10min');
+});
+
+test('system.audio.get / set：参数形状与范围', () => {
+  assert.equal(check('system.audio.get', {}).length, 0);
+  assert.equal(check('system.audio.set', { mute: true }).length, 0);
+  assert.equal(check('system.audio.set', { volume: 35 }).length, 0);
+  assert.equal(check('system.audio.set', { mute: false, volume: 0 }).length, 0);
+  assert.ok(check('system.audio.set', { volume: 101 }).length > 0, '音量上限 100');
+  assert.ok(check('system.audio.set', { volume: -1 }).length > 0, '音量下限 0');
+  assert.ok(check('system.audio.set', { volume: '35' }).length > 0, 'volume 必须是整数');
+  assert.ok(check('system.audio.set', { mute: 'yes' }).length > 0, 'mute 必须是布尔');
+  assert.ok(check('system.audio.set', { bogus: 1 }).length > 0, '未知参数应被拒');
 });
 
 test('system.net.confirm / status：参数形状', () => {
