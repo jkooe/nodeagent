@@ -32,6 +32,7 @@ import {
 } from '@nodeagent/protocol';
 import {
   callAndPrint,
+  reportCompat,
   fail,
   getClientConfig,
   humanSize,

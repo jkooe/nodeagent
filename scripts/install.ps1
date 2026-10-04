@@ -2,6 +2,12 @@
 .SYNOPSIS
     nodeagent - Windows agent installer.
 
+    ⚠️ 本文件必须以 **UTF-8 BOM** 保存（文件头那个看不见的 U+FEFF 就是 BOM）。
+       Windows PowerShell 5.1 读**无 BOM** 的 .ps1 会按系统 ANSI（中文 Windows = GBK）
+       解析，本文件里的中文注释会解成乱码并被误认为引号 → 整份脚本 ParseError
+       （报错位置彼此无关，真正的病灶在靠前处）。真机踩过：2026-10-04。
+       另：第 4 步写 agent.json 时反而必须**无 BOM**（BOM 对 .ps1 必需、对 JSON 有害）。
+
 .DESCRIPTION
     Registers the nodeagent agent as a scheduled task (auto-start on logon),
     opens the inbound firewall port, and prints connection info for the Mac side.
@@ -97,7 +103,11 @@ Write-Ok "Node.js v$ver"
 Write-Ok "Agent entry: $agentJs"
 
 # 4. Config + pre-shared key
-$cfgDir  = Join-Path $env:USERPROFILE ".nodeagent"
+# 数据目录必须与 agent 侧一致 —— apps/agent/src/config.ts 的 agentDir() 是
+#   process.env.NODEAGENT_HOME ?? join(homedir(), '.nodeagent')
+# 若计划任务环境里设了 NODEAGENT_HOME 而这里写死 USERPROFILE\.nodeagent，
+# 就会「配置写A、读取B」，表现为装完连不上（E_AUTH_FAILED）。
+$cfgDir  = if ($env:NODEAGENT_HOME) { $env:NODEAGENT_HOME } else { Join-Path $env:USERPROFILE ".nodeagent" }
 $cfgPath = Join-Path $cfgDir "agent.json"
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
 

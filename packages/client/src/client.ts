@@ -76,6 +76,10 @@ export class NodeAgentClient {
   private capabilities: CapabilityDescriptor[] = [];
   /** ed25519 模式：本次被授权的能力；psk 模式为 null */
   private authorized: string[] | null = null;
+  /** v20：被控端语义化版本（旧被控端不返回则为 undefined） */
+  private agentVersion?: string;
+  /** v20：被控端构建信息 { hash, commit, built_at } */
+  private agentBuild?: { hash?: string; commit?: string; built_at?: string };
   private closed = false;
   /** v4：重连状态 */
   private reconnectAttempts = 0;
@@ -155,6 +159,9 @@ export class NodeAgentClient {
 
     this.capabilities = authOk.capabilities ?? [];
     this.authorized = authOk.authorized ?? null;
+    // v20：远端版本/构建信息（旧被控端不返回 → 保持 undefined，不报错）
+    this.agentVersion = authOk.agent_version;
+    this.agentBuild = authOk.build;
     const label =
       authOk.auth_mode === 'ed25519'
         ? `ed25519，授权 ${this.authorized?.length ?? 0}/${this.capabilities.length} 项能力`
@@ -181,6 +188,16 @@ export class NodeAgentClient {
   /** ed25519 模式下本次被授权的能力；psk 模式返回 null（不限制）。 */
   listAuthorized(): string[] | null {
     return this.authorized;
+  }
+
+  /** v20：被控端版本（旧被控端未上报则为 undefined）。 */
+  getAgentVersion(): string | undefined {
+    return this.agentVersion;
+  }
+
+  /** v20：被控端构建信息（指纹/提交/构建时间）。 */
+  getAgentBuild(): { hash?: string; commit?: string; built_at?: string } | undefined {
+    return this.agentBuild;
   }
 
   /** 底层请求（带超时与 id 匹配）。 */

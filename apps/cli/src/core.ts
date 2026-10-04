@@ -24,7 +24,9 @@ import {
   type NodeProfile,
 } from '@nodeagent/client';
 import {
+  CAPABILITY_MANIFEST,
   CapabilityNames,
+  capabilityDiff,
   matchPattern,
   DEFAULT_DISCOVERY_PORT,
   type CapabilityDescriptor,
@@ -256,3 +258,42 @@ export async function probeOnce(nodeName?: string): Promise<{
     return { ok: false, caps: 0, error: err instanceof Error ? err.message : String(err) };
   }
 }
+
+/**
+ * 新旧版本兼容提示（v20）。
+ *
+ * 背景：agent 与 CLI 是**分开更新**的（CLI 随 Mac 装，agent 推/拉到被控端），
+ * 必然出现新旧混用。等到调用时才抛 E_CAPABILITY_NOT_FOUND 会让人摸不着头脑，
+ * 所以在握手后就明确告诉用户「谁旧、缺什么、怎么升」。
+ *
+ * 兼容性依据（见 docs/VERSIONING.md）：**只增不改** ——
+ * 新 agent 向后兼容旧 CLI（新增能力/可选参数），因此升级顺序建议先被控端。
+ */
+export function reportCompat(client: NodeAgentClient): void {
+  const remoteNames = client.listCapabilities().map((c) => c.name);
+  const localNames = CAPABILITY_MANIFEST.map((c) => c.name);
+  const diff = capabilityDiff(localNames, remoteNames);
+  const v = client.getAgentVersion();
+  const b = client.getAgentBuild();
+
+  if (v) {
+    console.log(`被控端版本 : v${v}${b?.commit ? ` @ ${b.commit}` : ''}${b?.hash ? `  构建 ${b.hash}` : ''}`);
+  } else {
+    console.log('被控端版本 : 未上报（多为 v20 之前的版本，建议更新一次）');
+  }
+
+  if (diff.missingOnRemote.length > 0) {
+    console.warn(`⚠️ 被控端缺少 ${diff.missingOnRemote.length} 项本控制端已知的能力 —— 远端较旧：`);
+    console.warn(`   ${diff.missingOnRemote.join(', ')}`);
+    console.warn('   → 建议更新被控端：nodeagent update --url <包地址> --sha256 <哈希>');
+  }
+  if (diff.unknownLocally.length > 0) {
+    console.warn(`ℹ️ 被控端还有 ${diff.unknownLocally.length} 项本控制端不认识的能力 —— 本 CLI 较旧：`);
+    console.warn(`   ${diff.unknownLocally.join(', ')}`);
+    console.warn('   → 不影响既有功能；要用到这些新能力需更新控制端（git pull 后重跑 pack:mac + install-macos.sh）');
+  }
+  if (diff.missingOnRemote.length === 0 && diff.unknownLocally.length === 0) {
+    console.log(`能力对齐   : ${localNames.length} 项，两端一致 ✓`);
+  }
+}
+

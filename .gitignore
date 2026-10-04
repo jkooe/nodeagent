@@ -18,6 +18,10 @@ pnpm-debug.log*
 .env.*
 !.env.example
 
+# 预共享密钥：install.cmd 在包内生成，绝不入库
+PSK.txt
+**/PSK.txt
+
 # OS
 .DS_Store
 Thumbs.db

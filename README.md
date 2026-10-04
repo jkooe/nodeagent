@@ -61,16 +61,35 @@ pnpm build
 
    产物：`release/nodeagent-win-x64.zip`（约 32MB）
 
-2. 把 zip 拷到 Windows 并解压
-3. 右键以**管理员**运行其中的 `install.ps1`
+2. 把 zip 拷到 Windows 并解压到**固定目录**（如 `D:\nodeagent`，装完不要移动或改名）
+3. **双击 `install.cmd`** —— 会自动弹 UAC 提权，然后一路装完并打印连接信息
 
-安装脚本会使用**包内自带的 Node.js 运行时**，自动：生成预共享密钥 → 写配置 → 放行防火墙 → 注册开机自启 → 启动 Agent，并打印**密钥**与**连接命令**。
+> 不需要记任何命令行。`install.cmd` 会自己提权、自己读包内 `PSK.txt` 的密钥（没有就生成一把），
+> 再调用底层的 `install.ps1`。日后管理双击 **`control.cmd`**（启动 / 停止 / 重启 / 状态 / 日志 / 卸载）。
+
+安装脚本会使用**包内自带的 Node.js 运行时**，自动：读/生成预共享密钥 → 写配置 → 放行防火墙 → 注册开机自启 → 启动 Agent，并打印**密钥**与**连接命令**。
+
+<details>
+<summary>需要指定端口 / 无人值守模式？展开命令行用法</summary>
+
+```powershell
+# 指定端口（默认 8765）
+install.cmd 18770
+
+# 等价的底层调用（install.cmd 就是这行 + 提权 + 读 PSK）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -NodeId my-pc -Key <PSK> -AllowInput
+
+# 无人值守：注销/重启后仍运行，但**没有 GUI**（Session 0 无桌面）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Unattended -AtStartup
+```
+
+</details>
 
 **两种运行模式（重要）**
 
 | 模式 | 命令 | 登录/注销 | 能力范围 |
 |---|---|---|---|
-| 交互（默认） | `install.ps1` | 登录时启动；**注销即停** | 全部能力，**含 GUI**（截屏 / UIA 找元素 / 键鼠注入） |
+| 交互（默认） | `install.cmd` | 登录时启动；**注销即停** | 全部能力，**含 GUI**（截屏 / UIA 找元素 / 键鼠注入） |
 | 无人值守 | `install.ps1 -Unattended -AtStartup` | **注销、重启后仍运行**（S4U，无需存密码） | 无 GUI —— 截屏/输入类能力不可用（进程在非交互会话，没有桌面） |
 
 > 这是 Windows 的固有限制：**图形操作必须有交互桌面**。需要 GUI 就保持登录（可锁屏）；
@@ -379,7 +398,7 @@ node scripts/verify-mcp-events.mjs   # 验证 MCP 事件双通路（推送 + 拉
 
 | 层次 | 方式 | 覆盖 |
 |---|---|---|
-| **CI（推荐）** | GitHub Actions `windows-latest` | 真实 Windows 上跑协议 E2E、专属能力（`Get-Service` / 注册表 / winget 装软件）、`install.ps1` 链路、CLI 连入、MCP 工具列表 |
+| **CI（推荐）** | GitHub Actions `windows-latest` | 真实 Windows 上跑协议 E2E、专属能力（`Get-Service` / 注册表 / winget 装软件）、`install.ps1` 链路、`install.cmd`/`control.cmd` 双击链路、**Windows PowerShell 5.1 解析守卫**、CLI 连入、MCP 工具列表 |
 | **远程验收** | `node scripts/verify.mjs --host <IP> --key <密钥> [--insecure]` | 逐条验收并输出终端报告（`--report report.md`） |
 | **本地测试** | `pnpm test:e2e` / `pnpm test:windows` | 单机自举：本机起 Agent 当被控端自测 |
 
@@ -405,7 +424,7 @@ nodeagent/
 │   ├── hub/               # 中转节点：设备注册、控制端配对、字节透传（跨网段/公网）
 │   ├── cli/               # macOS 控制端 CLI
 │   └── mcp/               # MCP server（接入 WorkBuddy）
-├── scripts/               # install.ps1 / uninstall.ps1 / verify.mjs
+├── scripts/               # install.cmd / control.cmd（一键入口）/ install.ps1 / control.ps1 / verify.mjs
 ├── tests/e2e/             # 端到端测试
 ├── docs/                  # 开发文档
 ├── PRD.md                 # 产品需求文档
@@ -441,6 +460,9 @@ nodeagent/
 
 ## 文档
 
+- [`docs/VERSIONING.md`](docs/VERSIONING.md) —— **版本与兼容性契约**（升级顺序、什么算破坏性、发版流程、更新方式）
+- [`docs/REMOTE-LIMITS.md`](docs/REMOTE-LIMITS.md) —— 远程能力边界与真实故障案例（含杀软误拦）
+
 - [产品需求文档（PRD）](./PRD.md)
 - [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md) —— 协议细节、能力 schema、安全模型、各端实现指南
 - [**跨机接管的边界与局限**](./docs/REMOTE-LIMITS.md) —— 哪些问题能远程修、哪些必须人工，附真实故障诊断案例
@@ -454,5 +476,5 @@ nodeagent/
 | 安全演进 | 先简化（预共享密钥 + HMAC）→ 后强化（Ed25519 + 能力级 ACL + 审计） |
 | AI 接入 | 核心能力 → CLI（调试底座）→ MCP（AI 落点） |
 | 装软件 | 优先 winget 静默安装 |
-| Windows 部署 | 一键 `install.ps1` + 开机自启 |
+| Windows 部署 | 一键 `install.cmd`（双击即装，自提权）+ 开机自启；`control.cmd` 管理 |
 | 依赖策略 | 被控端零原生编译；能力全部基于系统原生 API 实现 |

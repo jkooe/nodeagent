@@ -47,7 +47,19 @@ async function isAdmin(): Promise<boolean> {
 // ---------------- system.info ----------------
 
 
-// ---------- 构建指纹（v18）----------
+// ---------- 构建指纹（v18 / v20）----------
+
+// 构建时由 esbuild --define 注入（见 scripts/pack.mjs）；开发态（直接跑 dist）下未定义，
+// 故一律用 typeof 探测，绝不能直接引用（否则 dev 启动就 ReferenceError）。
+declare const __AGENT_VERSION__: string | undefined;
+declare const __BUILD_COMMIT__: string | undefined;
+declare const __BUILD_TIME__: string | undefined;
+
+function injected(name: 'version' | 'commit' | 'time'): string {
+  if (name === 'version') return typeof __AGENT_VERSION__ === 'undefined' ? 'dev' : __AGENT_VERSION__;
+  if (name === 'commit') return typeof __BUILD_COMMIT__ === 'undefined' ? 'dev' : __BUILD_COMMIT__;
+  return typeof __BUILD_TIME__ === 'undefined' ? 'dev' : __BUILD_TIME__;
+}
 
 const STARTED_AT = Date.now();
 let buildCache: { hash: string; bytes: number; mtime_ms: number } | null = null;
@@ -59,7 +71,17 @@ let buildCache: { hash: string; bytes: number; mtime_ms: number } | null = null;
  * （旧版可能恰好也是同样的能力数）；内容哈希是唯一可靠的判据。
  * 懒计算 + 缓存：文件约 1MB，只在首次 system.info 时读一次。
  */
-function buildInfo(): { hash: string; bytes: number; mtime_ms: number; node: string; started_at: number; uptime_ms: number } {
+export function buildInfo(): {
+  hash: string;
+  bytes: number;
+  mtime_ms: number;
+  node: string;
+  started_at: number;
+  uptime_ms: number;
+  version: string;
+  commit: string;
+  built_at: string;
+} {
   if (!buildCache) {
     let hash = 'unknown';
     let bytes = 0;
@@ -80,6 +102,10 @@ function buildInfo(): { hash: string; bytes: number; mtime_ms: number; node: str
     node: process.version,
     started_at: STARTED_AT,
     uptime_ms: Date.now() - STARTED_AT,
+    // v20：语义化版本 + 提交 + 构建时间（来自构建期注入）
+    version: injected('version'),
+    commit: injected('commit'),
+    built_at: injected('time'),
   };
 }
 

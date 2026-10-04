@@ -32,6 +32,7 @@ import {
 } from '@nodeagent/protocol';
 import {
   callAndPrint,
+  reportCompat,
   fail,
   getClientConfig,
   humanSize,
@@ -104,6 +105,11 @@ function renderInfoValue(v: unknown): string {
 }
 
 export async function cmdInfo(opts: Options): Promise<void> {
+  // 先打版本与兼容性（v20）——info 是最自然的「体检」命令
+  await withClient((c) => {
+    reportCompat(c);
+    return Promise.resolve();
+  });
   await withClient((c) =>
     callAndPrint(c, CapabilityNames.SystemInfo, {}, opts.json, (data) => {
       const d = data as Record<string, unknown>;

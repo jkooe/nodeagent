@@ -26,6 +26,7 @@ import {
   type AuthParams,
   type InvokeParams,
 } from '@nodeagent/protocol';
+import { buildInfo } from './capabilities/system.js';
 import { createCapabilityRegistry } from './capabilities/index.js';
 import { audit, describeArgs } from './audit.js';
 import { disposeWatchesByOwner } from './events.js';
@@ -179,7 +180,16 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       remote: state.remote,
       reason: `mode=${authMode}` + (authorized ? `, authorized=${authorized.length}` : ''),
     });
-    sendResult(ws, req.id, { capabilities: CAPABILITY_MANIFEST, authorized, auth_mode: authMode });
+    const bi = buildInfo();
+    sendResult(ws, req.id, {
+      capabilities: CAPABILITY_MANIFEST,
+      authorized,
+      auth_mode: authMode,
+      // v20：把版本/构建信息交给控制端，便于做新旧兼容提示
+      agent_version: bi.version,
+      build: { hash: bi.hash, commit: bi.commit, built_at: bi.built_at },
+      protocol: PROTOCOL_VERSION,
+    });
   }
 
   async function handleInvoke(ws: WebSocket, state: ConnState, req: RpcRequest): Promise<void> {

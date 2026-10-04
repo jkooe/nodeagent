@@ -20,7 +20,8 @@
     "verify": "node scripts/verify.mjs",
     "pack:win": "node scripts/pack.mjs",
     "pack:mac": "node scripts/pack-macos.mjs",
-    "update:win": "node scripts/update-win.mjs"
+    "update:win": "node scripts/update-win.mjs",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

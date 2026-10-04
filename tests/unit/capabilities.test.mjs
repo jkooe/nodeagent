@@ -1,3 +1,4 @@
+import { capabilityDiff } from '../../packages/protocol/dist/index.js';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -228,4 +229,28 @@ test('applyDefaults：新能力默认值正确填充', () => {
   const exec = applyDefaults({ command: 'x' }, findCapability('system.shell.exec').params_schema);
   assert.equal(exec.async, false);
   assert.equal(exec.timeout_ms, 30000);
+});
+
+// ---------- v20 兼容性：能力差集 ----------
+test('capabilityDiff：识别「远端较旧」与「本控制端较旧」', () => {
+  const local = ['system.info', 'system.audio.get', 'system.agent.update'];
+  const remoteOld = ['system.info'];
+  const d1 = capabilityDiff(local, remoteOld);
+  assert.deepEqual(d1.missingOnRemote, ['system.audio.get', 'system.agent.update'], '远端缺的新能力');
+  assert.deepEqual(d1.unknownLocally, []);
+
+  const remoteNew = ['system.info', 'system.audio.get', 'system.agent.update', 'future.thing'];
+  const d2 = capabilityDiff(local, remoteNew);
+  assert.deepEqual(d2.missingOnRemote, [], '远端不缺');
+  assert.deepEqual(d2.unknownLocally, ['future.thing'], '本控制端不认识的新能力');
+
+  const same = capabilityDiff(local, local);
+  assert.deepEqual(same, { missingOnRemote: [], unknownLocally: [] }, '完全一致应无差异');
+});
+
+test('capabilityDiff：真实清单与自身比对应无差异（防手滑改坏清单）', () => {
+  const names = CAPABILITY_MANIFEST.map((c) => c.name);
+  const d = capabilityDiff(names, names);
+  assert.equal(d.missingOnRemote.length, 0);
+  assert.equal(d.unknownLocally.length, 0);
 });
