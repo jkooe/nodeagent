@@ -1,7 +1,7 @@
 {
   "name": "nodeagent",
   "private": true,
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "跨机 AI 接管框架 —— 让 Mac 上的 AI 无缝接管 Windows，装软件、查状态",
   "type": "module",
   "engines": {
