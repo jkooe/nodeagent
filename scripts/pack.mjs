@@ -97,9 +97,11 @@ async function main() {
       '--target=node22',
       '--format=esm',
       '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
-      `--define:__AGENT_VERSION__='"${pkg.version}"'`,
-      `--define:__BUILD_COMMIT__='"${commit}"'`,
-      `--define:__BUILD_TIME__='"${builtAt}"'`,
+      // 注意：define 的值按 **JS 表达式** 解析，故用双引号包裹；写成单引号会让引号成为值的一部分
+      // （真机踩过：版本显示成 v"1.4.0"）。
+      `--define:__AGENT_VERSION__=${JSON.stringify(pkg.version)}`,
+      `--define:__BUILD_COMMIT__=${JSON.stringify(commit)}`,
+      `--define:__BUILD_TIME__=${JSON.stringify(builtAt)}`,
       `--outfile=${bundleOut}`,
     ],
     { stdio: 'inherit' },
