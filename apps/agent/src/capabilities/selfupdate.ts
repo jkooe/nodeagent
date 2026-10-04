@@ -167,14 +167,37 @@ export async function agentUpdate(args: Args): Promise<unknown> {
       detail: err instanceof Error ? err.message : String(err),
     });
   }
+  // ⚠️ 必须**就地覆写**，不能用 rename 覆盖 —— Windows 不允许重命名/替换「正被运行进程
+  //    打开的文件」（EPERM/EBUSY），而 node.exe 正持有 agent.mjs。真机踩过：rename 必失败。
+  //    覆写打开中的文件是允许的（只有删除/重命名被禁），这也正是推送式 deploy 能工作的原因。
   try {
-    renameSync(staged, scriptPath);
+    writeFileSync(scriptPath, buf);
   } catch (err) {
-    throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '替换脚本失败', {
+    throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '写入脚本失败（已保留备份，可回滚）', {
       detail: err instanceof Error ? err.message : String(err),
       backup_path: backup,
       staged_path: staged,
     });
+  }
+  // 写后校验：内容必须与刚校验过的下载一致，否则立即回滚（防止截断/半写）
+  const written = createHash('sha256').update(readFileSync(scriptPath)).digest('hex');
+  if (written !== got) {
+    try {
+      copyFileSync(backup, scriptPath); // 回滚
+    } catch {
+      /* 回滚失败时靠 backup_path 人工兜底 */
+    }
+    throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '写入后校验不一致，已自动回滚', {
+      expected: got.slice(0, 12),
+      actual: written.slice(0, 12),
+      backup_path: backup,
+    });
+  }
+
+  try {
+    unlinkSync(staged); // 暂存文件已并入入口文件，及时清理
+  } catch {
+    /* 清理失败不影响正确性 */
   }
 
   audit({
