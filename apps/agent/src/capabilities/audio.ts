@@ -151,10 +151,18 @@ async function macState(): Promise<{ muted: boolean; volume: number }> {
 
 // ---------------- system.audio.get ----------------
 
+/**
+ * Windows 音频后端标识。
+ *
+ * 修正：此前误写为 'CoreAudio'（那是 macOS 的后端名），导致 Windows 被控端也报
+ * 「CoreAudio」，排查时极易误导。真机 2026-10-04 发现。实现走的是 C# NAudio（CoreAudioAPI）。
+ */
+const AUDIO_BACKEND_WIN = 'NAudio/CoreAudioAPI';
+
 export async function audioGet(_args: Args): Promise<unknown> {
   if (IS_WINDOWS) {
     const state = parseAudioState(await runWindows('[NAAudio]::Get()'));
-    return { ...state, platform: 'windows', backend: 'CoreAudio' };
+    return { ...state, platform: 'windows', backend: AUDIO_BACKEND_WIN };
   }
   if (process.platform === 'darwin') {
     return { ...(await macState()), platform: 'macos', backend: 'osascript' };
@@ -180,7 +188,7 @@ export async function audioSet(args: Args): Promise<unknown> {
     const flag = hasMute ? ((muteArg as boolean) ? '1' : '0') : '';
     const body = `[NAAudio]::Apply('${flag}', ${volume})`;
     const state = parseAudioState(await runWindows(body));
-    return { ...state, platform: 'windows', backend: 'CoreAudio', applied: { mute: hasMute ? muteArg : null, volume: hasVolume ? volume : null } };
+    return { ...state, platform: 'windows', backend: AUDIO_BACKEND_WIN, applied: { mute: hasMute ? muteArg : null, volume: hasVolume ? volume : null } };
   }
 
   if (process.platform === 'darwin') {

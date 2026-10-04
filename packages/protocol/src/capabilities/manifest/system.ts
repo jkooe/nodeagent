@@ -319,7 +319,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
         muted: { type: 'boolean', description: '是否静音' },
         volume: { type: 'integer', description: '主音量 0-100' },
         platform: { type: 'string' },
-        backend: { type: 'string', description: '实现后端（CoreAudio / osascript）' },
+        backend: { type: 'string', description: '实现后端（Windows: NAudio/CoreAudioAPI；macOS: osascript）' },
       },
     },
   },

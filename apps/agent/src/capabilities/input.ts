@@ -79,11 +79,30 @@ public static class NAInput {
         SendInput(1, a, SIZE);
     }
 
+    /// <summary>
+    /// 注入单个 Unicode 码元（KEYEVENTF_UNICODE）。
+    ///
+    /// 修正 2026-10-04：原实现用 char 逐字符注入，**BMP 外字符（代理对，如 emoji、
+    /// 部分生僻字）被拆成两个孤立代理项**，目标应用收到的是非法序列 → 渲染为
+    /// U+FFFD 或乱码。现改为按 UTF-16 码元成对注入。
+    ///
+    /// 注意：KEYEVENTF_UNICODE 的扫描码位只有 16 位，故代理对（两个 16 位码元）
+    /// 必须**各自单独**发送，无法合并 —— 这是 Windows 输入 API 的固有限制。
+    /// </summary>
     public static void UnicodeChar(char c) {
         var a = new INPUT[2];
-        a[0].type = 1; a[0].U.ki.wScan = c; a[0].U.ki.dwFlags = 0x0004;
-        a[1].type = 1; a[1].U.ki.wScan = c; a[1].U.ki.dwFlags = 0x0006;
+        a[0].type = 1; a[0].U.ki.wScan = c; a[0].U.ki.dwFlags = 0x0004; // KEYEVENTF_UNICODE
+        a[1].type = 1; a[1].U.ki.wScan = c; a[1].U.ki.dwFlags = 0x0006; // + KEYUP
         SendInput(2, a, SIZE);
+    }
+
+    /// <summary>注入完整字符串（按 UTF-16 码元，代理对自动成对处理）。</summary>
+    public static void UnicodeString(string s, int intervalMs) {
+        // 直接遍历 UTF-16 码元：代理对的两个码元会连续注入，效果等同输入该字符
+        for (int i = 0; i < s.Length; i++) {
+            UnicodeChar(s[i]);
+            if (intervalMs > 0) System.Threading.Thread.Sleep(intervalMs);
+        }
     }
 
     public static void Vk(ushort vk, bool up) {
@@ -268,16 +287,16 @@ export async function keyType(args: Args): Promise<unknown> {
 
   // 文本经 Base64 传入，避免任何形式的内容注入
   const b64 = Buffer.from(text, 'utf8').toString('base64');
+  // 走 C# 的 UnicodeString：按 UTF-16 码元成对注入，代理对（emoji 等）不再被拆坏
   const body = [
     `$bytes = [Convert]::FromBase64String('${b64}')`,
     `$text = [System.Text.Encoding]::UTF8.GetString($bytes)`,
-    'foreach ($ch in $text.ToCharArray()) {',
-    '  [NAInput]::UnicodeChar($ch)',
-    interval > 0 ? `  Start-Sleep -Milliseconds ${interval}` : '',
-    '}',
-  ].filter(Boolean);
+    `[NAInput]::UnicodeString($text, ${Math.max(0, Math.round(interval))})`,
+  ];
   await runPs(body, 30_000 + text.length * (interval + 5));
-  return { typed: true, length: text.length };
+  // 回显注入长度与码元数：中文 1 字 = 1 码元，emoji = 2 码元
+  // （若将来发现错字，可用 codepoints 辅助定位是 IME 抖动还是注入截断）
+  return { typed: true, length: text.length, code_points: [...text].length, utf16_units: text.length };
 }
 
 export async function keyPress(args: Args): Promise<unknown> {
@@ -313,5 +332,12 @@ export async function keyPress(args: Args): Promise<unknown> {
     if (i < chords.length - 1 && gap > 0) body.push(`Start-Sleep -Milliseconds ${gap}`);
   }
   await runPs(body);
-  return { pressed: true, chords, times: chords.length };
+  // 同时回传 keys（单和弦时的回显）与 chords（完整序列）。
+  // 修正 2026-10-04：此前只回 chords，控制端 CLI 读 keys.join() 直接崩溃。
+  return {
+    pressed: true,
+    keys: chords.length === 1 ? chords[0] : undefined,
+    chords,
+    times: chords.length,
+  };
 }

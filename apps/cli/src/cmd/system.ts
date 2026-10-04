@@ -78,12 +78,37 @@ export async function cmdStatus(opts: Options): Promise<void> {
   );
 }
 
+/**
+ * 把 info 的字段值渲染成可读单行。
+ *
+ * 修正：原先一律 `String(v)`，遇到 `ps_helper` / `build` 这类**嵌套对象**会打印
+ * `[object Object]`（真机 2026-10-04 发现），排查时完全看不到内容。
+ * 现改为：null/undefined → 空占位；数组/对象 → `key=value` 紧凑摘要（截断防刷屏）。
+ */
+function renderInfoValue(v: unknown): string {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'string') return v === '' ? '—（未设置）' : v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  try {
+    const flat: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      flat[k] = val === null || val === undefined ? '—' : typeof val === 'object' ? JSON.stringify(val) : val;
+    }
+    const s = Object.entries(flat)
+      .map(([k, val]) => `${k}=${val}`)
+      .join(' ');
+    return s.length > 180 ? `${s.slice(0, 177)}...` : s;
+  } catch {
+    return String(v);
+  }
+}
+
 export async function cmdInfo(opts: Options): Promise<void> {
   await withClient((c) =>
     callAndPrint(c, CapabilityNames.SystemInfo, {}, opts.json, (data) => {
       const d = data as Record<string, unknown>;
       for (const [k, v] of Object.entries(d)) {
-        const val = k === 'memory_total' && typeof v === 'number' ? humanSize(v) : String(v);
+        const val = k === 'memory_total' && typeof v === 'number' ? humanSize(v) : renderInfoValue(v);
         console.log(`${k.padEnd(14)}: ${val}`);
       }
     }),

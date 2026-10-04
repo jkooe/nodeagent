@@ -166,8 +166,16 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
       if (positionals.length === 0) fail('用法: nodeagent key press <键1> [键2] ...（如 ctrl c）');
       await withClient((c) =>
         callAndPrint(c, CapabilityNames.KeyPress, { keys: positionals }, opts.json, (d) => {
-          const r = d as { keys: string[] };
-          console.log(`✓ 已按下 ${r.keys.join('+')}`);
+          // 被控端返回 { pressed, chords, times }，**没有 keys 字段**
+          // （真机 2026-10-04 实测：原先直接读 r.keys.join() 会抛
+          //   "Cannot read properties of undefined (reading 'join')"）
+          // 故优先用请求参数回显，缺失时再退回 chords 展开。
+          const r = d as { keys?: string[]; chords?: string[][]; times?: number };
+          const label = r.keys?.length
+            ? r.keys.join('+')
+            : (r.chords ?? []).map((ch) => ch.join('+')).join(' → ') || positionals.join('+');
+          const times = r.times && r.times > 1 ? `（重复 ${r.times} 次）` : '';
+          console.log(`✓ 已按下 ${label}${times}`);
         }),
       );
       return;
