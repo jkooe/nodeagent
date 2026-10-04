@@ -36,18 +36,18 @@ function fail(msg) {
 }
 
 /**
- * 带重试的 git push。
- * 本机到 GitHub 的连接会间歇性 SSL_ERROR_SYSCALL（已实测），而发版卡在 push 上
- * 会留下「已提交打标签但没推上去」的半成品状态 —— 所以这里必须重试。
+ * 带重试的网络型 git 操作。
+ * 本机到 GitHub 的连接会间歇性 SSL_ERROR_SYSCALL / SSL timeout（已实测多次），
+ * 发版卡在这里会留下半成品状态 —— 所以 fetch 与 push 都必须重试。
  */
-function push(args) {
-  for (let i = 1; i <= 3; i += 1) {
+function netRetry(label, fn, tries = 4) {
+  for (let i = 1; i <= tries; i += 1) {
     try {
-      sh('git', ['push', ...args]);
+      fn();
       return;
     } catch (err) {
-      if (i === 3) throw err;
-      console.warn(`（push 第 ${i} 次失败，重试…）`);
+      if (i === tries) throw err;
+      console.warn(`（${label} 第 ${i} 次失败，2s 后重试…）`);
       execFileSync('sleep', ['2']);
     }
   }
@@ -81,7 +81,7 @@ if (!dryRun) {
   if (dirty) fail(`工作区不干净（已忽略 .github/），请先提交：\n${dirty}`);
   const branch = sh('git', ['rev-parse', '--abbrev-ref', 'HEAD']);
   if (branch !== 'main') fail(`当前分支是 ${branch}，发版请在 main 上`);
-  sh('git', ['fetch', 'origin', 'main']);
+  netRetry('fetch', () => sh('git', ['fetch', 'origin', 'main']));
   if (sh('git', ['rev-parse', 'HEAD']) !== sh('git', ['rev-parse', 'origin/main'])) {
     fail('本地 main 与远端不一致，请先 pull/push（避免发版后才发现分叉）');
   }
@@ -185,8 +185,8 @@ console.log(`  latest.json / SHA256SUMS`);
 sh('git', ['add', '-A', '--', '.', ':(exclude).github']);
 sh('git', ['commit', '-m', `chore(release): v${version}`]);
 sh('git', ['tag', '-a', `v${version}`, '-m', `nodeagent v${version}`]);
-push(['origin', 'main']);
-push(['origin', `v${version}`]);
+netRetry('push main', () => sh('git', ['push', 'origin', 'main']));
+netRetry('push tag', () => sh('git', ['push', 'origin', `v${version}`]));
 console.log(`✓ 已提交并推送标签 v${version}`);
 
 // ---------- ⑥ 发布 GitHub Release ----------
