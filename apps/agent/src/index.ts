@@ -61,6 +61,9 @@ async function main(): Promise<void> {
       port: config.discovery?.port ?? DEFAULT_DISCOVERY_PORT,
       broadcast: config.discovery?.broadcast ?? '255.255.255.255',
       intervalMs: config.discovery?.interval_ms ?? 5000,
+      // v22：详情分级 + 认证（配了 secret 自动启用 minimal）
+      detail: config.discovery?.detail ?? 'full',
+      secret: config.discovery?.secret,
       base: {
         node_id: config.node_id,
         host: ips[0] ?? '127.0.0.1',
@@ -88,6 +91,19 @@ async function main(): Promise<void> {
   console.log(`  能力       : ${CAPABILITY_MANIFEST.length} 项`);
   console.log(`  认证模式   : ${auditMode}${auditMode === 'ed25519' ? `（已登记 ${config.acl?.clients.length ?? 0} 个调用方）` : ''}`);
   console.log(`  输入控制   : ${config.allow_input === true ? '已开启' : '已禁用（默认）'}`);
+  // v22：明文广播会暴露「地址/端口/认证方式/键鼠是否开启」，未收敛时必须提醒
+  if (config.discovery?.enabled !== false && !useHub) {
+    const minimal = config.discovery?.detail === 'minimal' || !!config.discovery?.secret;
+    if (!minimal) {
+      console.log(
+        '  ⚠️  发现广播为「明文全量」：同网段可见 IP/端口/认证方式/键鼠开关。' +
+          '建议在 agent.json 设 discovery.detail="minimal"（可再配 secret 加密详情）',
+      );
+    } else if (!config.discovery?.secret) {
+      console.log('  ℹ️  发现广播已最小化，但 detail 未配 secret —— 详情仍是明文（可加 secret 让其带签名）');
+    }
+  }
+
   const discoOn = config.discovery?.enabled !== false;
   console.log(
     `  局域网发现 : ${discoOn ? `已开启（UDP ${config.discovery?.port ?? DEFAULT_DISCOVERY_PORT} 心跳广播）` : '已关闭'}`,

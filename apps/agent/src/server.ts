@@ -132,6 +132,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     }
     const clientId = params.client_id ?? '?';
     let authorized: string[] | null = null;
+    let keyKindUsed = 'ed25519';
 
     if (authMode === 'ed25519') {
       const client = aclPolicy.clients.find((c) => c.client_id === clientId);
@@ -156,13 +157,28 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
         clientId,
         CAPABILITY_MANIFEST.map((c) => c.name),
       );
-    } else if (!verifyHmac(cfg.key, state.nonce, params.hmac ?? '')) {
-      log('warn', `鉴权失败 client_id=${clientId}`);
-      audit({ type: 'auth.failure', client_id: clientId, remote: state.remote, reason: '预共享密钥校验失败' });
-      sendError(ws, req.id, ErrorCodes.AUTH_FAILED, '预共享密钥校验失败');
-      // 稍作延迟再关闭，确保错误响应先送达控制端
-      setTimeout(() => ws.close(), 100);
-      return;
+    } else {
+      // v22：优先用「该 client_id 专属的钥匙」，未登记才回落到共享 key。
+      // 这样「知道 key A」就只能以 A 的身份进来 —— ACL 的身份维度在 psk 模式下才有意义。
+      const scopedKey = cfg.keys?.[clientId];
+      const keyForClient = scopedKey ?? cfg.key;
+      const keyKind = scopedKey ? 'scoped' : cfg.keys ? 'shared-fallback' : 'shared';
+      if (!keyForClient || !verifyHmac(keyForClient, state.nonce, params.hmac ?? '')) {
+        log('warn', `鉴权失败 client_id=${clientId} key=${keyKind}`);
+        audit({
+          type: 'auth.failure',
+          client_id: clientId,
+          remote: state.remote,
+          reason: scopedKey
+            ? '该 client_id 的专属密钥校验失败'
+            : '预共享密钥校验失败（未登记专属密钥，已回落到共享 key）',
+        });
+        sendError(ws, req.id, ErrorCodes.AUTH_FAILED, '预共享密钥校验失败');
+        // 稍作延迟再关闭，确保错误响应先送达控制端
+        setTimeout(() => ws.close(), 100);
+        return;
+      }
+      keyKindUsed = keyKind;
     }
 
     state.nonce = null; // 一次性，用后即废
@@ -172,7 +188,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     state.authorized = authorized;
     log(
       'info',
-      `鉴权通过 client_id=${clientId} mode=${authMode}` +
+      `鉴权通过 client_id=${clientId} mode=${authMode} key=${keyKindUsed}` +
         (authorized ? `，授权 ${authorized.length}/${CAPABILITY_MANIFEST.length} 项能力` : ''),
     );
     audit({

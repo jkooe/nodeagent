@@ -8,8 +8,17 @@ export interface AgentConfig {
   host: string;
   port: number;
   tls: boolean;
-  /** v1 简化：预共享密钥存于 600 权限文件；v2 升级 DPAPI */
+  /** v1 简化：预共享密钥存于 600 权限文件；v2 升级 DPAPI。**所有调用方共用**，仅适合信任网络 */
   key: string;
+  /**
+   * v22：**每客户端一把**预共享密钥（`client_id` → key）。
+   *
+   * 为什么需要它：psk 模式下 `client_id` 由客户端自报，历史上「一把共享 key」等于
+   * **持有者可冒充任意 client_id**，ACL 的身份维度形同虚设。
+   * 改为每个 client_id 一把钥匙后，「知道 key A 就只能以 A 的身份进来」——
+   * 身份才真正被绑定。未登记的 client_id 回落到上面的 `key`（旧部署行为不变）。
+   */
+  keys?: Record<string, string>;
   log_level: 'debug' | 'info' | 'warn';
   /**
    * v2：是否允许输入控制（鼠标 / 键盘）。
@@ -53,6 +62,17 @@ export interface AgentConfig {
     broadcast?: string;
     /** 广播间隔毫秒（默认 5000） */
     interval_ms?: number;
+    /**
+     * v22：广播详情级别。
+     * - `full`（默认，向后兼容）：携带地址/端口/认证方式/键鼠开关等全部信息
+     * - `minimal`：只广播「存在 + node_id + 时间」，详情放进 `detail` 字段；
+     *   配了 `secret` 时详情会被 **HMAC 认证**（控制端持钥才看得到、且能验证真伪）
+     * ⚠️ 广播是**未认证**的：任何人收 UDP 都能看到内容。minimal 仍会暴露
+     *   「这里有一台可被接管的机器」，但不再泄露地址、端口与认证方式。
+     */
+    detail?: 'full' | 'minimal';
+    /** v22：详情认证密钥（配合 detail=minimal 使用；配了就会自动启用 minimal） */
+    secret?: string;
   };
   /**
    * v5：文件访问白名单（根目录列表）。

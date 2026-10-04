@@ -1,4 +1,5 @@
 import { createSocket, type RemoteInfo, type Socket } from 'node:dgram';
+import { verifyHmac } from '@nodeagent/protocol';
 
 /** 发现到的被控端。 */
 export interface DiscoveredNode {
@@ -12,6 +13,11 @@ export interface DiscoveredNode {
   auth_mode: string;
   input_enabled: boolean;
   platform: string;
+  /**
+   * v22：详情是否**通过 HMAC 验签**（被控端配了 `discovery.secret` 且我方也持有）。
+   * false/未定义 = 明文广播（任何人可伪造）→ 此时这些字段仅作展示，**不可当凭据**。
+   */
+  authenticated?: boolean;
   /** 最近一次收到广播的时间 */
   last_seen: number;
 }
@@ -23,6 +29,11 @@ export interface DiscoveryOptions {
   ttlMs?: number;
   /** 报文日志（调试用） */
   onLog?: (msg: string) => void;
+  /**
+   * v22：发现广播的**认证密钥**。与被控端 `discovery.secret` 一致时，
+   * 最小化广播里的详情会带 HMAC 签名，我方验签通过才采信（`authenticated: true`）。
+   */
+  secret?: string;
 }
 
 interface RawBeacon {
@@ -35,6 +46,20 @@ interface RawBeacon {
   input_enabled?: boolean;
   platform?: string;
   ts?: number;
+  cert_sha256?: string | null;
+  /** v22：最小化广播标记（顶层只剩存在性，详情在 detail 里） */
+  minimal?: boolean;
+  detail?: {
+    host?: string;
+    port?: number;
+    tls?: boolean;
+    auth_mode?: string;
+    input_enabled?: boolean;
+    cert_sha256?: string | null;
+    platform?: string;
+  };
+  /** v22：详情签名（HMAC over `node_id|ts|JSON(detail)`） */
+  sig?: string;
 }
 
 /**
@@ -79,15 +104,31 @@ export class Discovery {
     }
     if (raw.service !== 'nodeagent' || !raw.node_id) return;
 
+    // v22：最小化广播 —— 顶层只有存在性，真实信息在 detail 里。
+    // 持有 secret 时**必须验签**通过才采信 detail；否则标记为未认证（仅作展示）。
+    const detail = raw.minimal && raw.detail ? raw.detail : raw;
+    let authenticated = false;
+    if (raw.minimal && raw.detail) {
+      if (this.opts.secret && raw.sig) {
+        authenticated = verifyHmac(
+          this.opts.secret,
+          `${raw.node_id}|${raw.ts}|${JSON.stringify(raw.detail)}`,
+          raw.sig,
+        );
+      }
+    }
+
     const node: DiscoveredNode = {
       node_id: raw.node_id,
+      // 地址永远取「报文来源 IP」—— 一定可达（自报地址仅作参考）
       host: rinfo.address,
-      advertised_host: raw.host ?? rinfo.address,
-      port: Number(raw.port ?? 8765),
-      tls: raw.tls !== false,
-      auth_mode: raw.auth_mode ?? 'psk',
-      input_enabled: raw.input_enabled === true,
-      platform: raw.platform ?? 'unknown',
+      advertised_host: detail.host ?? rinfo.address,
+      port: Number(detail.port ?? 8765),
+      tls: detail.tls !== false,
+      auth_mode: detail.auth_mode ?? 'psk',
+      input_enabled: detail.input_enabled === true,
+      platform: detail.platform ?? 'unknown',
+      authenticated,
       last_seen: Date.now(),
     };
 

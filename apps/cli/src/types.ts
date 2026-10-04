@@ -55,6 +55,10 @@ export interface Options {
   kind?: string;
   /** v12 宏变量 */
   vars?: string[];
+  /** v22 发现广播认证密钥 */
+  discoverSecret?: string;
+  /** v22 每客户端 PSK */
+  psk?: boolean;
   /** v21 证书指纹 */
   forgetCert?: boolean;
   /** v19 拉取式自更新 */

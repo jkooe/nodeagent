@@ -25,8 +25,9 @@ import {
 } from '@nodeagent/client';
 import {
   CapabilityNames,
-  matchPattern,
   DEFAULT_DISCOVERY_PORT,
+  generateSharedKey,
+  matchPattern,
   type CapabilityDescriptor,
   type InvokeResult,
 } from '@nodeagent/protocol';
@@ -176,6 +177,31 @@ export async function cmdRemove(name: string | undefined, opts: Options): Promis
 
 export async function cmdKeygen(opts: Options): Promise<void> {
   const clientId = opts.id ?? 'mac_01';
+
+  // v22：`--psk` 生成**每客户端专属**的预共享密钥（配合被控端 agent.json 的 keys{}）。
+  // 与 ed25519 的区别：这是「对称」方案 —— 实现简单、不用管公钥，但同样是**一把一个身份**
+  // （知道 A 的 key 就冒充不了 B），适合不方便管理公钥的场景。
+  if (opts.psk === true) {
+    const psk = generateSharedKey();
+    console.log('✓ 已生成该 client_id 的专属预共享密钥（psk 模式）');
+    console.log(`  client_id : ${clientId}`);
+    console.log(`  密钥      : ${psk}`);
+    console.log('\n请把下面这段加入被控端 agent.json（可与其它 client_id 并列）：\n');
+    console.log(
+      JSON.stringify(
+        { keys: { [clientId]: psk } },
+        null,
+        2,
+      ),
+    );
+    console.log('\n然后控制端这样连（key 即上面的密钥）：');
+    console.log(`  nodeagent connect <被控端IP> --port 8765 --key ${psk} --id ${clientId} --insecure`);
+    console.log(
+      '\n提示：登记了 keys{} 之后，未登记的 client_id 会回落到共享 key（若被控端仍配有 key）。',
+    );
+    return;
+  }
+
   const keys = createKeys(clientId);
   console.log('✓ 已生成 Ed25519 密钥对');
   console.log(`  client_id : ${keys.client_id}`);
@@ -206,7 +232,7 @@ export async function cmdDiscover(opts: Options): Promise<void> {
 
   let nodes: Awaited<ReturnType<typeof discoverOnce>>;
   try {
-    nodes = await discoverOnce(waitMs, { port });
+    nodes = await discoverOnce(waitMs, { port, secret: opts.discoverSecret });
   } catch (err) {
     fail(`监听失败：${err instanceof Error ? err.message : String(err)}`);
   }
@@ -222,11 +248,21 @@ export async function cmdDiscover(opts: Options): Promise<void> {
   if (opts.json) return printJson(nodes);
 
   console.log(`发现 ${nodes.length} 台被控端：\n`);
-  console.log(`  ${'节点 ID'.padEnd(16)} ${'地址'.padEnd(20)} ${'协议'.padEnd(6)} ${'认证'.padEnd(8)} 平台`);
+  console.log(
+    `  ${'节点 ID'.padEnd(16)} ${'地址'.padEnd(20)} ${'协议'.padEnd(6)} ${'认证'.padEnd(8)} ${'来源'.padEnd(10)} 平台`,
+  );
   for (const n of nodes) {
     const ctl = n.input_enabled ? '  [输入控制已开]' : '';
+    // v22：广播本身是未认证的，只有验签通过的才标 🔒
+    const trust = n.authenticated ? '🔒 已认证' : '⚠️ 明文';
     console.log(
-      `  ${n.node_id.padEnd(16)} ${`${n.host}:${n.port}`.padEnd(20)} ${(n.tls ? 'wss' : 'ws').padEnd(6)} ${n.auth_mode.padEnd(8)} ${n.platform}${ctl}`,
+      `  ${n.node_id.padEnd(16)} ${`${n.host}:${n.port}`.padEnd(20)} ${(n.tls ? 'wss' : 'ws').padEnd(6)} ${n.auth_mode.padEnd(8)} ${trust.padEnd(10)} ${n.platform}${ctl}`,
+    );
+  }
+  if (nodes.some((n) => !n.authenticated) && !opts.discoverSecret) {
+    console.log(
+      '\n  ℹ️ 标「⚠️ 明文」的条目：广播可被同网段任意伪造，其地址/认证方式仅作参考。' +
+        '\n     要可信发现，请给被控端 discovery.secret，并在此用 --discover-secret <同一密钥>。',
     );
   }
   const first = nodes[0]!;
