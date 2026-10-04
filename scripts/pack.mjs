@@ -11,8 +11,10 @@
  *   ├── control.cmd   控制台菜单（启动/停止/状态/日志/卸载）
  *   ├── install.ps1   底层安装脚本（由 install.cmd 调用）
  *   ├── control.ps1   底层控制脚本（由 control.cmd 调用）
- *   ├── uninstall.ps1 底层卸载脚本
- *   └── PSK.txt       预共享密钥（首次运行时由 install.cmd 生成）
+ *   └── uninstall.ps1 底层卸载脚本
+ *
+ * 注意：PSK.txt **不打进 zip**（zip 会作为公开 Release 资产发布，含密钥=公开密钥）；
+ *      它在被控端首次运行 install.cmd 时生成，只留在本机安装目录。
  */
 import { execFileSync, execSync } from 'node:child_process';
 import {
@@ -191,7 +193,10 @@ async function main() {
   log('\n=== ⑤ 打 zip ===');
   const zipOut = join(OUT_DIR, 'nodeagent-win-x64.zip');
   rmSync(zipOut, { force: true });
-  execSync(`cd "${PKG_DIR}" && zip -q -r "${zipOut}" .`, { stdio: 'inherit' });
+  // ⚠️ 必须排除 PSK.txt：本 zip 会作为**公开的 GitHub Release 资产**发布，
+  //    把预共享密钥打进包里等于公开密钥。install.cmd 在文件缺失时会自动生成新密钥
+  //    （生成在安装目录，只留在被控端本机），所以排除它不影响安装。
+  execSync(`cd "${PKG_DIR}" && zip -q -r "${zipOut}" . -x "PSK.txt"`, { stdio: 'inherit' });
 
   const size = execSync(`du -sh "${zipOut}"`, { encoding: 'utf8' }).split('\t')[0];
   log(`\n✓ 完成: ${zipOut}（${size.trim()}）`);

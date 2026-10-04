@@ -210,3 +210,11 @@ test('install.cmd：管理员探测用 fltmc 而非 net session（不依赖 Serv
     'install.cmd 不应再用 net session 探测（依赖 Server 服务，可能误判）',
   );
 });
+
+// ---------- 安全：公开的安装包不得含密钥 ----------
+test('pack.mjs 打 zip 必须排除 PSK.txt（zip 作为公开 Release 资产发布）', () => {
+  const pack = readFileSync(join(ROOT, 'scripts', 'pack.mjs'), 'utf8');
+  const zipLine = pack.split('\n').find((l) => l.includes('zip -q -r'));
+  assert.ok(zipLine, '找不到打 zip 的命令行');
+  assert.match(zipLine, /-x\s+"?PSK\.txt"?/, '必须 -x 排除 PSK.txt，否则预共享密钥随公开资产泄露');
+});
