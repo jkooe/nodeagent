@@ -347,4 +347,41 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
       },
     },
   },
+  {
+    name: CapabilityNames.AgentUpdate,
+    version: '1.0',
+    description:
+      '**拉取式自更新**：被控端自己从 URL 下载新版本 agent 并替换自身（下载 → 校验哈希 → 备份 → ' +
+      '原子替换 → 受控重启）。用于控制端与被控端**不可达但被控端能上网**的场景（跨网段/NAT、异地）。' +
+      '⚠️ sha256 必填：不校验哈希等于开放远程代码执行。',
+    risk: 'high',
+    params_schema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '更新包地址（http/https；GitHub Release/自建镜像均可）' },
+        sha256: {
+          type: 'string',
+          description: '期望哈希（12~64 位十六进制，可比对前 12 位）——**安全底线，必填**',
+        },
+        restart: { type: 'boolean', description: '替换后是否自动重启（默认 true）' },
+        dry_run: { type: 'boolean', description: '只下载并校验，不改动任何文件（默认 false）' },
+        timeout_ms: { type: 'integer', minimum: 5000, maximum: 600000, description: '下载超时（默认 120000）' },
+      },
+      required: ['url', 'sha256'],
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        updated: { type: 'boolean' },
+        dry_run: { type: 'boolean' },
+        bytes: { type: 'integer' },
+        previous: { type: 'object', description: '替换前 { hash, bytes }' },
+        current_hash: { type: 'string' },
+        incoming_hash: { type: 'string' },
+        backup_path: { type: 'string', description: '回滚点：覆盖回入口路径即可' },
+        restarted: { type: 'boolean' },
+      },
+    },
+  },
 ];

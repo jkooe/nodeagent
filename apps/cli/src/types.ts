@@ -55,6 +55,10 @@ export interface Options {
   kind?: string;
   /** v12 宏变量 */
   vars?: string[];
+  /** v19 拉取式自更新 */
+  url?: string;
+  sha256?: string;
+  dryRun?: boolean;
   /** v18 部署校验 */
   check?: boolean;
   force?: boolean;

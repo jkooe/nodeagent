@@ -41,6 +41,8 @@ export const CapabilityNames = {
   // v11 安全加固
   AuditVerify: 'system.audit.verify',
   Metrics: 'system.metrics',
+  // v19 拉取式自更新
+  AgentUpdate: 'system.agent.update',
   // v17 音频控制
   AudioGet: 'system.audio.get',
   AudioSet: 'system.audio.set',

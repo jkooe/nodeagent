@@ -10,6 +10,7 @@ import { clipGet, clipSet } from './clipboard.js';
 import { eventWatch, eventUnwatch, eventList, eventPoll } from '../events.js';
 import { netApply, netConfirm, netStatus } from './network.js';
 import { audioGet, audioSet } from './audio.js';
+import { agentUpdate } from './selfupdate.js';
 import { mouseMove, mouseClick, mouseScroll, mouseDrag, keyType, keyPress, setInputPolicy } from './input.js';
 import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 
@@ -75,6 +76,8 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.TaskKill]: taskKill,
     [CapabilityNames.ClipGet]: clipGet,
     [CapabilityNames.ClipSet]: clipSet,
+    // v19 拉取式自更新
+    [CapabilityNames.AgentUpdate]: agentUpdate,
     // v17 音频控制
     [CapabilityNames.AudioGet]: audioGet,
     [CapabilityNames.AudioSet]: audioSet,

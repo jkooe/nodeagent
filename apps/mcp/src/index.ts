@@ -468,6 +468,24 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_agent_update',
+    description:
+      '**被控端自更新**：让它自己从 URL 下载新版本 agent 并替换自身（校验哈希 → 备份 → 原子替换 → 重启）。' +
+      '用于控制端与被控端不可达、但被控端能上网的场景（跨网段/NAT/异地）。' +
+      'sha256 必填（安全底线）；不确定时可先 dry_run=true 只校验不改动。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: '更新包地址（http/https）' },
+        sha256: { type: 'string', description: '期望哈希（12~64 位十六进制）' },
+        restart: { type: 'boolean', description: '替换后是否重启（默认 true）' },
+        dry_run: { type: 'boolean', description: '只下载校验，不改动文件' },
+      },
+      required: ['url', 'sha256'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_audio_get',
     description: '读取被控端默认播放设备的静音状态与主音量（Windows: Core Audio / macOS: osascript）。',
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
@@ -649,6 +667,7 @@ const TOOL_TO_CAPABILITY: Record<string, string> = {
   na_restart: CapabilityNames.AgentRestart,
   na_metrics: CapabilityNames.Metrics,
   na_audio_get: CapabilityNames.AudioGet,
+  na_agent_update: CapabilityNames.AgentUpdate,
   na_audio_set: CapabilityNames.AudioSet,
   na_net_status: CapabilityNames.NetStatus,
   na_net_apply: CapabilityNames.NetApply,

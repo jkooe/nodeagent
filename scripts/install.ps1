@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     nodeagent - Windows agent installer.
 

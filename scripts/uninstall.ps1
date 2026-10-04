@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     nodeagent - uninstall the Windows agent.
 

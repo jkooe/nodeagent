@@ -879,6 +879,62 @@ async function testMacroReplay() {
 }
 
 /**
+ * v19：拉取式自更新。
+ * 用本地 HTTP 服务真跑「下载 + 哈希校验」路径；**一律 dry_run**，绝不改动测试 agent 自身文件。
+ */
+async function testSelfUpdate() {
+  const http = await import('node:http');
+  const { createHash } = await import('node:crypto');
+  const payload = Buffer.from('// fake agent payload for self-update test\n'.repeat(200));
+  const good = createHash('sha256').update(payload).digest('hex');
+
+  const srv = http.createServer((req, res) => {
+    if (req.url === '/agent.mjs') {
+      res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': payload.length });
+      res.end(payload);
+    } else {
+      res.writeHead(404);
+      res.end('nope');
+    }
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const port = srv.address().port;
+  const url = `http://127.0.0.1:${port}/agent.mjs`;
+
+  const c = await connect();
+  try {
+    // ① dry_run + 正确哈希 → 校验通过，且不改动任何文件
+    const ok = await c.invoke('system.agent.update', { url, sha256: good, dry_run: true });
+    assert.equal(ok.status, 'ok', `dry-run 应成功: ${JSON.stringify(ok.error)}`);
+    assert.equal(ok.data.verified, true);
+    assert.equal(ok.data.bytes, payload.length);
+    assert.equal(ok.data.incoming_hash, good.slice(0, 12));
+    assert.equal(ok.data.dry_run, true);
+
+    // ② dry_run + 错误哈希 → 必须拒绝（哈希是安全底线）
+    const bad = await c.invoke('system.agent.update', { url, sha256: 'deadbeefcafe', dry_run: true });
+    assert.equal(bad.status, 'failed', '哈希不符应拒绝');
+    assert.match(String(bad.error?.message ?? ''), /哈希校验失败/);
+
+    // ③ 404 → 明确报错而非静默
+    const notFound = await c.invoke('system.agent.update', { url: `http://127.0.0.1:${port}/nope`, sha256: good, dry_run: true });
+    assert.equal(notFound.status, 'failed');
+    assert.match(String(notFound.error?.message ?? ''), /HTTP 404/);
+
+    // ④ 非 http(s) scheme → 拒绝（能力层）
+    const scheme = await c.invoke('system.agent.update', { url: 'file:///etc/passwd', sha256: good, dry_run: true });
+    assert.equal(scheme.status, 'failed');
+    assert.match(String(scheme.error?.message ?? ''), /只支持 http\/https/);
+
+    // ⑤ 缺 sha256 → 协议层拒绝（schema required）
+    await expectProtocolError(() => c.invoke('system.agent.update', { url }), 'E_PARAM_INVALID');
+  } finally {
+    c.close();
+    srv.close();
+  }
+}
+
+/**
  * v17：音频控制。
  * 注意：本机（CI/macOS）也会跑这条用例，故**只把音量设为当前值**，
  * 走通写入路径但不改变实际音量（避免测试把机器静音了）。
@@ -1152,6 +1208,7 @@ async function main() {
     await test('v12 GUI 宏引擎：步骤回放 / 断言中止定位 / optional 继续', testMacroReplay);
     await test('v13 成功指标与审计链：形状 + 分层时延 + 达标判定 + 链完整', testMetricsAndAudit);
     await test('v17 音频控制：读状态 / 写回原值 / 参数校验', testAudio);
+    await test('v19 拉取式自更新：HTTP 下载 + 哈希校验（dry-run）', testSelfUpdate);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

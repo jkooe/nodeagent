@@ -35,7 +35,7 @@ import { parseOptions } from './options.js';
 import { cmdConnect, cmdDiscover, cmdKeygen, cmdNodes, cmdRemove, cmdUse } from './cmd/conn.js';
 import {
   cmdApps, cmdAudio, cmdAudit, cmdAuditVerify, cmdExec, cmdInfo, cmdInstall, cmdInvoke, cmdList,
-  cmdMetrics, cmdPs, cmdRestart, cmdServices, cmdStatus,
+  cmdMetrics, cmdPs, cmdRestart, cmdServices, cmdStatus, cmdUpdate,
 } from './cmd/system.js';
 import {
   cmdBg, cmdClip, cmdDeploy, cmdEvents, cmdFanout, cmdMacro, cmdRecord, cmdTask, cmdTasks,
@@ -168,6 +168,9 @@ async function main(): Promise<void> {
     }
     case 'net':
       await cmdNet(positionals[0], opts);
+      return;
+    case 'update':
+      await cmdUpdate(opts);
       return;
     case 'audio':
       await cmdAudio(positionals[0], opts);

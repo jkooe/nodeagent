@@ -36,6 +36,7 @@ import {
   getClientConfig,
   humanSize,
   printJson,
+  probeOnce,
   riskIcon,
   withClient,
   withClientDirect,
@@ -319,4 +320,81 @@ export async function cmdAudio(sub: string | undefined, opts: Options): Promise<
   }
 
   fail('用法: nodeagent audio [get] | audio set [--mute on|off] [--volume 0-100]');
+}
+
+/**
+ * v19：拉取式自更新 —— 被控端自己从 URL 下载新版本并替换自身。
+ *
+ * 与 `deploy`（推送式）的分工：推送式要求控制端与被控端**可达**；本命令只要求
+ * **被控端能上网**（跨网段/NAT/异地场景的正解）。
+ *
+ * ⚠️ 复用 deploy 那一课：更新会重启 agent 并切断连接，属预期，
+ * 不能把「连接断了」当成失败 —— 故连接部分吞掉异常，再用 probeOnce 复核指纹。
+ */
+export async function cmdUpdate(opts: Options): Promise<void> {
+  if (!opts.url) {
+    fail(
+      '用法: nodeagent update --url <更新包地址> --sha256 <哈希> [--dry-run]\n' +
+        '  拉取式自更新：被控端自己下载并替换（要求被控端能上网，不要求与此刻可达）\n' +
+        '  --dry-run 只下载校验，不改动任何文件',
+    );
+  }
+  if (!opts.sha256) {
+    fail('--sha256 必填：**安全底线** —— 不校验哈希等于开放远程代码执行');
+  }
+  const args: Record<string, unknown> = {
+    url: opts.url,
+    sha256: opts.sha256,
+    dry_run: opts.dryRun === true,
+  };
+  if (opts.check === true) args['dry_run'] = true;
+
+  let incoming = '';
+  try {
+    await withClient((c) =>
+      callAndPrint(c, CapabilityNames.AgentUpdate, args, opts.json, (data) => {
+        const d = data as {
+          dry_run?: boolean;
+          verified?: boolean;
+          updated?: boolean;
+          bytes: number;
+          current_hash?: string;
+          incoming_hash?: string;
+          previous?: { hash?: string; bytes?: number };
+          backup_path?: string;
+          restarted?: boolean;
+          note?: string;
+        };
+        incoming = d.incoming_hash ?? '';
+        if (d.dry_run) {
+          console.log(`✓ 校验通过（dry-run）：${(d.bytes / 1024).toFixed(0)} KB`);
+          console.log(`  当前 ${d.current_hash} → 待更新 ${d.incoming_hash}`);
+          console.log(`  ${d.note ?? ''}`);
+          return;
+        }
+        console.log(`✓ 已替换：${d.previous?.hash} → ${d.current_hash}（${(d.bytes / 1024).toFixed(0)} KB）`);
+        if (d.backup_path) console.log(`  回滚点: ${d.backup_path}`);
+        if (d.restarted) console.log('  已触发重启，连接会断开（属预期）');
+      }, 600_000),
+    );
+  } catch (err) {
+    // 重启切断了连接 —— 属预期
+    console.log(`（连接中断，属重启预期：${err instanceof Error ? err.message : String(err)}）`);
+  }
+
+  if (args['dry_run'] === true || !incoming) return;
+
+  // 复核：等被控端回来并确认指纹已变成新的
+  console.log('等待被控端重启并复核…');
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await new Promise((t) => setTimeout(t, 1500));
+    const probe = await probeOnce();
+    if (probe.ok && probe.buildHash === incoming) {
+      console.log(`✓ 自更新完成并校验通过：指纹 ${probe.buildHash}，PID ${probe.pid ?? '?'}，能力 ${probe.caps} 项`);
+      return;
+    }
+  }
+  console.error('✗ 90s 内未复核到新指纹 —— 请检查被控端是否被杀软处置，或把备份覆盖回入口回滚');
+  process.exitCode = 1;
 }

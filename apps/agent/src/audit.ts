@@ -13,7 +13,9 @@ export type AuditType =
   | 'capability.disabled'
   | 'rate.limited'
   /** v16：网络配置变更（两阶段提交） */
-  | 'net.change';
+  | 'net.change'
+  /** v19：agent 自更新（拉取式） */
+  | 'agent.update';
 
 /** 一条审计记录（JSONL 单行）。 */
 export interface AuditEntry {

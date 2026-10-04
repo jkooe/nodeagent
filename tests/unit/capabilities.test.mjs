@@ -55,13 +55,14 @@ test('清单：v7~v11 新能力均已登记', () => {
     'system.net.apply',
     'system.net.confirm',
     'system.net.status',
+    'system.agent.update',
     'system.audio.get',
     'system.audio.set',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 41, '当前应有 41 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 42, '当前应有 42 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------
@@ -176,6 +177,23 @@ test('system.net.apply：mode 枚举受控，static 需 ip/mask，确认窗有�
   assert.ok(check('system.net.apply', { mode: 'teleport' }).length > 0, '非法 mode 应被拒');
   assert.ok(check('system.net.apply', { mode: 'static', ip: '1.2.3.4', mask: '255.255.255.0', confirm_within_ms: 1000 }).length > 0, '确认窗下限 15s');
   assert.ok(check('system.net.apply', { mode: 'static', ip: '1.2.3.4', mask: '255.255.255.0', confirm_within_ms: 9999999 }).length > 0, '确认窗上限 10min');
+});
+
+test('system.agent.update：url/sha256 必填，超时范围受控', () => {
+  assert.equal(
+    check('system.agent.update', { url: 'https://example.com/a.mjs', sha256: 'abcdef012345' }).length,
+    0,
+  );
+  assert.ok(check('system.agent.update', { url: 'https://example.com/a.mjs' }).length > 0, 'sha256 必填（安全底线）');
+  assert.ok(check('system.agent.update', { sha256: 'abcdef012345' }).length > 0, 'url 必填');
+  assert.equal(
+    check('system.agent.update', { url: 'https://x/a.mjs', sha256: 'a'.repeat(64), dry_run: true }).length,
+    0,
+  );
+  assert.ok(
+    check('system.agent.update', { url: 'https://x/a.mjs', sha256: 'abc', timeout_ms: 100 }).length > 0,
+    '超时下限 5s',
+  );
 });
 
 test('system.audio.get / set：参数形状与范围', () => {
