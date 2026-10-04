@@ -40,6 +40,12 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
           type: 'object',
           description: 'PowerShell 常驻助手状态（v15）：spawned/hits/failures/consecutiveFailures/avg_ms 等',
         },
+        build: {
+          type: 'object',
+          description:
+            'v18 构建指纹：hash（运行中 agent 脚本的 sha256 前 12 位，部署校验用）、bytes、mtime_ms、' +
+            'node（运行时版本）、started_at、uptime_ms',
+        },
       },
     },
   },

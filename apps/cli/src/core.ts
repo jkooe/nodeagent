@@ -218,3 +218,41 @@ export function humanSize(bytes: number): string {
 export function riskIcon(risk: string): string {
   return risk === 'high' ? '🔴' : risk === 'medium' ? '🟡' : '🟢';
 }
+
+/**
+ * 探测一次被控端（用于「等待重启/上线」这类**需要反复重试**的场景）。
+ *
+ * ⚠️ 不能用 withClient：它在连接失败时会直接 `fail()` **退出进程**（见 withClientDirect），
+ * 于是重试循环第一次连不上就整个 CLI 退出了 —— 真机踩过：部署其实已成功，
+ * CLI 却报 E_NODE_OFFLINE，且看不到任何自定义提示。本函数**永不抛出**。
+ */
+export async function probeOnce(nodeName?: string): Promise<{
+  ok: boolean;
+  pid?: number;
+  buildHash?: string;
+  caps: number;
+  error?: string;
+}> {
+  try {
+    const cfg = getClientConfig();
+    const target = resolveTarget(cfg, nodeName ?? getNodeOverride());
+    const keys = target.profile.auth_mode === 'ed25519' ? loadKeys() : null;
+    const client = new NodeAgentClient({
+      url: toWsUrl(target.profile),
+      key: target.profile.key ?? '',
+      clientId: target.clientId,
+      insecure: target.profile.insecure,
+      authMode: target.profile.auth_mode,
+      privateKey: keys?.privateKey,
+      hub: target.profile.hub ? { token: target.profile.hub.token, nodeId: target.profile.hub.node_id } : undefined,
+    });
+    await client.connect();
+    const r = await client.invoke<{ pid?: number; build?: { hash?: string } }>(CapabilityNames.SystemInfo, {});
+    const caps = client.listCapabilities().length;
+    client.close();
+    const d = r.data ?? {};
+    return { ok: r.status === 'ok', pid: d.pid, buildHash: d.build?.hash, caps };
+  } catch (err) {
+    return { ok: false, caps: 0, error: err instanceof Error ? err.message : String(err) };
+  }
+}

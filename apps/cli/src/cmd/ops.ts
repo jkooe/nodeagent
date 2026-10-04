@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readFileSync, readSync, renameSync, statSync, writeFileSync, writeSync } from 'node:fs';
 import fsSync from 'node:fs';
 import net from 'node:net';
@@ -35,6 +36,7 @@ import {
   fail,
   getClientConfig,
   getNodeOverride,
+  probeOnce,
   humanSize,
   printJson,
   riskIcon,
@@ -208,35 +210,111 @@ export async function cmdRecord(opts: Options): Promise<void> {
  * 全程无需手工拷文件或起计划任务。
  */
 
+/**
+ * 部署/更新被控端 agent（v18 起带指纹校验）。
+ *
+ * 流程：本地算 sha256 → 问远端构建指纹 → 相同则跳过（--force 可强制）→
+ *       备份 → 分块上传 → 受控重启 → **轮询直到远端指纹等于本地**（替代盲等）。
+ *
+ * 为什么必须比指纹：只看「PID 变了 / 能力数对了」证明不了换成了新代码
+ * （旧版可能恰好有同样多的能力）。内容哈希是唯一可靠判据。
+ */
 export async function cmdDeploy(localFile: string, opts: Options): Promise<void> {
   if (!existsSync(localFile)) fail(`本地文件不存在: ${localFile}`);
   const buf = readFileSync(localFile);
   if (buf.length < 10_000) fail(`文件过小，疑似不是 agent 包: ${localFile}`);
+  const localHash = createHash('sha256').update(buf).digest('hex').slice(0, 12);
 
-  await withClient(async (c) => {
-    const info = await c.invoke<Record<string, unknown>>(CapabilityNames.SystemInfo, {});
-    if (info.status === 'failed') fail('无法读取被控端信息');
-    const d = info.data as {
-      agent_script?: string;
-      pid?: number;
-      node_path?: string;
-      agent_home?: string;
-    };
-    const target = opts.path ?? d.agent_script;
-    if (!target) fail('被控端未上报入口路径，请用 --path <远端路径> 指定');
-    console.log(`目标: ${target}（当前 PID ${d.pid ?? '?'}）`);
+  // 单条 RPC 的安全分块（与上传保持一致）
+  const BACKUP_CHUNK = 512 * 1024;
 
-    // 备份现有文件（便于回滚）
-    const backup = `${target}.bak-${Date.now()}`;
-    if (d.node_path) {
-      const cp = await c.invoke(CapabilityNames.ShellExec, {
-        command: `Copy-Item '${target}' '${backup}' -Force -ErrorAction SilentlyContinue; Write-Output 'ok'`,
-        timeout_ms: 15_000,
-      });
-      if (cp.status === 'ok') console.log(`已备份: ${backup}`);
+  type Info = {
+    agent_script?: string;
+    pid?: number;
+    node_path?: string;
+    build?: { hash?: string; node?: string; started_at?: number };
+  };
+
+  const remote = await withClient((c) => c.invoke<Info>(CapabilityNames.SystemInfo, {}));
+  if (remote.status === 'failed') fail('无法读取被控端信息');
+  const info: Info = remote.data ?? {};
+  const remoteHash = info.build?.hash ?? 'unknown';
+  const target = opts.path ?? info.agent_script;
+  if (!target) fail('被控端未上报入口路径，请用 --path <远端路径> 指定');
+
+  console.log(`本地 : ${localHash}  (${(buf.length / 1024).toFixed(0)} KB)`);
+  console.log(`远端 : ${remoteHash}  ${info.build?.node ? `(node ${info.build.node})` : ''}`);
+  console.log(`目标 : ${target}（当前 PID ${info.pid ?? '?'}）`);
+
+  const unknownRemote = remoteHash === 'unknown';
+  if (unknownRemote) {
+    console.log('ℹ️ 远端未上报构建指纹（多为 v18 之前的旧版）—— 无法比对，建议直接部署');
+  }
+
+  if (opts.check === true) {
+    if (remoteHash === localHash) {
+      console.log('✓ 已是最新，无需更新');
+    } else if (unknownRemote) {
+      console.log('⚠️ 无法比对（远端过旧），建议执行 `nodeagent deploy <文件>` 更新');
+      process.exitCode = 2;
+    } else {
+      console.log('⚠️ 版本不一致 —— 执行 `nodeagent deploy <文件>` 更新（加 --force 可强制覆盖）');
+      process.exitCode = 2;
     }
+    return;
+  }
 
-    // 上传（fs.write 分块；由 agent 内部处理，无需本地→远端路径映射）
+  if (!unknownRemote && remoteHash === localHash && opts.force !== true) {
+    console.log('✓ 远端指纹与本地一致，已是最新（如需强制覆盖请加 --force）');
+    return;
+  }
+
+  // 备份 + 上传 + 重启
+  const uploadInfo = await withClient(async (c) => {
+    // 备份走协议自带的 fs 能力（而非 shell 的 Copy-Item）——
+    // Copy-Item 是 Windows 专用，在 macOS 被控端上会静默失败（真机踩过：以为备份了，其实没有）。
+    const backup = `${target}.bak-${Date.now()}`;
+    let backupPath = '';
+    try {
+      const st = await c.invoke<{ size?: number; exists?: boolean }>(CapabilityNames.FsStat, { path: target });
+      const size = st.status === 'ok' ? (st.data?.size ?? 0) : 0;
+      if (size > 0) {
+        let off = 0;
+        let first = true;
+        while (off < size) {
+          // 自行计算本次长度并据此前进（对齐 cmdPush 的成熟写法）：
+          // fs.read 返回的 offset 是**本次读取的起始位置**，拿它当前进量会原地打转
+          // → 死循环 + 文件暴涨（真机踩过：备份 33B→268KB 且部署卡死 200s）。
+          const len = Math.min(BACKUP_CHUNK, size - off);
+          const r = await c.invoke<{ data?: string }>(CapabilityNames.FsRead, {
+            path: target,
+            offset: off,
+            max_bytes: len,
+            // ⚠️ 必须显式 base64：默认 utf8 会把二进制按文本读（损坏），
+            //    再当 base64 写回就得到几十字节的垃圾备份（真机踩过：备份 33 字节）
+            encoding: 'base64',
+          });
+          if (r.status !== 'ok') break;
+          const chunk = r.data?.data ?? '';
+          if (!chunk) break;
+          const w = await c.invoke(CapabilityNames.FsWrite, {
+            path: backup,
+            data: chunk,
+            encoding: 'base64',
+            append: !first,
+          });
+          if (w.status !== 'ok') break;
+          first = false;
+          off += len;
+        }
+        if (!first) backupPath = backup;
+      }
+    } catch {
+      /* 备份失败不阻断部署，但下面会提示 */
+    }
+    if (backupPath) console.log(`已备份: ${backupPath}`);
+    else console.log('⚠️ 备份未成功（部署继续，但无自动回滚点）');
+
     const CHUNK = 512 * 1024;
     let offset = 0;
     while (offset < buf.length) {
@@ -251,20 +329,55 @@ export async function cmdDeploy(localFile: string, opts: Options): Promise<void>
       offset += part.length;
     }
     console.log(`✓ 已上传 ${(buf.length / 1024).toFixed(0)} KB`);
+    return { backupPath };
+  });
 
-    // 受控重启（复用 v7 能力，无需外部计划任务）
-    const r = await c.invoke(CapabilityNames.AgentRestart, { delay_ms: 1500, reason: 'deploy' });
+  // 触发重启：**用独立连接且吞掉连接中断**。
+  // 重启会把本连接切断，这属于预期行为；若当成失败抛出，整个部署会被误判为失败
+  // （真机踩过：文件其实已换好、新进程也起来了，CLI 却报 E_NODE_OFFLINE）。
+  try {
+    const r = await withClient((c) =>
+      c.invoke(CapabilityNames.AgentRestart, { delay_ms: 1500, reason: 'deploy' }),
+    );
     if (r.status === 'failed') fail(`重启失败: ${r.error?.message}`);
-    console.log('✓ 已触发重启，等待恢复…');
-  });
+  } catch (err) {
+    console.log(`（重启切断了连接，属预期：${err instanceof Error ? err.message : String(err)}）`);
+  }
+  console.log('✓ 已触发重启，校验新版本上线…');
 
-  // 等待新版本上线并复验
-  await new Promise((t) => setTimeout(t, 9000));
-  await withClient(async (c) => {
-    const info = await c.invoke<{ capabilities?: unknown[] }>(CapabilityNames.SystemInfo, {});
-    const caps = c.listCapabilities();
-    console.log(`✓ 新版本已上线：PID ${(info.data as { pid?: number })?.pid ?? '?'}，能力 ${caps.length} 项`);
-  });
+  // 轮询校验：直到远端指纹 == 本地指纹。
+  // 用 probeOnce（永不退出），**不能用 withClient** —— 后者连不上会 fail() 退出，
+  // 使得「等待重连」根本无法实现（真机踩过：部署成功却报 E_NODE_OFFLINE）。
+  // 按墙钟限时而非固定次数：每次连接耗时不定，按次数算总时长不可预期。
+  let verified = false;
+  let lastSeen = '';
+  let pidSeen: number | undefined;
+  let capsSeen = 0;
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    await new Promise((t) => setTimeout(t, 1500));
+    const p = await probeOnce();
+    if (!p.ok) continue;
+    lastSeen = p.buildHash ?? 'unknown';
+    pidSeen = p.pid;
+    capsSeen = p.caps;
+    if (lastSeen === localHash) {
+      verified = true;
+      console.log(`✓ 新版本已上线并校验通过：指纹 ${lastSeen}，PID ${pidSeen ?? '?'}，能力 ${capsSeen} 项`);
+      break;
+    }
+  }
+
+  if (!verified) {
+    const waited = Math.round((Date.now() - (deadline - 90_000)) / 1000);
+    console.error(`✗ ${waited}s 内未校验到新版本（当前远端指纹 ${lastSeen || '连不上'}）`);
+    if (uploadInfo.backupPath) {
+      console.error(`  回滚方式：把备份复制回目标即可 ——`);
+      console.error(`  nodeagent exec "Copy-Item '${uploadInfo.backupPath}' '${target}' -Force"`);
+    }
+    console.error('  排查：被控端杀软（主流杀软/杀软）可能处置了被覆盖的 agent 文件');
+    process.exitCode = 1;
+  }
 }
 
 /**

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
@@ -44,6 +46,43 @@ async function isAdmin(): Promise<boolean> {
 
 // ---------------- system.info ----------------
 
+
+// ---------- 构建指纹（v18）----------
+
+const STARTED_AT = Date.now();
+let buildCache: { hash: string; bytes: number; mtime_ms: number } | null = null;
+
+/**
+ * 计算「正在运行的这一份 agent 脚本」的指纹（sha256 前 12 位）。
+ *
+ * 用途：部署后**校验远端真的换成了新代码**。仅靠「PID 变了 / 能力数对了」证明不了这点
+ * （旧版可能恰好也是同样的能力数）；内容哈希是唯一可靠的判据。
+ * 懒计算 + 缓存：文件约 1MB，只在首次 system.info 时读一次。
+ */
+function buildInfo(): { hash: string; bytes: number; mtime_ms: number; node: string; started_at: number; uptime_ms: number } {
+  if (!buildCache) {
+    let hash = 'unknown';
+    let bytes = 0;
+    let mtime = 0;
+    try {
+      const scriptPath = process.argv[1] ?? '';
+      const buf = readFileSync(scriptPath);
+      bytes = buf.length;
+      mtime = statSync(scriptPath).mtimeMs;
+      hash = createHash('sha256').update(buf).digest('hex').slice(0, 12);
+    } catch {
+      /* 读不到脚本（如被内联启动）时保持 unknown，不影响其他功能 */
+    }
+    buildCache = { hash, bytes, mtime_ms: Math.round(mtime) };
+  }
+  return {
+    ...buildCache,
+    node: process.version,
+    started_at: STARTED_AT,
+    uptime_ms: Date.now() - STARTED_AT,
+  };
+}
+
 export async function systemInfo(args: Args): Promise<unknown> {
   const fields = args['fields'] as string[] | undefined;
   const info: Record<string, unknown> = {
@@ -63,6 +102,8 @@ export async function systemInfo(args: Args): Promise<unknown> {
     node_path: process.execPath,
     // v15：PowerShell 常驻助手状态（排查 GUI 能力性能/降级时用）
     ps_helper: allPsShellStats(),
+    // v18：构建指纹（部署校验用）
+    build: buildInfo(),
   };
 
   if (fields && fields.length > 0) {

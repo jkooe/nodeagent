@@ -49,8 +49,9 @@ export const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
                                       订阅事件并实时接收推送（无 --kind 则列出订阅）(v12)
   nodeagent record [--duration 5000] [--fps 2] [--scale 0.5] [--region x,y,w,h]
                                       录屏为帧序列（有 ffmpeg 则封装 mp4）(v11)
-  nodeagent deploy <agent.mjs> [--path <远端路径>]
-                                      一键升级被控端（备份 → 上传 → 重启 → 复验）(v11)
+  nodeagent deploy <agent.mjs> [--path <远端路径>] [--check] [--force]
+                                      一键升级被控端 (v11/v18)：比指纹 → 备份 → 上传 → 重启
+                                      → 轮询校验；--check 只比对不部署
   nodeagent group [add <组名> <设备...> | remove <组名>]  设备分组管理 (v12)
   nodeagent fanout <能力名> [--nodes a,b|@组名] [--args JSON]
                                       多设备并发调用并汇总 (v11)

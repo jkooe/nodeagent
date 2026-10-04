@@ -314,5 +314,9 @@ async function main(): Promise<void> {
 
 main().catch((err: unknown) => {
   console.error(`✗ ${err instanceof Error ? err.message : String(err)}`);
+  // NODEAGENT_DEBUG=1 时打印堆栈 —— CLI 定位问题（尤其是异步链里的异常）必备
+  if (process.env['NODEAGENT_DEBUG'] === '1' && err instanceof Error && err.stack) {
+    console.error(err.stack);
+  }
   process.exit(1);
 });

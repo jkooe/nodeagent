@@ -19,7 +19,8 @@
     "test:windows": "node tests/e2e/windows.mjs",
     "verify": "node scripts/verify.mjs",
     "pack:win": "node scripts/pack.mjs",
-    "pack:mac": "node scripts/pack-macos.mjs"
+    "pack:mac": "node scripts/pack-macos.mjs",
+    "update:win": "node scripts/update-win.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

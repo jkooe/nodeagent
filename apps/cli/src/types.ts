@@ -55,6 +55,9 @@ export interface Options {
   kind?: string;
   /** v12 宏变量 */
   vars?: string[];
+  /** v18 部署校验 */
+  check?: boolean;
+  force?: boolean;
   /** v17 音频 */
   mute?: string;
   volume?: string;
