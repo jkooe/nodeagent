@@ -27,8 +27,12 @@ const arg = argv.find((a) => !a.startsWith('--'));
 const dryRun = flags.has('--dry-run');
 const publish = !flags.has('--no-publish');
 
-const sh = (cmd, args, opts = {}) =>
-  execFileSync(cmd, args, { cwd: root, encoding: 'utf8', ...opts }).toString().trim();
+// ⚠️ stdio:'inherit' 时 execFileSync 返回 null（不捕获输出）→ 必须容错，
+//    否则 build/pack 这类「继承输出」的调用会直接 TypeError（真机踩过）
+const sh = (cmd, args, opts = {}) => {
+  const out = execFileSync(cmd, args, { cwd: root, encoding: 'utf8', ...opts });
+  return out === null || out === undefined ? '' : String(out).trim();
+};
 
 function fail(msg) {
   console.error(`✗ ${msg}`);
