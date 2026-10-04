@@ -60,7 +60,7 @@ export interface AuthOkParams {
   /** v20：被控端语义化版本（新增字段，旧控制端忽略即可 → 向后兼容） */
   agent_version?: string;
   /** v20：被控端构建信息（指纹/提交/构建时间），供控制端做版本比对与提示 */
-  build?: { hash?: string; commit?: string; built_at?: string };
+  build?: { hash?: string; commit?: string; built_at?: string; cert_sha256?: string | null };
   /** v20：被控端支持的协议版本（与 HelloParams.protocol 比对） */
   protocol?: string;
 }

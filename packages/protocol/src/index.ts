@@ -7,3 +7,4 @@ export * from './ed25519.js';
 export * from './acl.js';
 export * from './validate.js';
 export * from './capabilities.js';
+export * from './net.js';

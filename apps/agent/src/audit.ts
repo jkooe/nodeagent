@@ -14,6 +14,8 @@ export type AuditType =
   | 'rate.limited'
   /** v16：网络配置变更（两阶段提交） */
   | 'net.change'
+  /** v21：来源不在 allow_from 被拒 */
+  | 'net.deny'
   /** v19：agent 自更新（拉取式） */
   | 'agent.update';
 

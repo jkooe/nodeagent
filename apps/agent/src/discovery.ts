@@ -1,5 +1,6 @@
 import { createSocket, type Socket } from 'node:dgram';
 import { DEFAULT_DISCOVERY_PORT } from '@nodeagent/protocol';
+import { currentCertFingerprint } from './certs.js';
 
 export { DEFAULT_DISCOVERY_PORT };
 
@@ -16,6 +17,12 @@ export interface BeaconPayload {
   auth_mode: string;
   /** 需要输入控制开关的状态，便于控制端提示 */
   input_enabled: boolean;
+  /**
+   * v21：TLS 证书指纹（sha256 hex）。
+   * ⚠️ 这是**未认证**广播，可被伪造 —— 只用于「看起来像不像」，不能作为身份凭据；
+   *    真正的身份确认发生在握手后（auth_ok 里带指纹，且控制端会严格比对）。
+   */
+  cert_sha256?: string | null;
   platform: string;
   ts: number;
 }
@@ -60,6 +67,7 @@ export function startBeacon(opts: BeaconOptions, onError?: (msg: string) => void
       JSON.stringify({
         service: SERVICE_TAG,
         version: PROTOCOL_VERSION,
+        cert_sha256: currentCertFingerprint(),
         ...opts.base,
         ts: Date.now(),
       } satisfies BeaconPayload),

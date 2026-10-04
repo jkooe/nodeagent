@@ -85,6 +85,19 @@ export async function cmdConnect(host: string, opts: Options): Promise<void> {
 
     // 连接成功才落盘，避免把错配置写进设备表
     const cfg = loadConfig() ?? emptyConfig(clientId);
+    // v21：TOFU 钉住证书指纹 —— 首次连接记录，之后每次连接都严格比对。
+    // 已有钉住值时**不覆盖**（除非 --forget-cert），否则冒充者可借重连刷新钉住值。
+    const fp = client.getPeerCertFingerprint();
+    if (opts.forgetCert === true) {
+      delete profile.cert_sha256;
+      console.log('已清除旧指纹，将按本次连接重新钉住');
+    }
+    if (fp && !profile.cert_sha256) {
+      profile.cert_sha256 = fp;
+      console.log(`\n🔐 已钉住被控端证书指纹（TOFU）：${fp}`);
+      console.log('   请与被控端安装时打印的指纹核对；不一致说明连的可能不是那台机器');
+    }
+
     cfg.client_id = clientId;
     cfg.nodes[name] = profile;
     cfg.current = name;

@@ -15,6 +15,8 @@ export const ErrorCodes = {
   EXECUTION_FAILED: -32419,
   PROTOCOL_MISMATCH: -32420,
   UNSUPPORTED_PLATFORM: -32421,
+  /** v21：被控端证书指纹与控制端钉住的不一致（可能是被冒充） */
+  CERT_MISMATCH: -32422,
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
@@ -36,6 +38,7 @@ export const ErrorNames: Record<number, string> = {
   [ErrorCodes.EXECUTION_FAILED]: 'E_EXECUTION_FAILED',
   [ErrorCodes.PROTOCOL_MISMATCH]: 'E_PROTOCOL_MISMATCH',
   [ErrorCodes.UNSUPPORTED_PLATFORM]: 'E_UNSUPPORTED_PLATFORM',
+  [ErrorCodes.CERT_MISMATCH]: 'E_CERT_MISMATCH',
 };
 
 /** 协议错误对象。 */

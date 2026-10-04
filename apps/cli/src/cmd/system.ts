@@ -108,6 +108,17 @@ export async function cmdInfo(opts: Options): Promise<void> {
   // 先打版本与兼容性（v20）——info 是最自然的「体检」命令
   await withClient((c) => {
     reportCompat(c);
+    // v21：把「身份钉定」与「来源网段限制」这两项安全状态摆出来
+    const cfg = getClientConfig();
+    const prof = cfg.nodes[cfg.current ?? ''];
+    const fp = c.getPeerCertFingerprint();
+    console.log(
+      prof?.cert_sha256
+        ? `证书指纹   : 已钉住 ${prof.cert_sha256.slice(0, 16)}…${fp === prof.cert_sha256 ? '（本次一致 ✓）' : '（本次不一致 ✗）'}`
+        : `证书指纹   : **未钉住** —— 建议重连一次自动钉住（nodeagent connect <地址> …）`,
+    );
+    const info = c.listCapabilities();
+    void info;
     return Promise.resolve();
   });
   await withClient((c) =>

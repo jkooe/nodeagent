@@ -878,6 +878,117 @@ async function testMacroReplay() {
   }
 }
 
+
+/**
+ * v21 第一批加固：来源网段白名单 + 证书指纹钉住。
+ * 自起一个 TLS agent（主 e2e agent 是明文 ws 且无白名单，不适合这两项）。
+ */
+async function testNetworkSecurity() {
+  const { spawn } = await import('node:child_process');
+  const { readFileSync } = await import('node:fs');
+  const { createConnection } = await import('node:net');
+  // 自建等待：主 e2e 的 waitReady 只认它那台 agent（硬编码 URL/KEY），这里用不上
+  const waitPort = async (p, ms) => {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      const up = await new Promise((res) => {
+        const sock = createConnection({ host: '127.0.0.1', port: p });
+        sock.once('connect', () => { sock.destroy(); res(true); });
+        sock.once('error', () => { sock.destroy(); res(false); });
+      });
+      if (up) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    throw new Error(`端口 ${p} 未在超时内就绪`);
+  };
+  const dataDir = mkdtempSync(join(tmpdir(), 'nodeagent-sec-'));
+  const port = PORT + 7;
+  const key = 'sec-e2e-key-0123456789abcdef0123456789';
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({
+      node_id: 'sec_win',
+      host: '127.0.0.1',
+      port,
+      tls: true,
+      key,
+      log_level: 'info',
+      // 故意只放行本机 —— 前一步会先改成不放行来验证拦截
+      allow_from: ['10.0.0.0/8'],
+    }),
+  );
+  const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stderr.on('data', () => {});
+  const cleanup = () => {
+    try { child.kill(); } catch { /* 已退出 */ }
+  };
+  try {
+    await waitPort(port, 20_000);
+
+    // ① 白名单不含本机 → 连接被拒（E_NODE_OFFLINE 形态：握手被服务端掐断）
+    await assert.rejects(
+      () => new NodeAgentClient({ url: `wss://127.0.0.1:${port}`, key, clientId: 'sec', insecure: true }).connect(),
+      /E_NODE_OFFLINE|E_CONNECT_FAILED|ECONNRESET|ECONNREFUSED|连接已断开/,
+      '白名单外的来源应被拒绝',
+    );
+
+    // ② 放行本机 → 连上，并拿到证书指纹
+    const cfgPath = join(dataDir, 'agent.json');
+    const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    cfg.allow_from = ['127.0.0.0/8'];
+    writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+    cleanup();
+    await new Promise((r) => setTimeout(r, 800));
+    const child2 = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+      env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child2.stderr.on('data', () => {});
+    try {
+      await waitPort(port, 20_000);
+      const good = new NodeAgentClient({ url: `wss://127.0.0.1:${port}`, key, clientId: 'sec', insecure: true });
+      await good.connect();
+      const fp = good.getPeerCertFingerprint();
+      assert.ok(fp && /^[0-9a-f]{64}$/.test(fp), '应能观测到 64 位证书指纹');
+      const info = await good.invoke('system.info', { fields: ['build'] });
+      assert.equal(info.data.build.cert_sha256, fp, 'agent 自报指纹应与实际握手证书一致');
+      good.close();
+
+      // ③ 钉住错误指纹 → 必须拒绝（E_CERT_MISMATCH）
+      await assert.rejects(
+        () =>
+          new NodeAgentClient({
+            url: `wss://127.0.0.1:${port}`,
+            key,
+            clientId: 'sec',
+            insecure: true,
+            certSha256: 'deadbeef'.repeat(8),
+          }).connect(),
+        /E_CERT_MISMATCH/,
+        '指纹不符必须拒绝连接',
+      );
+
+      // ④ 钉住正确指纹 → 放行
+      const ok = new NodeAgentClient({
+        url: `wss://127.0.0.1:${port}`,
+        key,
+        clientId: 'sec',
+        insecure: true,
+        certSha256: fp,
+      });
+      await ok.connect();
+      ok.close();
+    } finally {
+      try { child2.kill(); } catch { /* 已退出 */ }
+    }
+  } finally {
+    cleanup();
+  }
+}
+
 /**
  * v19：拉取式自更新。
  * 用本地 HTTP 服务真跑「下载 + 哈希校验」路径；**一律 dry_run**，绝不改动测试 agent 自身文件。
@@ -1209,6 +1320,7 @@ async function main() {
     await test('v13 成功指标与审计链：形状 + 分层时延 + 达标判定 + 链完整', testMetricsAndAudit);
     await test('v17 音频控制：读状态 / 写回原值 / 参数校验', testAudio);
     await test('v19 拉取式自更新：HTTP 下载 + 哈希校验（dry-run）', testSelfUpdate);
+    await test('v21 网络安全：网段白名单 + 证书指纹钉住（TOFU 与拒绝）', testNetworkSecurity);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

@@ -4,6 +4,7 @@ import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import {
   Methods,
   PROTOCOL_VERSION,
+  ipInAllowlist,
   generateNonce,
   verifyHmac,
   verifyNonce,
@@ -432,7 +433,18 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
     : createHttpServer();
   const wss = new WebSocketServer({ server: httpServer });
 
-  wss.on('connection', (ws, req) => core.attach(ws, req.socket.remoteAddress ?? '?'));
+  // v21 第一批加固：来源网段白名单 —— **在业务握手之前**就断开。
+  // 放在这里而不是等认证失败，是因为拒绝得更早、开销更低（不必做 TLS/挑战应答）。
+  wss.on('connection', (ws, req) => {
+    const remote = req.socket.remoteAddress ?? '?';
+    if (!ipInAllowlist(remote, cfg.allow_from)) {
+      log('warn', `连接被拒绝：来源不在 allow_from（remote=${remote}，允许=${JSON.stringify(cfg.allow_from ?? null)}）`);
+      audit({ type: 'net.deny', remote, reason: `source not in allow_from: ${JSON.stringify(cfg.allow_from ?? null)}` });
+      ws.close(1008, 'source not allowed');
+      return;
+    }
+    core.attach(ws, remote);
+  });
 
   // WebSocket 层保活：30s ping，探测死连接
   const heartbeat = setInterval(() => {

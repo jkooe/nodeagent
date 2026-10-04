@@ -7,6 +7,7 @@ import {
   signNonce,
   isErrorResponse,
   ErrorCodes,
+  certFingerprint,
   type RpcRequest,
   type RpcResponse,
   type RpcError,
@@ -38,6 +39,11 @@ export interface ClientOptions {
   clientId: string;
   /** v1 简化：跳过自签证书校验 */
   insecure?: boolean;
+  /**
+   * v21：钉住的被控端证书指纹（sha256 hex）。给了就会**严格比对**，
+   * 不一致直接拒绝连接（E_CERT_MISMATCH）—— 防「连上了冒名顶替的机器」。
+   */
+  certSha256?: string;
   /** 握手超时（默认 10s） */
   handshakeTimeoutMs?: number;
   /** 单次调用默认超时（默认 60s） */
@@ -77,6 +83,8 @@ export class NodeAgentClient {
   /** ed25519 模式：本次被授权的能力；psk 模式为 null */
   private authorized: string[] | null = null;
   /** v20：被控端语义化版本（旧被控端不返回则为 undefined） */
+  /** v21：本次连接观测到的对端证书指纹（TOFU 钉住用） */
+  private peerCertFingerprint: string | null = null;
   private agentVersion?: string;
   /** v20：被控端构建信息 { hash, commit, built_at } */
   private agentBuild?: { hash?: string; commit?: string; built_at?: string };
@@ -96,6 +104,33 @@ export class NodeAgentClient {
       const ws = new WebSocket(url, { rejectUnauthorized: !insecure });
       this.ws = ws;
 
+      // v21：抓取对端证书指纹（在 upgrade 时机拿，握手阶段尚未加密业务数据）。
+      // ⚠️ 这解决的是「自签证书 + insecure=接受任意证书」留下的中间人空档：
+      //    加密照旧，但**连错了机器**会被立刻发现。
+      let peerCertFp: string | null = null;
+      // ⚠️ 取对端证书指纹踩了三层坑，都写在这里避免后人重走：
+      //    1) ws 客户端的 'upgrade' 事件**只传 IncomingMessage**，拿不到 socket；
+      //    2) socket 要在 'open' 之后从 `ws._socket` 取（TLSSocket）；
+      //    3) Node ≥15 的 getPeerCertificate() 返回**对象**，DER 在 `.raw` 上
+      //       （老版本才是直接返回 Buffer）—— 两者都要兼容。
+      ws.on('open', () => {
+        try {
+          const sock = (ws as unknown as {
+            _socket?: { getPeerCertificate?: (detailed?: boolean) => unknown };
+          })._socket;
+          const got = sock?.getPeerCertificate?.(false);
+          let der: Buffer | undefined;
+          if (Buffer.isBuffer(got)) der = got;
+          else if (got && typeof got === 'object') {
+            const raw = (got as { raw?: unknown }).raw;
+            if (Buffer.isBuffer(raw)) der = raw;
+          }
+          if (der && der.length > 0) peerCertFp = certFingerprint(der);
+        } catch {
+          /* 非 TLS 连接或取不到证书 → 保持 null（不做指纹校验） */
+        }
+      });
+
       const timer = setTimeout(() => {
         ws.terminate();
         reject(new ClientError(ErrorCodes.TIMEOUT, 'E_TIMEOUT', `连接超时: ${url}`));
@@ -103,6 +138,21 @@ export class NodeAgentClient {
 
       ws.once('open', () => {
         clearTimeout(timer);
+        // v21：与钉住的指纹比对 —— 不一致说明「连的不是上次那台机器」，必须拒绝
+        const expected = this.opts.certSha256?.trim().toLowerCase();
+        if (expected && peerCertFp && peerCertFp !== expected) {
+          ws.terminate();
+          reject(
+            new ClientError(
+              ErrorCodes.CERT_MISMATCH,
+              'E_CERT_MISMATCH',
+              `证书指纹不匹配，拒绝连接：期望 ${expected.slice(0, 16)}… 实际 ${peerCertFp.slice(0, 16)}…` +
+                '（被控端可能重装了、或中间人冒充）。核对后可用 nodeagent connect --forget-cert 重新钉住',
+            ),
+          );
+          return;
+        }
+        this.peerCertFingerprint = peerCertFp; // v21：留给调用方做 TOFU 钉住
         onLog?.(`已连接 ${url}`);
         // Hub 模式下先完成配对，再挂 RPC 处理器（否则控制面消息会被误当响应）
         const ready: Promise<void> = this.opts.hub
@@ -162,6 +212,15 @@ export class NodeAgentClient {
     // v20：远端版本/构建信息（旧被控端不返回 → 保持 undefined，不报错）
     this.agentVersion = authOk.agent_version;
     this.agentBuild = authOk.build;
+    // v21 交叉确认：upgrade 时抓到的实际证书 vs 服务端自报 —— 不一致说明自报被篡改/冒充
+    if (this.peerCertFingerprint && authOk.build?.cert_sha256 &&
+        this.peerCertFingerprint !== authOk.build.cert_sha256) {
+      throw new ClientError(
+        ErrorCodes.CERT_MISMATCH,
+        'E_CERT_MISMATCH',
+        '被控端自报的证书指纹与实际握手证书不一致，拒绝使用（可能被冒充）',
+      );
+    }
     const label =
       authOk.auth_mode === 'ed25519'
         ? `ed25519，授权 ${this.authorized?.length ?? 0}/${this.capabilities.length} 项能力`
@@ -191,6 +250,11 @@ export class NodeAgentClient {
   }
 
   /** v20：被控端版本（旧被控端未上报则为 undefined）。 */
+  /** v21：本次连接观测到的对端证书指纹（sha256 hex）；非 TLS 连接为 null。 */
+  getPeerCertFingerprint(): string | null {
+    return this.peerCertFingerprint;
+  }
+
   getAgentVersion(): string | undefined {
     return this.agentVersion;
   }

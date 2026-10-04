@@ -460,6 +460,7 @@ nodeagent/
 
 ## 文档
 
+- [`docs/SECURITY.md`](docs/SECURITY.md) —— **安全模型与加固指南**（钥匙=root、证书指纹钉住、网段白名单、应急处置）
 - [`docs/VERSIONING.md`](docs/VERSIONING.md) —— **版本与兼容性契约**（升级顺序、什么算破坏性、发版流程、更新方式）
 - [`docs/REMOTE-LIMITS.md`](docs/REMOTE-LIMITS.md) —— 远程能力边界与真实故障案例（含杀软误拦）
 

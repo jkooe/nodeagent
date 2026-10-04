@@ -161,6 +161,7 @@ export async function withClientDirect<T>(fn: (client: NodeAgentClient) => Promi
     key: profile.key ?? '',
     clientId,
     insecure: profile.insecure,
+    certSha256: profile.cert_sha256, // v21：钉住的证书指纹（不一致则拒绝连接）
     authMode: profile.auth_mode,
     privateKey: keys?.privateKey,
     hub: profile.hub ? { token: profile.hub.token, nodeId: profile.hub.node_id } : undefined,
@@ -244,6 +245,7 @@ export async function probeOnce(nodeName?: string): Promise<{
       key: target.profile.key ?? '',
       clientId: target.clientId,
       insecure: target.profile.insecure,
+      certSha256: target.profile.cert_sha256, // v21：钉住的证书指纹
       authMode: target.profile.auth_mode,
       privateKey: keys?.privateKey,
       hub: target.profile.hub ? { token: target.profile.hub.token, nodeId: target.profile.hub.node_id } : undefined,

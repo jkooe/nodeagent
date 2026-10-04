@@ -11,6 +11,13 @@ export interface NodeProfile {
   insecure?: boolean;
   /** psk 模式的预共享密钥 */
   key?: string;
+  /**
+   * v21：**钉住的**被控端证书指纹（sha256 hex，64 位）。
+   *
+   * 自签证书没有可信 CA 链，唯一能证明「还是那台机器」的就是指纹。
+   * 首次连接会记录（TOFU）；之后**严格比对**，不一致直接拒绝连接。
+   */
+  cert_sha256?: string;
   /** 认证模式；默认 psk */
   auth_mode?: 'psk' | 'ed25519';
   /** 覆盖全局 client_id（同一控制端接入多台时可区分身份） */

@@ -40,6 +40,11 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
           type: 'object',
           description: 'PowerShell 常驻助手状态（v15）：spawned/hits/failures/consecutiveFailures/avg_ms 等',
         },
+        network: {
+          type: 'object',
+          description:
+            'v21 来源网段访问控制：allow_from 为 null 表示**未配置 = 放行全部**（应尽快收敛）',
+        },
         build: {
           type: 'object',
           description:

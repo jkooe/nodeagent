@@ -244,9 +244,27 @@ $ctlLabel = if ($AllowInput) { "ENABLED (mouse/keyboard control)" } else { "disa
 Write-Host "  Input ctl : $ctlLabel"
 Write-Host "  Auth mode : psk (pre-shared key)"
 Write-Host "  Discovery : UDP 8766 heartbeat (LAN auto-discovery; outbound only)"
+# v21: TLS certificate fingerprint (sha256 of DER) — the Mac side pins this (TOFU).
+# This must match what nodeagent computes, so out-of-band verification is possible:
+# the Mac prints the same value at first connect; compare the two.
+$certFp = ""
+try {
+    $certPath = Join-Path (Split-Path -Parent $cfgPath) "certs\cert.pem"
+    if (Test-Path -LiteralPath $certPath) {
+        $x = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 -ArgumentList $certPath
+        $sha = [System.Security.Cryptography.SHA256]::Create().ComputeHash($x.GetRawCertData())
+        $certFp = ($sha | ForEach-Object { $_.ToString("x2") }) -join ""
+    }
+} catch { }
+
 Write-Host ""
 Write-Host "  Pre-shared key (copy this to the Mac side):" -ForegroundColor Yellow
 Write-Host "  $Key" -ForegroundColor White
+if ($certFp) {
+    Write-Host ""
+    Write-Host "  TLS cert fingerprint (verify the Mac side pinned the same one):" -ForegroundColor Yellow
+    Write-Host "  $certFp" -ForegroundColor White
+}
 Write-Host ""
 Write-Host "  On the Mac, run:" -ForegroundColor Cyan
 $insecureFlag = if ($NoTls) { "" } else { " --insecure" }

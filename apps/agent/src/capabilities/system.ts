@@ -4,6 +4,8 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { currentCertFingerprint } from '../certs.js';
+import { loadAgentConfig } from '../config.js';
 import { readAudit, readAuditAll, verifyAudit } from '../audit.js';
 import { computeMetrics } from '../metrics.js';
 import { allPsShellStats } from '../util/ps-helper.js';
@@ -55,6 +57,16 @@ declare const __AGENT_VERSION__: string | undefined;
 declare const __BUILD_COMMIT__: string | undefined;
 declare const __BUILD_TIME__: string | undefined;
 
+/** v21：读取当前生效的来源白名单（用于 system.info 上报）。 */
+function configAllowFrom(): string[] | null {
+  try {
+    const cfg = loadAgentConfig().config;
+    return cfg.allow_from && cfg.allow_from.length > 0 ? cfg.allow_from : null;
+  } catch {
+    return null;
+  }
+}
+
 function injected(name: 'version' | 'commit' | 'time'): string {
   if (name === 'version') return typeof __AGENT_VERSION__ === 'undefined' ? 'dev' : __AGENT_VERSION__;
   if (name === 'commit') return typeof __BUILD_COMMIT__ === 'undefined' ? 'dev' : __BUILD_COMMIT__;
@@ -81,6 +93,7 @@ export function buildInfo(): {
   version: string;
   commit: string;
   built_at: string;
+  cert_sha256: string | null;
 } {
   if (!buildCache) {
     let hash = 'unknown';
@@ -106,6 +119,8 @@ export function buildInfo(): {
     version: injected('version'),
     commit: injected('commit'),
     built_at: injected('time'),
+    // v21：TLS 证书指纹（控制端据此钉住被控端身份）
+    cert_sha256: currentCertFingerprint(),
   };
 }
 
@@ -128,8 +143,12 @@ export async function systemInfo(args: Args): Promise<unknown> {
     node_path: process.execPath,
     // v15：PowerShell 常驻助手状态（排查 GUI 能力性能/降级时用）
     ps_helper: allPsShellStats(),
-    // v18：构建指纹（部署校验用）
+    // v18/v21：构建指纹（部署校验用）+ 证书指纹（身份钉定用）
     build: buildInfo(),
+    // v21：来源网段访问控制（null = 未配置 = 放行全部，属于应尽快收敛的风险）
+    network: {
+      allow_from: configAllowFrom(),
+    },
   };
 
   if (fields && fields.length > 0) {

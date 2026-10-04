@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import selfsigned from 'selfsigned';
+import { certFingerprint } from '@nodeagent/protocol';
 import { agentDir } from './config.js';
 
 export interface TlsMaterial {
@@ -30,4 +31,21 @@ export function ensureCert(): TlsMaterial {
   writeFileSync(certPath, pems.cert);
   writeFileSync(keyPath, pems.private, { mode: 0o600 });
   return { cert: pems.cert, key: pems.private };
+}
+
+/**
+ * 当前证书的 SHA256 指纹（hex，64 位）。
+ *
+ * 用途：控制端**钉住**这个指纹（v21 第一批加固）—— 自签证书没有 CA 可信链，
+ * 唯一能证明"还是那台被控端"的办法就是指纹比对。install.ps1 会用 .NET 算同一值
+ * 印给操作者带外核对。
+ */
+export function currentCertFingerprint(): string | null {
+  const certPath = join(agentDir(), 'certs', 'cert.pem');
+  try {
+    if (!existsSync(certPath)) return null;
+    return certFingerprint(readFileSync(certPath, 'utf8'));
+  } catch {
+    return null;
+  }
 }
