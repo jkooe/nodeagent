@@ -35,6 +35,24 @@ function fail(msg) {
   process.exit(1);
 }
 
+/**
+ * 带重试的 git push。
+ * 本机到 GitHub 的连接会间歇性 SSL_ERROR_SYSCALL（已实测），而发版卡在 push 上
+ * 会留下「已提交打标签但没推上去」的半成品状态 —— 所以这里必须重试。
+ */
+function push(args) {
+  for (let i = 1; i <= 3; i += 1) {
+    try {
+      sh('git', ['push', ...args]);
+      return;
+    } catch (err) {
+      if (i === 3) throw err;
+      console.warn(`（push 第 ${i} 次失败，重试…）`);
+      execFileSync('sleep', ['2']);
+    }
+  }
+}
+
 function bump(cur, kind) {
   const [a, b, c] = cur.split('.').map((n) => Number.parseInt(n, 10));
   if ([a, b, c].some((n) => Number.isNaN(n))) fail(`现有版本号无法解析: ${cur}`);
@@ -167,8 +185,8 @@ console.log(`  latest.json / SHA256SUMS`);
 sh('git', ['add', '-A', '--', '.', ':(exclude).github']);
 sh('git', ['commit', '-m', `chore(release): v${version}`]);
 sh('git', ['tag', '-a', `v${version}`, '-m', `nodeagent v${version}`]);
-sh('git', ['push', 'origin', 'main']);
-sh('git', ['push', 'origin', `v${version}`]);
+push(['origin', 'main']);
+push(['origin', `v${version}`]);
 console.log(`✓ 已提交并推送标签 v${version}`);
 
 // ---------- ⑥ 发布 GitHub Release ----------
