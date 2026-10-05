@@ -61,7 +61,15 @@ export async function cmdScreen(opts: Options): Promise<void> {
 export async function cmdScreenshot(opts: Options): Promise<void> {
   const args: Record<string, unknown> = {};
   if (opts.format) args['format'] = opts.format;
-  if (opts.scale) args['scale'] = Number(opts.scale);
+  if (opts.scale) {
+    const s = Number(opts.scale);
+    // 协议限定 scale ∈ (0, 1]（缩小）。原先直接把非法值发出去，
+    // 被控端只回一句「参数校验失败」，看不出是哪一项 —— 2026-10-05 实测踩过。
+    if (!Number.isFinite(s) || s <= 0 || s > 1) {
+      fail(`--scale 应在 0 到 1 之间（1=原尺寸，0.5=半尺寸），收到: ${opts.scale}`);
+    }
+    args['scale'] = s;
+  }
   if (opts.region) {
     const nums = opts.region.split(',').map(Number);
     if (nums.length !== 4 || nums.some((n) => !Number.isFinite(n))) fail('--region 格式应为 x,y,width,height');
@@ -164,18 +172,25 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
     }
     case 'press': {
       if (positionals.length === 0) fail('用法: nodeagent key press <键1> [键2] ...（如 ctrl c）');
+      const args: Record<string, unknown> = { keys: positionals };
+      if (opts.interval) args['interval_ms'] = Number(opts.interval);
+      // 媒体键可定向到指定进程（播放器常建 30+ 辅助窗口，只投主窗口往往无效）
+      if (opts.pid) args['target_pid'] = Number(opts.pid);
       await withClient((c) =>
-        callAndPrint(c, CapabilityNames.KeyPress, { keys: positionals }, opts.json, (d) => {
+        callAndPrint(c, CapabilityNames.KeyPress, args, opts.json, (d) => {
           // 被控端返回 { pressed, chords, times }，**没有 keys 字段**
           // （真机 2026-10-04 实测：原先直接读 r.keys.join() 会抛
           //   "Cannot read properties of undefined (reading 'join')"）
           // 故优先用请求参数回显，缺失时再退回 chords 展开。
-          const r = d as { keys?: string[]; chords?: string[][]; times?: number };
+          const r = d as { keys?: string[]; chords?: string[][]; times?: number; via?: string; target_pid?: number | null };
           const label = r.keys?.length
             ? r.keys.join('+')
             : (r.chords ?? []).map((ch) => ch.join('+')).join(' → ') || positionals.join('+');
           const times = r.times && r.times > 1 ? `（重复 ${r.times} 次）` : '';
-          console.log(`✓ 已按下 ${label}${times}`);
+          const via = r.via === 'appcommand'
+            ? `（媒体通道${r.target_pid ? ` → pid ${r.target_pid}` : ' · 广播'}）`
+            : '';
+          console.log(`✓ 已按下 ${label}${times}${via}`);
         }),
       );
       return;

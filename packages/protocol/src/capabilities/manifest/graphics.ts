@@ -186,10 +186,14 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
   },
   {
     name: CapabilityNames.KeyPress,
-    version: '1.1',
+    version: '1.2',
     description:
       '按下按键。keys=["ctrl","c"] 表示和弦；配 repeat=3 可连按 3 次；' +
-      'sequence=[["ctrl","c"],["ctrl","v"]] 表示按键序列',
+      'sequence=[["ctrl","c"],["ctrl","v"]] 表示按键序列。' +
+      '**媒体键**（v1.2）：当整条序列都是媒体键（media_play_pause / media_stop / media_next / ' +
+      'media_prev / media_play / media_pause）时，自动改走 `WM_APPCOMMAND` 投递而非虚拟键注入 —— ' +
+      '可定向到 `target_pid` 指定的进程，且**不受窗口被遮挡 / 非当前媒体焦点影响**。' +
+      '音量键（volume_mute / volume_up / volume_down）仍走虚拟键 0xAD-0xAF，由系统自行映射。',
     risk: 'high',
     params_schema: {
       type: 'object',
@@ -206,6 +210,14 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
           type: 'array',
           items: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 },
           description: '和弦序列，如 [["up"],["up"],["enter"]]；提供时忽略 keys/repeat',
+        },
+        target_pid: {
+          type: 'integer',
+          minimum: 0,
+          description:
+            '媒体键定向投递的**目标进程 PID**（v1.2）。0 或省略 = 广播给所有顶层窗口。' +
+            '播放器常创建 30+ 辅助窗口（QQ 音乐实测 36 个），只投主窗口常常无效 → ' +
+            '指定 PID 后会向该进程**全部**顶层窗口投递。',
         },
       },
       additionalProperties: false,
@@ -257,7 +269,12 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
   {
     name: CapabilityNames.WindowFocus,
     version: '1.0',
-    description: '将指定窗口（按标题正则或句柄）置前并聚焦，返回其精确矩形。',
+    description:
+      '将指定窗口（按标题正则或句柄）置前并聚焦，返回其精确矩形。' +
+      '⚠️ 边界：**无法越过全屏独占应用**（游戏、演示全屏）。此时会返回 focused:true，' +
+      '但目标窗口在**视觉上仍被遮挡**、鼠标点击也点不到它 —— 属预期行为而非失败。' +
+      '此时请改用与可见性无关的通道：input.key.press 的媒体键（走 WM_APPCOMMAND）、' +
+      'system.shell.exec，或让用户手动切出全屏。',
     risk: 'medium',
     params_schema: {
       type: 'object',

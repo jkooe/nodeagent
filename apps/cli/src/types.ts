@@ -16,6 +16,8 @@ export interface Options {
   button?: string;
   duration?: string;
   interval?: string;
+  /** 媒体键定向投递的目标进程 PID（v1.2 keyPress） */
+  pid?: string;
   /** v3：认证模式 psk | ed25519 */
   authMode?: string;
   /** v3+ 审计查询 */

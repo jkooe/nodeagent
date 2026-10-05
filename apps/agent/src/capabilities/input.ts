@@ -128,6 +128,53 @@ public static class NAInput {
         var u = new INPUT[1]; u[0].type = 0; u[0].U.mi.dwFlags = upFlag;
         SendInput(1, u, SIZE);
     }
+
+    /// <summary>
+    /// 媒体控制（2026-10-05 补）：经 WM_APPCOMMAND 广播到目标窗口。
+    ///
+    /// 为何不只靠 VK 注入：媒体键用 SendInput 打进去后，**并非所有播放器都接收**
+    /// —— 只有当前获得媒体会话焦点的窗口才会响应。而 WM_APPCOMMAND 可直接
+    /// 投递给指定 hwnd，绕开「谁是当前媒体会话焦点」这层不确定性。
+    ///
+    /// 用途：远程控制 QQ 音乐 / 网易云 / 浏览器视频，且**窗口最小化或被全屏游戏
+    /// 遮挡时依然有效**（实测 QQ 音乐精简窗被 DNF 全屏压住时该通道可用）。
+    /// </summary>
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumProc cb, IntPtr p);
+    private delegate bool EnumProc(IntPtr h, IntPtr p);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+
+    /// <summary>
+    /// 向目标窗口（或其全部顶层窗口）发媒体控制命令。
+    /// appCommand 取值：14=PLAY 15=STOP 12=PLAY_PAUSE 6=PREV 7=NEXT
+    ///                  3=FFWD 4=REWIND 10=CLOSE 0=PLAY 1=PAUSE
+    /// targetPid 非 0 时，自动找到该进程的所有顶层窗口并逐个投递
+    /// （QQ 音乐等会创建 30+ 个辅助窗口，只投主窗口常常无效）。
+    /// </summary>
+    public static int MediaCommand(int appCommand, int targetPid) {
+        int sent = 0;
+        if (targetPid == 0) {
+            // HWND_BROADCAST：广播给所有顶层窗口
+            if (PostMessage((IntPtr)0xFFFF, 0x0319, IntPtr.Zero, (IntPtr)appCommand)) sent++;
+            return sent;
+        }
+        var handles = new System.Collections.Generic.List<IntPtr>();
+        EnumWindows(delegate(IntPtr h, IntPtr p) {
+            uint wpid;
+            GetWindowThreadProcessId(h, out wpid);
+            if (wpid == (uint)targetPid) handles.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        foreach (var h in handles) {
+            if (PostMessage(h, 0x0319, IntPtr.Zero, (IntPtr)appCommand)) sent++;
+        }
+        return sent;
+    }
 }`;
 
 /** 组装：加类型定义 + 具体操作。 */
@@ -266,6 +313,59 @@ const VK_MAP: Record<string, number> = {
   capslock: 0x14, printscreen: 0x2c,
   f1: 0x70, f2: 0x71, f3: 0x72, f4: 0x73, f5: 0x74, f6: 0x75,
   f7: 0x76, f8: 0x77, f9: 0x78, f10: 0x79, f11: 0x7a, f12: 0x7b,
+  f13: 0x7c, f14: 0x7d, f15: 0x7e, f16: 0x7f, f17: 0x80, f18: 0x81,
+  f19: 0x82, f20: 0x83, f21: 0x84, f22: 0x85, f23: 0x86, f24: 0x87,
+
+  // 媒体键（0xA6-0xB7 区段）—— 2026-10-05 补
+  //
+  // 为何必要：远程控媒体播放器（QQ 音乐 / 网易云 / 浏览器视频）时，
+  // 若软件热键不可用（精简模式常不注册全局热键），系统媒体键是唯一
+  // 与「窗口是否可见/被遮挡」无关的通道 —— 窗口最小化、被游戏全屏盖住时
+  // 依然有效。实测：QQ 音乐精简窗被 DNF 全屏遮挡时，媒体键仍能控���。
+  media_play: 0xb3, media_pause: 0xb3, media_play_pause: 0xb3, play_pause: 0xb3,
+  media_stop: 0xb2, stop: 0xb2,
+  media_prev: 0xb1, media_previous: 0xb1, prev_track: 0xb1, prev: 0xb1,
+  media_next: 0xb0, next_track: 0xb0, next: 0xb0,
+  media_fast_forward: 0xb4, fast_forward: 0xb4,
+  media_rewind: 0xb7, rewind: 0xb7,
+  media_eject: 0xb2,
+  volume_mute: 0xad, mute: 0xad,
+  volume_down: 0xae,
+  volume_up: 0xaf,
+
+  // 系统/编辑键补充
+  pause: 0x13, break: 0x13,
+  apps: 0x5d, menu: 0x5d,
+  browser_back: 0xa6, browser_forward: 0xa7, browser_refresh: 0xa8, browser_stop: 0xa9, browser_search: 0xaa,
+  launch_mail: 0xb4, launch_media: 0xb5, launch_app1: 0xb6, launch_app2: 0xb7,
+};
+
+/**
+ * 媒体键名 → APPCOMMAND 取值（2026-10-05 补）。
+ *
+ * 取值见 Windows `APPCOMMAND_*` 常量。keyPress 识别到整条序列都是媒体键时，
+ * 改用 `WM_APPCOMMAND` 投递（而非 SendInput 注入 VK）—— 前者能定向到
+ * 指定窗口/进程，且不受「窗口被遮挡 / 非当前媒体会话焦点」影响。
+ *
+ * ⚠️ 取值是**按位**传入 lParam 的（低 16 位为 command，位 12-15 为设备类型），
+ * 因此不同 command 的裸值可能相同（如 VOLUME_DOWN=0x208 与 PAUSE=0x031 的
+ * 设备位不同），不能简单复用。音量键走**真·虚拟键注入**（VK 0xAD-0xAF，
+ * 见 VK_MAP）更可靠 —— 系统会自行映射为 APPCOMMAND_VOLUME_*，
+ * 故此处**刻意不收录音量键**，避免 device-bit 歧义。
+ */
+const MEDIA_COMMANDS: Record<string, number> = {
+  media_play: 14, play: 14,
+  media_pause: 1, pause: 1,
+  media_play_pause: 12, play_pause: 12,
+  media_stop: 15, stop: 15,
+  media_prev: 6, media_previous: 6, prev_track: 6, prev: 6,
+  media_next: 7, next_track: 7, next: 7,
+  media_fast_forward: 3, fast_forward: 3,
+  media_rewind: 4, rewind: 4,
+  media_close: 10, close: 10,
+  // 注：volume_mute / volume_up / volume_down 不在此表 —— 它们只走 VK 注入
+  //（VK 0xAD/0xAF/0xAE），由系统自行翻译为对应的 APPCOMMAND。
+  // 这样 MediaCommand 不会与它们混淆（见上方 device-bit 说明）。
 };
 
 /** 键名 → 虚拟键码（字母/数字走 ASCII 映射，其余查表白名单）。 */
@@ -321,7 +421,33 @@ export async function keyPress(args: Args): Promise<unknown> {
   }
 
   const body: string[] = [];
-  const gap = Math.max(0, Math.min(2000, (args['interval_ms'] as number | undefined) ?? 40));
+  const gap = Math.max(0, Math.min(2000, (args['interval_ms'] as number) ?? 40));
+
+  // 媒体键走 WM_APPCOMMAND 通道（2026-10-05 补）
+  //
+  // 仅当**整条序列都是媒体键**时启用。若混在普通按键里（如 ["ctrl","media_play_pause"]）
+  // 则回退到 VK 注入 —— 那种组合场景本就罕见，SendInput 足够。
+  const allMedia = chords.every((ch) => ch.length === 1 && MEDIA_COMMANDS[ch[0]!.trim().toLowerCase()] !== undefined);
+  if (allMedia) {
+    // target_pid 非 0 时定向投递到该进程的全部顶层窗口（QQ 音乐会建 30+ 辅助窗口，
+    // 只投主窗口常常无效 —— 实测踩过）；否则广播。
+    const pid = (args['target_pid'] as number) ?? 0;
+    for (let i = 0; i < chords.length; i += 1) {
+      const cmd = MEDIA_COMMANDS[chords[i]![0]!.trim().toLowerCase()]!;
+      body.push(`[NAInput]::MediaCommand(${cmd}, ${Math.max(0, Math.trunc(pid))})`);
+      if (i < chords.length - 1 && gap > 0) body.push(`Start-Sleep -Milliseconds ${gap}`);
+    }
+    await runPs(body);
+    return {
+      pressed: true,
+      keys: chords.length === 1 ? chords[0] : undefined,
+      chords,
+      times: chords.length,
+      via: 'appcommand',
+      target_pid: pid || null,
+    };
+  }
+
   for (let i = 0; i < chords.length; i += 1) {
     const chord = chords[i]!;
     if (chord.length === 0) continue;

@@ -72,6 +72,9 @@ export const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent mouse scroll <delta>
   nodeagent key type "<文本>" [--interval 10]
   nodeagent key press <键1> [键2] ...  （组合键，如 ctrl c）
+  nodeagent key press media_play_pause --pid 1234   （媒体键，v1.2：走 WM_APPCOMMAND，
+                                    --pid 定向到该进程的全部顶层窗口；省略则广播。
+                                    窗口被遮挡/最小化/游戏全屏时依然有效）
 
 通用选项:
   --node <设备名>  本次命令临时指定目标设备（不改变 current）
