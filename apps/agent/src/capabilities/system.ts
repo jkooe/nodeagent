@@ -55,7 +55,6 @@ async function isAdmin(): Promise<boolean> {
 // 故一律用 typeof 探测，绝不能直接引用（否则 dev 启动就 ReferenceError）。
 declare const __AGENT_VERSION__: string | undefined;
 declare const __BUILD_COMMIT__: string | undefined;
-declare const __BUILD_TIME__: string | undefined;
 
 /** v21：读取当前生效的来源白名单（用于 system.info 上报）。 */
 function configAllowFrom(): string[] | null {
@@ -67,10 +66,9 @@ function configAllowFrom(): string[] | null {
   }
 }
 
-function injected(name: 'version' | 'commit' | 'time'): string {
+function injected(name: 'version' | 'commit'): string {
   if (name === 'version') return typeof __AGENT_VERSION__ === 'undefined' ? 'dev' : __AGENT_VERSION__;
-  if (name === 'commit') return typeof __BUILD_COMMIT__ === 'undefined' ? 'dev' : __BUILD_COMMIT__;
-  return typeof __BUILD_TIME__ === 'undefined' ? 'dev' : __BUILD_TIME__;
+  return typeof __BUILD_COMMIT__ === 'undefined' ? 'dev' : __BUILD_COMMIT__;
 }
 
 const STARTED_AT = Date.now();
@@ -118,7 +116,9 @@ export function buildInfo(): {
     // v20：语义化版本 + 提交 + 构建时间（来自构建期注入）
     version: injected('version'),
     commit: injected('commit'),
-    built_at: injected('time'),
+    // 构建时间取入口文件的 mtime（而非构建期注入）—— 注入会让每次打包字节不同，
+    // 破坏「指纹 = 构建身份」的确定性（v22 真机踩过）
+    built_at: buildCache.mtime_ms ? new Date(buildCache.mtime_ms).toISOString() : 'unknown',
     // v21：TLS 证书指纹（控制端据此钉住被控端身份）
     cert_sha256: currentCertFingerprint(),
   };

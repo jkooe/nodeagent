@@ -97,11 +97,13 @@ async function main() {
       '--target=node22',
       '--format=esm',
       '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
+      // 刻意**不注入构建时间**：注入后同一份代码每次打包字节都不同，
+      // 「指纹比对是否最新」就永远失真（真机踩过：明明同版本却报不一致）。
+      // 构建时间改由入口文件的 mtime 反映（见 system.ts 的 build.built_at）。
       // 注意：define 的值按 **JS 表达式** 解析，故用双引号包裹；写成单引号会让引号成为值的一部分
       // （真机踩过：版本显示成 v"1.4.0"）。
       `--define:__AGENT_VERSION__=${JSON.stringify(pkg.version)}`,
       `--define:__BUILD_COMMIT__=${JSON.stringify(commit)}`,
-      `--define:__BUILD_TIME__=${JSON.stringify(builtAt)}`,
       `--outfile=${bundleOut}`,
     ],
     { stdio: 'inherit' },
