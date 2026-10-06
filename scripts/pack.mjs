@@ -86,28 +86,31 @@ async function main() {
   log(`  版本 ${pkg.version} @ ${commit}（${builtAt}）`);
   mkdirSync(OUT_DIR, { recursive: true });
   const bundleOut = join(OUT_DIR, 'agent.mjs');
-  const esbuild = join(root, 'node_modules', '.bin', 'esbuild');
-  execFileSync(
-    esbuild,
-    [
-      // 输入用绝对路径，保证从任意工作目录调用都能解析
-      join(root, 'apps', 'agent', 'dist', 'index.js'),
-      '--bundle',
-      '--platform=node',
-      '--target=node22',
-      '--format=esm',
-      '--banner:js=import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
-      // 刻意**不注入构建时间**：注入后同一份代码每次打包字节都不同，
-      // 「指纹比对是否最新」就永远失真（真机踩过：明明同版本却报不一致）。
-      // 构建时间改由入口文件的 mtime 反映（见 system.ts 的 build.built_at）。
-      // 注意：define 的值按 **JS 表达式** 解析，故用双引号包裹；写成单引号会让引号成为值的一部分
-      // （真机踩过：版本显示成 v"1.4.0"）。
-      `--define:__AGENT_VERSION__=${JSON.stringify(pkg.version)}`,
-      `--define:__BUILD_COMMIT__=${JSON.stringify(commit)}`,
-      `--outfile=${bundleOut}`,
-    ],
-    { stdio: 'inherit' },
-  );
+  // 用 esbuild 的 **JS API** 而非 spawn node_modules/.bin/esbuild —— pnpm 的隔离布局下
+  // 那个 shim 在 Windows 上不存在（真机 CI 踩过：spawnSync ...\.bin\esbuild ENOENT），
+  // 而 JS API 只依赖 require('esbuild') 解析，跨平台一致。
+  const esbuild = await import('esbuild');
+  await esbuild.build({
+    entryPoints: [join(root, 'apps', 'agent', 'dist', 'index.js')],
+    bundle: true,
+    platform: 'node',
+    target: 'node22',
+    format: 'esm',
+    banner: {
+      js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
+    },
+    // 刻意**不注入构建时间**：注入后同一份代码每次打包字节都不同，
+    // 「指纹比对是否最新」就永远失真（真机踩过：明明同版本却报不一致）。
+    // 构建时间改由入口文件的 mtime 反映（见 system.ts 的 build.built_at）。
+    // 注意：define 的值按 **JS 表达式** 解析，故用 JSON.stringify 得到纯双引号；
+    // 写成单引号包裹会让引号成为值的一部分（真机踩过：版本显示成 v"1.4.0"）。
+    define: {
+      __AGENT_VERSION__: JSON.stringify(pkg.version),
+      __BUILD_COMMIT__: JSON.stringify(commit),
+    },
+    outfile: bundleOut,
+    logLevel: 'info',
+  });
 
   log('\n=== ③ 下载 Node.js Windows 运行时 ===');
   const tmpZip = join(OUT_DIR, 'node-runtime.zip');
