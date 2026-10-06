@@ -186,6 +186,20 @@ for (const a of assets) {
 console.log(`  latest.json / SHA256SUMS`);
 
 // ---------- ⑤ 提交 + 标签 + 推送 ----------
+// ⚠️ 安全闸：发版前若存在**未跟踪**文件，先停下来问，绝不盲目 add -A。
+// 2026-10-07 真机教训：工作区里有用户在建工程（crates/、docs/console-plan.md 等），
+// 发版脚本的 add -A 把它们连同版本号变更一起提交并推到公开仓库。
+const untracked = sh('git', ['ls-files', '--others', '--exclude-standard'])
+  .split('\n')
+  .filter((f) => f && !f.startsWith('.github/') && f !== '.github');
+if (untracked.length > 0) {
+  fail(
+    '发现未跟踪文件，发版已中止（避免把无关文件带入提交）：\n' +
+      untracked.map((f) => `  ${f}`).join('\n') +
+      '\n请确认：这些文件是否应纳入版本库？若要，先 git add 并单独提交；' +
+      '若不要，加入 .gitignore 后重试。',
+  );
+}
 sh('git', ['add', '-A', '--', '.', ':(exclude).github']);
 sh('git', ['commit', '-m', `chore(release): v${version}`]);
 sh('git', ['tag', '-a', `v${version}`, '-m', `nodeagent v${version}`]);
