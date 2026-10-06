@@ -64,17 +64,19 @@ jobs:
       # 整份脚本 ParseError（真机 2026-10-04 踩过：install.ps1 报「","后面缺少表达式」）。
       # 之前的冒烟全用 pwsh（7+ 认无 BOM UTF-8），所以 CI 绿、真机炸。
       # 这里只做「解析 + 首行 help」检查：5.1 能否读懂，就是真机的核心约束。
+      # ⚠️ 必须用 shell: powershell（runner 上的 powershell 即 Windows PowerShell 5.1）。
+      # 不要用 shell: cmd 再套 powershell -Command "..." —— 多行带引号经 cmd 转义会全乱
+      # （实测：Missing closing '}' / '$errs' is not recognized，是步骤自身坏，不是脚本坏）。
       - name: 冒烟 — 脚本可被 Windows PowerShell 5.1 解析（BOM 守卫）
-        shell: cmd
-        run: >
-          powershell -NoProfile -ExecutionPolicy Bypass -Command "
-          $ErrorActionPreference='Stop';
-          foreach ($f in @('scripts\install.ps1','scripts\uninstall.ps1','scripts\rescue-network.ps1')) {
-            $errs = $null;
-            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$null, [ref]$errs);
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in @('scripts\install.ps1', 'scripts\uninstall.ps1', 'scripts\rescue-network.ps1')) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$null, [ref]$errs)
             if ($errs -and $errs.Count -gt 0) { throw ('5.1 解析失败 ' + $f + ' -> ' + $errs[0].Message) }
-            Write-Host ('OK 5.1 parse: ' + $f);
-          }"
+            Write-Host ('OK 5.1 parse: ' + $f)
+          }
 
       - name: 冒烟 — install.ps1 安装链路
         shell: powershell
