@@ -169,6 +169,8 @@ jobs:
 
       - name: 清理
         if: always()
+        # 清理失败不掩盖真实结论（前置挂了会连带这里报错）
+        continue-on-error: true
         shell: powershell
         run: |
           Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
