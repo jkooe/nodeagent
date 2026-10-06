@@ -74,7 +74,7 @@ jobs:
           foreach ($f in @('scripts\install.ps1', 'scripts\uninstall.ps1', 'scripts\rescue-network.ps1')) {
             $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$null, [ref]$errs)
-            if ($errs -and $errs.Count -gt 0) { throw ('5.1 解析失败 ' + $f + ' -> ' + $errs[0].Message) }
+            if ($errs -and $errs.Count -gt 0) { throw ('5.1 parse FAILED: ' + $f + ' -> ' + $errs[0].Message) }
             Write-Host ('OK 5.1 parse: ' + $f)
           }
 
@@ -85,17 +85,17 @@ jobs:
           ./scripts/install.ps1 -Port 18769 -NodeId ci_win
 
           $task = Get-ScheduledTask -TaskName "nodeagent" -ErrorAction Stop
-          Write-Host "计划任务状态: $($task.State)"
+          Write-Host "Scheduled task state: $($task.State)"
 
           $cfg = Get-Content "$env:USERPROFILE\.nodeagent\agent.json" -Raw | ConvertFrom-Json
-          if ($cfg.port -ne 18769) { throw "端口配置错误: $($cfg.port)" }
-          if (-not $cfg.key)       { throw "预共享密钥缺失" }
-          if (-not $cfg.tls)       { throw "TLS 默认应开启" }
+          if ($cfg.port -ne 18769) { throw "port mismatch: $($cfg.port)" }
+          if (-not $cfg.key)       { throw "PSK missing in agent.json" }
+          if (-not $cfg.tls)       { throw "TLS should be on by default" }
 
           $rule = Get-NetFirewallRule -DisplayName "nodeagent (TCP 18769)" -ErrorAction Stop
-          if (-not $rule) { throw "防火墙规则未创建" }
+          if (-not $rule) { throw "Firewall rule" }
 
-          Write-Host "OK — 计划任务 / 配置 / 防火墙均已就位"
+          Write-Host "OK  scheduled task / config / firewallall in place"
 
       # 一键入口冒烟：真跑 install.cmd / control.cmd。
       # 目的不是「再装一遍」，而是证明双击路径可用 —— 这些脚本是用户唯一的
