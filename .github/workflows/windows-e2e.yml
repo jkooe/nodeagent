@@ -48,6 +48,10 @@ jobs:
 
       - name: 类型检查
         run: pnpm typecheck
+      - name: 单元测试 — 协议纯函数 / 清单守护 / 脚本生成
+        # 来自 ci/workflow-unit-tests 分支（4d73d6e）的实质贡献；该分支基于老 main，
+        # 直接 merge 会回退上万行，故只取其提交内容手工并入。
+        run: node --test "tests/unit/**/*.test.mjs"
 
       - name: E2E — 协议与跨平台能力
         run: node tests/e2e/run.mjs
@@ -55,8 +59,25 @@ jobs:
       - name: E2E — Windows 专属能力（服务 / 软件 / winget）
         run: node tests/e2e/windows.mjs
 
+      # ⚠️ 这一步刻意用 **powershell（Windows PowerShell 5.1）** 而非 pwsh。
+      # 5.1 读无 BOM 的 .ps1 会按 ANSI/GBK 解析，中文注释会破坏字符串边界 →
+      # 整份脚本 ParseError（真机 2026-10-04 踩过：install.ps1 报「","后面缺少表达式」）。
+      # 之前的冒烟全用 pwsh（7+ 认无 BOM UTF-8），所以 CI 绿、真机炸。
+      # 这里只做「解析 + 首行 help」检查：5.1 能否读懂，就是真机的核心约束。
+      - name: 冒烟 — 脚本可被 Windows PowerShell 5.1 解析（BOM 守卫）
+        shell: cmd
+        run: >
+          powershell -NoProfile -ExecutionPolicy Bypass -Command "
+          $ErrorActionPreference='Stop';
+          foreach ($f in @('scripts\install.ps1','scripts\uninstall.ps1','scripts\rescue-network.ps1')) {
+            $errs = $null;
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f).Path, [ref]$null, [ref]$errs);
+            if ($errs -and $errs.Count -gt 0) { throw ('5.1 解析失败 ' + $f + ' -> ' + $errs[0].Message) }
+            Write-Host ('OK 5.1 parse: ' + $f);
+          }"
+
       - name: 冒烟 — install.ps1 安装链路
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
           ./scripts/install.ps1 -Port 18769 -NodeId ci_win
@@ -73,6 +94,44 @@ jobs:
           if (-not $rule) { throw "防火墙规则未创建" }
 
           Write-Host "OK — 计划任务 / 配置 / 防火墙均已就位"
+
+      # 一键入口冒烟：真跑 install.cmd / control.cmd。
+      # 目的不是「再装一遍」，而是证明双击路径可用 —— 这些脚本是用户唯一的
+      # 上手入口，语法或编码一旦坏了，只有真机 cmd.exe 才测得出来。
+      # 端口用 18770 避开前一步的 18770 之外的安装，便于分辨是哪一步装的。
+      - name: 冒烟 — install.cmd 双击链路（含自提权与 PSK 读取）
+        shell: cmd
+        run: call scripts\install.cmd 18770
+        env:
+          CI: "true"
+      - name: 冒烟 — control.cmd 状态查询
+        shell: cmd
+        run: scripts\control.cmd 18770 < nul
+        env:
+          CI: "true"
+      - name: 冒烟 — 产物包结构与编码
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          pnpm pack:win
+          $zip = "release/nodeagent-win-x64.zip"
+          if (-not (Test-Path $zip)) { throw "未产出 $zip" }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+          try {
+            $names = $z.Entries.Name
+            foreach ($need in @('install.cmd','control.cmd','install.ps1','control.ps1','PSK.txt','README.txt','agent.mjs','node.exe')) {
+              if ($names -notcontains $need) { throw "包内缺少 $need" }
+            }
+            foreach ($e in $z.Entries) {
+              $s = $e.Open(); $buf = New-Object byte[] 3
+              [void]$s.Read($buf, 0, 3); $s.Close()
+              $hasBom = ($buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF)
+              if ($e.Name -like '*.ps1' -and -not $hasBom) { throw "$($e.Name) 在包内丢了 BOM" }
+              if ($e.Name -like '*.cmd' -and $hasBom) { throw "$($e.Name) 不该有 BOM" }
+            }
+            Write-Host "OK — 包结构完整，.ps1 带 BOM / .cmd 无 BOM"
+          } finally { $z.Dispose() }
 
       - name: 冒烟 — 被控端监听
         shell: pwsh
@@ -108,7 +167,7 @@ jobs:
 
       - name: 清理
         if: always()
-        shell: pwsh
+        shell: powershell
         run: |
           Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
           ./scripts/uninstall.ps1 -Port 18769 -Purge
