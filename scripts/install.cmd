@@ -67,23 +67,16 @@ if exist "%PSKFILE%" (
     "if (Test-Path -LiteralPath '%PSKFILE%') { (Get-Content -LiteralPath '%PSKFILE%' -Raw).Trim() }"') do set "PSK=%%K"
 )
 
-if not defined PSK (
-  echo [*] No usable PSK.txt found - generating a new pre-shared key...
-  REM 32 random bytes via .NET, hex-encoded to 64 chars.
-  for /f "delims=" %%K in ('powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$b=New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); ($b ^| ForEach-Object { $_.ToString('x2') }) -join ''"') do set "PSK=%%K"
-
-  if not defined PSK (
-    echo [x] Failed to generate a key. Aborting.
-    if not defined CI pause
-    exit /b 1
-  )
-  REM Plain hex, no BOM: the file is read with `set /p` / Get-Content, and a
-  REM leading U+FEFF would corrupt the first byte of the key.
-  >"%PSKFILE%" echo %PSK%
-  echo [+] New key written to "%PSKFILE%"
-) else (
+if defined PSK (
   echo [+] Using key from PSK.txt
+) else (
+  REM No PSK.txt -> let install.ps1 handle it: it reuses the key from an existing
+  REM agent.json when present, otherwise generates one (in PowerShell, where quoting
+  REM is safe). Do NOT generate here in cmd: routing a PS one-liner with pipes through
+  REM `for /f` requires ^| escaping that leaks into PowerShell and breaks the parse
+  REM (real machine 2026-10-07: "Unexpected token '^'" - that is exactly the
+  REM first-run path, since PSK.txt is no longer shipped in the zip).
+  echo [*] No usable PSK.txt found - install.ps1 will reuse or generate the key
 )
 
 REM --- 3) install -------------------------------------------------------------
@@ -91,7 +84,11 @@ echo.
 echo [*] Installing nodeagent ^(node: %COMPUTERNAME%, port %PORT%, input control ON^)...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -NodeId "%COMPUTERNAME%" -Key "%PSK%" -AllowInput -Port %PORT%
+if defined PSK (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -NodeId "%COMPUTERNAME%" -Key "%PSK%" -AllowInput -Port %PORT%
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%PS1%" -NodeId "%COMPUTERNAME%" -AllowInput -Port %PORT%
+)
 set "RC=%ERRORLEVEL%"
 
 echo.
