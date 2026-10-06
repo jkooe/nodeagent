@@ -117,24 +117,30 @@ jobs:
           $ErrorActionPreference = "Stop"
           pnpm pack:win
           $zip = "release/nodeagent-win-x64.zip"
-          if (-not (Test-Path $zip)) { throw "未产出 $zip" }
+          if (-not (Test-Path $zip)) { throw "zip not produced: $zip" }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
           try {
             $names = $z.Entries.Name
-            foreach ($need in @('install.cmd','control.cmd','install.ps1','control.ps1','PSK.txt','README.txt','agent.mjs','node.exe')) {
-              if ($names -notcontains $need) { throw "包内缺少 $need" }
+            # 必须随包分发
+            foreach ($need in @('install.cmd','control.cmd','install.ps1','control.ps1','README.txt','agent.mjs','node.exe')) {
+              if ($names -notcontains $need) { throw "missing in package: $need" }
             }
+            # 必须**不**在包内：PSK.txt 是现生成给本机的，打进公开资产等于泄露密钥
+            # （eaca9e0 起已从 zip 剔除；此处反向断言守住该性质）
+            foreach ($forbidden in @('PSK.txt','*.key','*.pem','certs')) {
+              if ($names -contains $forbidden) { throw "package must NOT contain: $forbidden" }
+            }
+            if ($names -match 'PSK\.txt') { throw "package leaks PSK.txt" }
             foreach ($e in $z.Entries) {
               $s = $e.Open(); $buf = New-Object byte[] 3
               [void]$s.Read($buf, 0, 3); $s.Close()
               $hasBom = ($buf[0] -eq 0xEF -and $buf[1] -eq 0xBB -and $buf[2] -eq 0xBF)
-              if ($e.Name -like '*.ps1' -and -not $hasBom) { throw "$($e.Name) 在包内丢了 BOM" }
-              if ($e.Name -like '*.cmd' -and $hasBom) { throw "$($e.Name) 不该有 BOM" }
+              if ($e.Name -like '*.ps1' -and -not $hasBom) { throw "$($e.Name) lost its BOM in package" }
+              if ($e.Name -like '*.cmd' -and $hasBom) { throw "$($e.Name) must not have a BOM" }
             }
-            Write-Host "OK — 包结构完整，.ps1 带 BOM / .cmd 无 BOM"
+            Write-Host "OK - package complete; .ps1 has BOM / .cmd has none; no key shipped"
           } finally { $z.Dispose() }
-
       - name: 冒烟 — 被控端监听
         shell: pwsh
         run: |
