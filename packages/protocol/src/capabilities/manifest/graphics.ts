@@ -186,45 +186,106 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
   },
   {
     name: CapabilityNames.KeyPress,
-    version: '1.2',
+    version: '1.5',
     description:
-      '按下按键。keys=["ctrl","c"] 表示和弦；配 repeat=3 可连按 3 次；' +
-      'sequence=[["ctrl","c"],["ctrl","v"]] 表示按键序列。' +
-      '**媒体键**（v1.2）：当整条序列都是媒体键（media_play_pause / media_stop / media_next / ' +
-      'media_prev / media_play / media_pause）时，自动改走 `WM_APPCOMMAND` 投递而非虚拟键注入 —— ' +
-      '可定向到 `target_pid` 指定的进程，且**不受窗口被遮挡 / 非当前媒体焦点影响**。' +
-      '音量键（volume_mute / volume_up / volume_down）仍走虚拟键 0xAD-0xAF，由系统自行映射。',
+      '按下**快捷键**（v1.5 大幅扩展范围）。支持的输入形式（**一次只用一种**）：' +
+      '① 字符串热键 hotkey: "ctrl+shift+esc"（配 repeat 可连按）；② 热键序列 hotkeys: ["ctrl+c","ctrl+v"]；' +
+      '③ 预设别名 preset: "copy" / presets: ["copy","paste"]（约 50 个语义名，免记键位）；' +
+      '④ 老数组形式 keys: ["ctrl","c"]（配 repeat）；⑤ 序列 sequence: [["up"],["enter"]]。' +
+      '**按键覆盖**：字母/数字、F1-F24、左右侧修饰键（lctrl/rctrl/…）、小键盘（numpad0-9 与四则运算，' +
+      '与数字键分开）、OEM 符号键（oem_plus/oem_comma/oem_period… → 支持 win+d、ctrl++、win+. 这类组合）、' +
+      '媒体键、浏览器键、IME 键（kana/convert/…）、系统键（sleep/help/…）。' +
+      '**长按**：hold_ms（按下到释放的保持时长，≤5s）。' +
+      '**投放路由**：route=foreground（默认，SendInput 注入当前焦点）；' +
+      'route=post（向 target_pid 指定进程的**全部顶层窗口** PostMessage —— 目标在后台/被遮挡时可用，' +
+      '⚠️ 但游戏与部分输入型程序不响应后台键盘消息）。' +
+      '**媒体键**：整条序列都是媒体键时自动改走 WM_APPCOMMAND（可定向 target_pid、不受遮挡影响）。' +
+      '音量键（volume_mute/up/down）仍走虚拟键 0xAD-0xAF，由系统自行映射。',
     risk: 'high',
     params_schema: {
       type: 'object',
       properties: {
+        hotkey: {
+          type: 'string',
+          maxLength: 64,
+          description: '单条热键字符串，如 "ctrl+shift+esc"、"win+d"、"alt+tab"；分隔符支持 + - 空格',
+        },
+        hotkeys: {
+          type: 'array',
+          items: { type: 'string', maxLength: 64 },
+          minItems: 1,
+          maxItems: 50,
+          description: '热键字符串序列，如 ["ctrl+c","ctrl+v"]（按键序列）',
+        },
+        preset: { type: 'string', description: '预设语义名（单个），如 copy / show_desktop / volume_mute_toggle' },
+        presets: {
+          type: 'array',
+          items: { type: 'string' },
+          minItems: 1,
+          maxItems: 50,
+          description: '多个预设名 = 序列',
+        },
         keys: {
           type: 'array',
           items: { type: 'string' },
           minItems: 1,
           maxItems: 4,
-          description: '和弦按键列表，如 ["ctrl","shift","esc"]',
+          description: '（老形式）和弦按键列表，如 ["ctrl","shift","esc"]',
         },
-        repeat: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: '和弦重复次数' },
+        repeat: { type: 'integer', minimum: 1, maximum: 50, default: 1, description: '和弦/热键重复次数' },
         sequence: {
           type: 'array',
           items: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 4 },
-          description: '和弦序列，如 [["up"],["up"],["enter"]]；提供时忽略 keys/repeat',
+          description: '（老形式）和弦序列，如 [["up"],["up"],["enter"]]',
+        },
+        hold_ms: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 5000,
+          default: 0,
+          description: 'v1.5 长按：按下后保持该毫秒数再释放（如长按音量键）',
+        },
+        route: {
+          type: 'string',
+          enum: ['foreground', 'post'],
+          default: 'foreground',
+          description:
+            'v1.5 投放路由：foreground = SendInput 注入当前焦点（默认，需目标可见）；' +
+            'post = 向 target_pid 进程全部顶层窗口 PostMessage（目标在后台时可用）',
         },
         target_pid: {
           type: 'integer',
           minimum: 0,
           description:
-            '媒体键定向投递的**目标进程 PID**（v1.2）。0 或省略 = 广播给所有顶层窗口。' +
-            '播放器常创建 30+ 辅助窗口（QQ 音乐实测 36 个），只投主窗口常常无效 → ' +
-            '指定 PID 后会向该进程**全部**顶层窗口投递。',
+            '目标进程 PID。媒体键：0 或省略 = 广播给所有顶层窗口（播放器常建 30+ 辅助窗口，' +
+            '指定 PID 会投给该进程全部顶层窗口）。route=post：必填（≥1）。',
+        },
+        interval_ms: {
+          type: 'integer',
+          minimum: 0,
+          maximum: 2000,
+          default: 40,
+          description: '序列中相邻和弦之间的间隔',
         },
       },
       additionalProperties: false,
     },
     returns_schema: {
       type: 'object',
-      properties: { pressed: { type: 'boolean' }, keys: { type: 'array', items: { type: 'string' } } },
+      properties: {
+        pressed: { type: 'boolean' },
+        keys: { type: 'array', items: { type: 'string' } },
+        chords: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+        times: { type: 'integer' },
+        presets: { type: 'array', items: { type: 'string' } },
+        via: { type: 'string', description: '输入形式来源：hotkey/hotkeys/preset/presets/keys/sequence' },
+        channel: { type: 'string', description: '实际投递通道：sendinput / appcommand / postmessage' },
+        route: { type: 'string' },
+        hold_ms: { type: 'integer' },
+        target_pid: { type: 'integer' },
+        sent_windows: { type: 'integer', description: 'route=post 时投递成功的窗口数' },
+        note: { type: 'string' },
+      },
     },
   },
   {

@@ -25,6 +25,7 @@ import {
 } from '@nodeagent/client';
 import {
   CapabilityNames,
+  HOTKEY_PRESETS,
   matchPattern,
   DEFAULT_DISCOVERY_PORT,
   type CapabilityDescriptor,
@@ -171,9 +172,30 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
       return;
     }
     case 'press': {
-      if (positionals.length === 0) fail('用法: nodeagent key press <键1> [键2] ...（如 ctrl c）');
-      const args: Record<string, unknown> = { keys: positionals };
+      // v1.5：三种用法（一次一种）
+      //   nodeagent key press "ctrl+shift+esc"     字符串热键
+      //   nodeagent key press copy                 预设名
+      //   nodeagent key press ctrl c               老形式（空格分隔的各键）
+      if (positionals.length === 0) fail('用法: nodeagent key press "<热键>" | <预设名> | <键1> [键2] ...（如 "ctrl+shift+esc" / copy / ctrl c）');
+      const args: Record<string, unknown> = {};
+      let positionalsEcho = positionals;
+      if (positionals.length === 1) {
+        const one = positionals[0]!;
+        // 含分隔符 → 字符串热键；不含但命中预设表 → 预设；都不中 → 单键（也当热键交给被控端解析）
+        const spec = HOTKEY_PRESETS[one.trim().toLowerCase()];
+        if (spec) {
+          args['preset'] = one.trim().toLowerCase();
+        } else {
+          args['hotkey'] = one;
+        }
+      } else {
+        args['keys'] = positionals;
+      }
+      // 老形式说明：位置参数以空格分隔 → 兼容"ctrl c"（无 + 号）
       if (opts.interval) args['interval_ms'] = Number(opts.interval);
+      // v1.5 新增可选参数
+      if (opts.hold) args['hold_ms'] = Number(opts.hold);
+      if (opts.route) args['route'] = opts.route;
       // 媒体键可定向到指定进程（播放器常建 30+ 辅助窗口，只投主窗口往往无效）
       if (opts.pid) args['target_pid'] = Number(opts.pid);
       await withClient((c) =>
@@ -182,15 +204,25 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
           // （真机 2026-10-04 实测：原先直接读 r.keys.join() 会抛
           //   "Cannot read properties of undefined (reading 'join')"）
           // 故优先用请求参数回显，缺失时再退回 chords 展开。
-          const r = d as { keys?: string[]; chords?: string[][]; times?: number; via?: string; target_pid?: number | null };
+          const r = d as {
+            keys?: string[]; chords?: string[][]; times?: number; via?: string;
+            presets?: string[]; channel?: string; route?: string; sent_windows?: number;
+            target_pid?: number | null; note?: string;
+          };
+          const shown = (r.chords ?? []).map((ch) => ch.join('+')).join(' → ');
           const label = r.keys?.length
             ? r.keys.join('+')
-            : (r.chords ?? []).map((ch) => ch.join('+')).join(' → ') || positionals.join('+');
+            : shown || positionalsEcho.join('+');
           const times = r.times && r.times > 1 ? `（重复 ${r.times} 次）` : '';
-          const via = r.via === 'appcommand'
-            ? `（媒体通道${r.target_pid ? ` → pid ${r.target_pid}` : ' · 广播'}）`
-            : '';
-          console.log(`✓ 已按下 ${label}${times}${via}`);
+          const presetEcho = r.presets?.length ? `（预设 ${r.presets.join('→')} = ${shown}）` : '';
+          const via =
+            r.channel === 'appcommand'
+              ? `（媒体通道${r.target_pid ? ` → pid ${r.target_pid}` : ' · 广播'}）`
+              : r.channel === 'postmessage'
+                ? `（后台投递 → pid ${r.target_pid}，命中 ${r.sent_windows ?? 0} 窗口）`
+                : '';
+          console.log(`✓ 已按下 ${label}${times}${presetEcho}${via}`);
+          if (r.note) console.log(`  ℹ️ ${r.note}`);
         }),
       );
       return;

@@ -1,4 +1,10 @@
-import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
+import { CapabilityError, ErrorCodes, expandChords } from '@nodeagent/protocol';
+import {
+  isAllMedia,
+  buildMediaBody,
+  buildForegroundBody,
+  buildPostBody,
+} from './input-script.js';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 
 type Args = Record<string, unknown>;
@@ -175,6 +181,36 @@ public static class NAInput {
         }
         return sent;
     }
+
+    /// <summary>
+    /// v1.5：向目标进程的**全部顶层窗口** PostMessage 键盘消息（后端定向快捷键投放）。
+    ///
+    /// 场景：目标窗口不在前台（被遮挡 / 最小化 / 聊天窗口在后台），又要给它发快捷键。
+    /// WM_KEYDOWN=0x0100，WM_KEYUP=0x0101；修饰键按顺序投递，调用方负责释放顺序。
+    ///
+    /// ⚠️ 已知局限（务必告知调用方）：
+    ///   - 部分程序不处理**后台**键盘消息（游戏、部分浏览器与输入型应用直接忽略）；
+    ///   - PostMessage 不带 scancode，依赖 lParam 解码按键的程序可能取不到键。
+    /// 该类目标请改用默认 route=foreground（前台注入，需目标可见）。
+    /// </summary>
+    public static int PostChord(ushort[] vks, int targetPid, bool up) {
+        int sent = 0;
+        if (vks == null || vks.Length == 0) return 0;
+        var handles = new System.Collections.Generic.List<IntPtr>();
+        EnumWindows(delegate(IntPtr h, IntPtr p) {
+            uint wpid;
+            GetWindowThreadProcessId(h, out wpid);
+            if (wpid == (uint)targetPid) handles.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        uint msg = up ? 0x0101u : 0x0100u;
+        foreach (var h in handles) {
+            foreach (var vk in vks) {
+                if (PostMessage(h, msg, (IntPtr)vk, IntPtr.Zero)) sent++;
+            }
+        }
+        return sent;
+    }
 }`;
 
 /** 组装：加类型定义 + 具体操作。 */
@@ -184,13 +220,14 @@ function psScript(body: string[]): string {
   );
 }
 
-async function runPs(body: string[], timeoutMs = 30_000): Promise<void> {
+async function runPs(body: string[], timeoutMs = 30_000): Promise<string> {
   const r = await execCommand({ command: psScript(body), timeoutMs });
   if (r.exit_code !== 0) {
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '输入注入失败', {
       detail: (r.stderr || r.stdout).slice(0, 400),
     });
   }
+  return r.stdout ?? '';
 }
 
 // ---------------- 鼠标 ----------------
@@ -303,82 +340,6 @@ export async function mouseDrag(args: Args): Promise<unknown> {
   return { dragged: true, from: { x: x1, y: y1 }, to: { x: x2, y: y2 }, button, steps };
 }
 
-// ---------------- 键盘 ----------------
-const VK_MAP: Record<string, number> = {
-  ctrl: 0x11, control: 0x11, shift: 0x10, alt: 0x12, win: 0x5b, meta: 0x5b,
-  enter: 0x0d, return: 0x0d, tab: 0x09, esc: 0x1b, escape: 0x1b, space: 0x20,
-  backspace: 0x08, delete: 0x2e, del: 0x2e, insert: 0x2d, ins: 0x2d,
-  up: 0x26, down: 0x28, left: 0x25, right: 0x27,
-  home: 0x24, end: 0x23, pageup: 0x21, pagedown: 0x22,
-  capslock: 0x14, printscreen: 0x2c,
-  f1: 0x70, f2: 0x71, f3: 0x72, f4: 0x73, f5: 0x74, f6: 0x75,
-  f7: 0x76, f8: 0x77, f9: 0x78, f10: 0x79, f11: 0x7a, f12: 0x7b,
-  f13: 0x7c, f14: 0x7d, f15: 0x7e, f16: 0x7f, f17: 0x80, f18: 0x81,
-  f19: 0x82, f20: 0x83, f21: 0x84, f22: 0x85, f23: 0x86, f24: 0x87,
-
-  // 媒体键（0xA6-0xB7 区段）—— 2026-10-05 补
-  //
-  // 为何必要：远程控媒体播放器（QQ 音乐 / 网易云 / 浏览器视频）时，
-  // 若软件热键不可用（精简模式常不注册全局热键），系统媒体键是唯一
-  // 与「窗口是否可见/被遮挡」无关的通道 —— 窗口最小化、被游戏全屏盖住时
-  // 依然有效。实测：QQ 音乐精简窗被 DNF 全屏遮挡时，媒体键仍能控���。
-  media_play: 0xb3, media_pause: 0xb3, media_play_pause: 0xb3, play_pause: 0xb3,
-  media_stop: 0xb2, stop: 0xb2,
-  media_prev: 0xb1, media_previous: 0xb1, prev_track: 0xb1, prev: 0xb1,
-  media_next: 0xb0, next_track: 0xb0, next: 0xb0,
-  media_fast_forward: 0xb4, fast_forward: 0xb4,
-  media_rewind: 0xb7, rewind: 0xb7,
-  media_eject: 0xb2,
-  volume_mute: 0xad, mute: 0xad,
-  volume_down: 0xae,
-  volume_up: 0xaf,
-
-  // 系统/编辑键补充
-  pause: 0x13, break: 0x13,
-  apps: 0x5d, menu: 0x5d,
-  browser_back: 0xa6, browser_forward: 0xa7, browser_refresh: 0xa8, browser_stop: 0xa9, browser_search: 0xaa,
-  launch_mail: 0xb4, launch_media: 0xb5, launch_app1: 0xb6, launch_app2: 0xb7,
-};
-
-/**
- * 媒体键名 → APPCOMMAND 取值（2026-10-05 补）。
- *
- * 取值见 Windows `APPCOMMAND_*` 常量。keyPress 识别到整条序列都是媒体键时，
- * 改用 `WM_APPCOMMAND` 投递（而非 SendInput 注入 VK）—— 前者能定向到
- * 指定窗口/进程，且不受「窗口被遮挡 / 非当前媒体会话焦点」影响。
- *
- * ⚠️ 取值是**按位**传入 lParam 的（低 16 位为 command，位 12-15 为设备类型），
- * 因此不同 command 的裸值可能相同（如 VOLUME_DOWN=0x208 与 PAUSE=0x031 的
- * 设备位不同），不能简单复用。音量键走**真·虚拟键注入**（VK 0xAD-0xAF，
- * 见 VK_MAP）更可靠 —— 系统会自行映射为 APPCOMMAND_VOLUME_*，
- * 故此处**刻意不收录音量键**，避免 device-bit 歧义。
- */
-const MEDIA_COMMANDS: Record<string, number> = {
-  media_play: 14, play: 14,
-  media_pause: 1, pause: 1,
-  media_play_pause: 12, play_pause: 12,
-  media_stop: 15, stop: 15,
-  media_prev: 6, media_previous: 6, prev_track: 6, prev: 6,
-  media_next: 7, next_track: 7, next: 7,
-  media_fast_forward: 3, fast_forward: 3,
-  media_rewind: 4, rewind: 4,
-  media_close: 10, close: 10,
-  // 注：volume_mute / volume_up / volume_down 不在此表 —— 它们只走 VK 注入
-  //（VK 0xAD/0xAF/0xAE），由系统自行翻译为对应的 APPCOMMAND。
-  // 这样 MediaCommand 不会与它们混淆（见上方 device-bit 说明）。
-};
-
-/** 键名 → 虚拟键码（字母/数字走 ASCII 映射，其余查表白名单）。 */
-function toVk(key: string): number {
-  const k = key.trim().toLowerCase();
-  if (VK_MAP[k] !== undefined) return VK_MAP[k]!;
-  if (/^[a-z]$/.test(k)) return k.toUpperCase().charCodeAt(0);
-  if (/^[0-9]$/.test(k)) return k.charCodeAt(0);
-  throw new CapabilityError(ErrorCodes.PARAM_INVALID, `不支持的按键: ${key}`, {
-    supported: [...Object.keys(VK_MAP), 'a-z', '0-9'],
-  });
-}
-
 export async function keyType(args: Args): Promise<unknown> {
   assertAllowed('input.key.type');
   requireWindows('input.key.type');
@@ -403,61 +364,96 @@ export async function keyPress(args: Args): Promise<unknown> {
   assertAllowed('input.key.press');
   requireWindows('input.key.press');
 
-  // v10.2：支持三种语义
-  //   1) keys      —— 单个和弦（如 ["ctrl","c"]）
-  //   2) repeat    —— 和弦重复 N 次（解决「连按上键 3 次」这类需求）
-  //   3) sequence  —— 任意和弦序列（如 [["ctrl","c"], ["ctrl","v"]]）
-  const sequence = args['sequence'] as string[][] | undefined;
-  const repeat = Math.max(1, Math.min(50, (args['repeat'] as number | undefined) ?? 1));
-  const keys = args['keys'] as string[] | undefined;
-
-  const chords: string[][] = sequence?.length
-    ? sequence
-    : keys?.length
-      ? Array.from({ length: repeat }, () => keys)
-      : [];
-  if (chords.length === 0) {
-    throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需提供 keys（可配 repeat）或 sequence');
+  // v1.5：入参统一经 protocol 的 expandChords 展开 —— 字符串热键 / 预设名 / 老数组形式
+  // 全部收敛成「归一化和弦序列」。混用多种形式会直接报错，避免"以谁为准"的歧义。
+  let expanded;
+  try {
+    expanded = expandChords({
+      hotkey: args['hotkey'] as string | undefined,
+      hotkeys: args['hotkeys'] as string[] | undefined,
+      preset: args['preset'] as string | undefined,
+      presets: args['presets'] as string[] | undefined,
+      keys: args['keys'] as string[] | undefined,
+      sequence: args['sequence'] as string[][] | undefined,
+      repeat: args['repeat'] as number | undefined,
+    });
+  } catch (err) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, `快捷键参数错误: ${err instanceof Error ? err.message : String(err)}`);
   }
+  const chords = expanded.chords;
+  const presets = expanded.presets;
 
-  const body: string[] = [];
   const gap = Math.max(0, Math.min(2000, (args['interval_ms'] as number) ?? 40));
+  // v1.5：长按（按下到释放的保持时长），用于"长按音量/持续按住方向键"等场景
+  const holdMs = Math.max(0, Math.min(5000, Math.round((args['hold_ms'] as number | undefined) ?? 0)));
+  // v1.5：投放路由。foreground = SendInput 注入当前焦点（默认，旧行为）；
+  //       post = 向目标进程全部顶层窗口 PostMessage（窗口在后台时可用，但兼容性差）
+  const route = (args['route'] as string | undefined) ?? 'foreground';
+  if (route !== 'foreground' && route !== 'post') {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, `不支持的 route: ${route}`, { allowed: ['foreground', 'post'] });
+  }
+  const pid = (args['target_pid'] as number) ?? 0;
+  if (route === 'post' && pid <= 0) {
+    throw new CapabilityError(
+      ErrorCodes.PARAM_INVALID,
+      'route=post 需要提供 target_pid（≥1）—— 后台投递必须知道投给哪个进程',
+      { hint: '用 window.list 取目标进程 PID；无目标时请用默认 route=foreground' },
+    );
+  }
 
   // 媒体键走 WM_APPCOMMAND 通道（2026-10-05 补）
   //
   // 仅当**整条序列都是媒体键**时启用。若混在普通按键里（如 ["ctrl","media_play_pause"]）
   // 则回退到 VK 注入 —— 那种组合场景本就罕见，SendInput 足够。
-  const allMedia = chords.every((ch) => ch.length === 1 && MEDIA_COMMANDS[ch[0]!.trim().toLowerCase()] !== undefined);
+  const allMedia = isAllMedia(chords);
   if (allMedia) {
     // target_pid 非 0 时定向投递到该进程的全部顶层窗口（QQ 音乐会建 30+ 辅助窗口，
     // 只投主窗口常常无效 —— 实测踩过）；否则广播。
-    const pid = (args['target_pid'] as number) ?? 0;
-    for (let i = 0; i < chords.length; i += 1) {
-      const cmd = MEDIA_COMMANDS[chords[i]![0]!.trim().toLowerCase()]!;
-      body.push(`[NAInput]::MediaCommand(${cmd}, ${Math.max(0, Math.trunc(pid))})`);
-      if (i < chords.length - 1 && gap > 0) body.push(`Start-Sleep -Milliseconds ${gap}`);
-    }
-    await runPs(body);
+    const mediaBody = buildMediaBody(chords, { gapMs: gap, holdMs, targetPid: pid, route });
+    await runPs(mediaBody);
     return {
       pressed: true,
       keys: chords.length === 1 ? chords[0] : undefined,
       chords,
       times: chords.length,
-      via: 'appcommand',
+      presets,
+      via: expanded.via,
+      channel: 'appcommand',
       target_pid: pid || null,
     };
   }
 
-  for (let i = 0; i < chords.length; i += 1) {
-    const chord = chords[i]!;
-    if (chord.length === 0) continue;
-    const vks = chord.map(toVk);
-    for (const vk of vks) body.push(`[NAInput]::Vk(${vk}, $false)`);
-    // 逆序释放，保证组合键正确
-    for (const vk of [...vks].reverse()) body.push(`[NAInput]::Vk(${vk}, $true)`);
-    if (i < chords.length - 1 && gap > 0) body.push(`Start-Sleep -Milliseconds ${gap}`);
+  // v1.5：后端定向投递（route=post）—— 目标窗口不在前台时使用
+  if (route === 'post') {
+    let sent = 0;
+    const out = await runPs(buildPostBody(chords, { gapMs: gap, holdMs, targetPid: pid, route }));
+    // 累计投递成功的窗口数（C# 侧每次 PostMessage 成功计数）
+    let total = 0;
+    for (const line of out.split('\n')) {
+      const m = /(\d+)/.exec(line.trim());
+      if (m) total += Number(m[1]);
+    }
+    sent = total;
+    return {
+      pressed: true,
+      keys: chords.length === 1 ? chords[0] : undefined,
+      chords,
+      times: chords.length,
+      presets,
+      via: expanded.via,
+      channel: 'postmessage',
+      route,
+      target_pid: pid,
+      sent_windows: sent,
+      note:
+        sent === 0
+          ? '未投递到任何窗口（进程可能已退出或没有任何顶层窗口）'
+          : '后台投递兼容性有限：游戏/部分浏览器与输入型程序不响应后台键盘消息，' +
+            '无效时改用 route=foreground 并确保目标窗口可见',
+    };
   }
-  await runPs(body);
+
+  await runPs(buildForegroundBody(chords, { gapMs: gap, holdMs, targetPid: pid, route }));
   // 同时回传 keys（单和弦时的回显）与 chords（完整序列）。
   // 修正 2026-10-04：此前只回 chords，控制端 CLI 读 keys.join() 直接崩溃。
   return {
@@ -465,5 +461,9 @@ export async function keyPress(args: Args): Promise<unknown> {
     keys: chords.length === 1 ? chords[0] : undefined,
     chords,
     times: chords.length,
+    presets,
+    via: expanded.via,
+    hold_ms: holdMs || undefined,
+    route,
   };
 }

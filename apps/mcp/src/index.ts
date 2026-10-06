@@ -207,13 +207,35 @@ const TOOLS = [
   {
     name: 'na_key',
     description:
-      '控制被控端键盘（需被控端已开启输入控制）。action: type 输入一段文本；press 按下组合键（如 ["ctrl","c"]）。',
+      '控制被控端键盘（需被控端已开启输入控制）。\n' +
+      'action: type = 输入一段文本；press = 按**快捷键**。\n' +
+      'press 支持四种形式（一次只用一种）：\n' +
+      '① hotkey 单条字符串，如 "ctrl+shift+esc"、"win+d"、"alt+tab"；\n' +
+      '② hotkeys 字符串序列，如 ["ctrl+c","ctrl+v"]；\n' +
+      '③ preset 预设语义名，如 copy/paste/save/show_desktop/lock_screen/screenshot/' +
+      'zoom_in/music_next/volume_mute_toggle（约 50 个）；\n' +
+      '④ keys 老形式数组，如 ["ctrl","c"]。\n' +
+      '按键覆盖：字母数字、F1-F24、左右侧修饰键（lalt/rctrl/lwin…）、小键盘（numpad7、numpad_add…）、' +
+      'OEM 符号键（oem_plus/oem_comma/oem_period…，支持 win+d、ctrl++、win+. 这类组合）、' +
+      '媒体键（media_next/music_play_pause…）、浏览器键、IME 键、系统键。\n' +
+      '可配：hold_ms 长按（≤5000）；route=foreground（默认，注入当前焦点）或 ' +
+      'route=post（向 target_pid 指定进程的全部顶层窗口 PostMessage，目标在后台时可用，' +
+      '但游戏/部分输入型程序不响应后台键消息）。\n' +
+      '媒体键整条序列会自动走 WM_APPCOMMAND（可定向 target_pid，窗口被遮挡也有效）。',
     inputSchema: {
       type: 'object',
       properties: {
         action: { type: 'string', enum: ['type', 'press'], description: '操作类型' },
         text: { type: 'string', description: 'type 时输入的文本' },
-        keys: { type: 'array', items: { type: 'string' }, description: 'press 时的按键列表' },
+        hotkey: { type: 'string', maxLength: 64, description: '单条热键字符串，如 "ctrl+shift+esc"；支持 + - 空格分隔' },
+        hotkeys: { type: 'array', items: { type: 'string' }, maxItems: 50, description: '热键字符串序列，如 ["ctrl+c","ctrl+v"]' },
+        preset: { type: 'string', description: '预设语义名（单个），如 copy / show_desktop / task_manager' },
+        presets: { type: 'array', items: { type: 'string' }, maxItems: 50, description: '多个预设名 = 序列' },
+        keys: { type: 'array', items: { type: 'string' }, description: '（老形式）和弦按键数组，如 ["ctrl","c"]' },
+        repeat: { type: 'integer', minimum: 1, maximum: 50, description: '重复次数（默认 1）' },
+        hold_ms: { type: 'integer', minimum: 0, maximum: 5000, description: '长按保持毫秒数（按下后延时再释放）' },
+        route: { type: 'string', enum: ['foreground', 'post'], description: '投递路由，默认 foreground' },
+        target_pid: { type: 'integer', minimum: 0, description: '目标进程 PID（媒体键定向或 route=post 必填）' },
       },
       required: ['action'],
       additionalProperties: false,
@@ -740,10 +762,18 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
         return { capability: CapabilityNames.KeyType, args: { text: input['text'] } };
       }
       if (action === 'press') {
-        if (!Array.isArray(input['keys']) || input['keys'].length === 0) {
-          return { error: 'press 需要非空 keys 数组' };
+        // v1.5：四种形式一次只用一种（hotkeys > hotkey > presets > preset > keys），
+        // 其余各端会做同样的校验与展开，这里只做薄校验后原样透传。
+        const has = (k: string): boolean =>
+          input[k] !== undefined && !(Array.isArray(input[k]) && (input[k] as unknown[]).length === 0);
+        const forms = ['hotkeys', 'hotkey', 'presets', 'preset', 'keys'].filter(has);
+        if (forms.length === 0) return { error: 'press 需要 hotkey / hotkeys / preset / presets / keys 之一' };
+        if (forms.length > 1) return { error: `参数混用：${forms.join(' + ')}，一次请只用一种形式` };
+        const args: Record<string, unknown> = { [forms[0]!]: input[forms[0]!] };
+        for (const k of ['repeat', 'hold_ms', 'route', 'target_pid', 'interval_ms']) {
+          if (input[k] !== undefined) args[k] = input[k];
         }
-        return { capability: CapabilityNames.KeyPress, args: { keys: input['keys'] } };
+        return { capability: CapabilityNames.KeyPress, args };
       }
       return { error: `不支持的 action: ${String(action)}` };
     }

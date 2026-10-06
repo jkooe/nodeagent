@@ -17,6 +17,10 @@ export interface Options {
   duration?: string;
   interval?: string;
   /** 媒体键定向投递的目标进程 PID（v1.2 keyPress） */
+  /** v1.5 快捷键扩展：长按毫秒 */
+  hold?: string;
+  /** v1.5 快捷键扩展：投递路由 foreground|post */
+  route?: string;
   pid?: string;
   /** v3：认证模式 psk | ed25519 */
   authMode?: string;

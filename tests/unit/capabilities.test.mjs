@@ -254,3 +254,22 @@ test('capabilityDiff：真实清单与自身比对应无差异（防手滑改坏
   assert.equal(d.missingOnRemote.length, 0);
   assert.equal(d.unknownLocally.length, 0);
 });
+
+// ---------- v1.5 快捷键扩展：新参数必须通过 schema 校验 ----------
+
+test('input.key.press：v1.5 新参数（hotkey/hotkeys/preset/hold_ms/route）通过校验', () => {
+  assert.equal(check('input.key.press', { hotkey: 'ctrl+shift+esc' }).length, 0);
+  assert.equal(check('input.key.press', { hotkeys: ['ctrl+c', 'ctrl+v'] }).length, 0);
+  assert.equal(check('input.key.press', { preset: 'copy' }).length, 0);
+  assert.equal(check('input.key.press', { presets: ['copy', 'paste'] }).length, 0);
+  assert.equal(check('input.key.press', { hotkey: 'win+d', hold_ms: 300 }).length, 0);
+  assert.equal(check('input.key.press', { hotkey: 'alt+tab', route: 'post', target_pid: 4242 }).length, 0);
+  // 老形式仍应通过（向后兼容）
+  assert.equal(check('input.key.press', { keys: ['ctrl', 'c'] }).length, 0);
+  assert.equal(check('input.key.press', { sequence: [['up'], ['enter']] }).length, 0);
+});
+
+test('input.key.press：非法 route / 缺 target_pid 语义由 agent 层拒（schema 层只卡类型）', () => {
+  // route 枚举外值必须在 schema 层就被拒
+  assert.ok(check('input.key.press', { hotkey: 'a', route: 'sideways' }).length > 0, 'route 枚举外值应被拒');
+});

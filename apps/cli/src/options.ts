@@ -56,6 +56,8 @@ export function parseOptions(rest: string[]): { opts: Options; positionals: stri
       interval: { type: 'string' },
       // 媒体键定向投递的目标进程 PID（v1.2）
       pid: { type: 'string' },
+      hold: { type: 'string' },
+      route: { type: 'string' },
       'auth-mode': { type: 'string' },
       since: { type: 'string' },
       type: { type: 'string' },
@@ -126,6 +128,8 @@ export function parseOptions(rest: string[]): { opts: Options; positionals: stri
       duration: values['duration'] as string | undefined,
       interval: values['interval'] as string | undefined,
       pid: values['pid'] as string | undefined,
+      hold: values['hold'] as string | undefined,
+      route: values['route'] as string | undefined,
       authMode: values['auth-mode'] as string | undefined,
       since: values['since'] as string | undefined,
       type: values['type'] as string | undefined,

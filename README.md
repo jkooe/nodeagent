@@ -27,9 +27,59 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **屏幕** | `screen.info` · `screen.capture` · `screen.record` · `screen.find` | 显示器 / 截屏 / **录屏为帧序列** / **元素定位三引擎**（UIA 控件树 → OCR 文字 → **图像模板**） |
 | **窗口** | `window.list` · `window.focus` | 枚举可见窗口（精确矩形）/ 置前聚焦（**Windows + macOS**） |
 | **文件** | `fs.list` · `fs.stat` · `fs.read` · `fs.write` | 列目录 / 元信息 / 分块读 / 原子写 |
-| **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**与**按键序列/连按** |
+| **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**、**字符串热键 / 预设 / 长按 / 后台定向投递** |
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
 | **事件订阅** | `event.watch` · `event.unwatch` · `event.list` · `event.poll` | 文件变动 / 进程启停 / 端口开闭，**主动推送**（无需轮询） |
+
+## 快捷键（hotkey）控制 —— v1.5
+
+`input.key.press` 支持 **4 种输入形式**（一次只用一种）：
+
+```bash
+# ① 字符串热键（最常用；分隔符支持 + - 空格，大小写不敏感）
+nodeagent --node win key press "ctrl+shift+esc"
+nodeagent --node win key press "win+d"                     # 显示桌面
+nodeagent --node win key press "alt+tab"                   # 切换应用
+
+# ② 热键序列
+nodeagent --node win key press "ctrl+c"                    # 老形式也兼容：key press ctrl c
+nodeagent --node win invoke input.key.press --args '{"hotkeys":["ctrl+c","ctrl+v"]}'
+
+# ③ 预设语义名（约 50 个，免记键位）
+nodeagent --node win key press copy                        # = ctrl+c
+nodeagent --node win key press task_manager                 # = ctrl+shift+esc
+nodeagent --node win key press volume_mute_toggle           # 媒体键（走 WM_APPCOMMAND）
+
+# ④ 老数组形式
+nodeagent --node win key press ctrl c
+```
+
+**按键覆盖**：字母/数字 · F1–F24 · 左右侧修饰键（`lalt`/`rctrl`/`lwin`…）·
+小键盘（`numpad7`、`numpad_add`…，**与数字键分开**——Excel 靠 NumLock 区分）·
+OEM 符号键（`oem_plus`/`oem_comma`/`oem_period`… → 支持 `win+d`、`ctrl++`、`win+.`）·
+媒体键 · 浏览器键 · IME 键（`convert`/`kana`…）· 系统键（`sleep`/`help`…）
+
+**进阶参数**：
+
+| 参数 | 说明 |
+|---|---|
+| `hold_ms` | 长按：按下后保持 N 毫秒再释放（≤5000） |
+| `route=post` + `target_pid` | **后台定向投递**：向目标进程全部顶层窗口 PostMessage（目标窗口被遮挡/最小化时用）。⚠️ 游戏与部分输入型程序不响应后台键消息 |
+| `target_pid`（默认路由） | 媒体键定向（播放器常建 30+ 辅助窗口，指定 PID 投给该进程全部顶层窗口） |
+
+**预设速查**（完整表见 `packages/protocol/src/hotkeys.ts` 的 `HOTKEY_PRESETS`）：
+
+| 类别 | 预设名 |
+|---|---|
+| 编辑 | `copy` `cut` `paste` `paste_plain` `undo` `redo` `select_all` |
+| 文件 | `save` `save_as` `new` `open` `close_tab` `print` |
+| 窗口 | `switch_app` `task_view` `task_manager` `show_desktop` `minimize_all` `maximize` `snap_left` `snap_right` `rename` `properties` |
+| 系统 | `lock_screen` `run` `explorer` `search` `settings` `clipboard_history` `emoji_picker` `screenshot` |
+| 虚拟桌面 | `new_desktop` `desktop_left` `desktop_right` |
+| 标签/视图 | `new_tab` `next_tab` `reopen_tab` `zoom_in` `zoom_out` `fullscreen` |
+| 媒体 | `music_play_pause` `music_next` `music_prev` `volume_add` `volume_mute_toggle` |
+
+> MCP 侧同名工具为 `na_key`（`action: "press"`），支持同一套参数。
 
 **36 项能力** · **32 个 MCP 工具** · **114 项单元测试** · **26 项端到端用例**（CI 在真实 Windows 上验证）
 
