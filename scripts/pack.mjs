@@ -18,8 +18,8 @@
  */
 import { execFileSync, execSync } from 'node:child_process';
 import {
-  copyFileSync, createWriteStream, existsSync, mkdirSync,
-  readFileSync, rmSync, writeFileSync,
+  copyFileSync, createWriteStream, existsSync, mkdirSync, readdirSync,
+  readFileSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { get } from 'node:https';
 import { randomBytes } from 'node:crypto';
@@ -194,8 +194,13 @@ async function main() {
     '',
   ].join('\n'), 'utf8');
 
-  const files = execSync(`ls -la "${PKG_DIR}"`, { encoding: 'utf8' });
-  log(files.split('\n').slice(0, 12).join('\n'));
+  const entries = readdirSync(PKG_DIR, { withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => {
+      const st = statSync(join(PKG_DIR, e.name));
+      return `${e.name.padEnd(22)} ${(st.size / 1024).toFixed(0).padStart(8)} KB`;
+    });
+  log(entries.join('\n'));
 
   log('\n=== ⑤ 打 zip ===');
   const zipOut = join(OUT_DIR, 'nodeagent-win-x64.zip');
@@ -203,10 +208,26 @@ async function main() {
   // ⚠️ 必须排除 PSK.txt：本 zip 会作为**公开的 GitHub Release 资产**发布，
   //    把预共享密钥打进包里等于公开密钥。install.cmd 在文件缺失时会自动生成新密钥
   //    （生成在安装目录，只留在被控端本机），所以排除它不影响安装。
-  execSync(`cd "${PKG_DIR}" && zip -q -r "${zipOut}" . -x "PSK.txt"`, { stdio: 'inherit' });
+  if (process.platform === 'win32') {
+    // Windows：GitHub runner / 多数 Windows 没有 Info-ZIP，改用 PowerShell 的 Compress-Archive。
+    // 先删掉 PSK.txt（若存在）再压 —— Compress-Archive 无 -x 排除参数。
+    const psk = join(PKG_DIR, 'PSK.txt');
+    if (existsSync(psk)) rmSync(psk, { force: true });
+    execFileSync(
+      'powershell',
+      [
+        '-NoProfile', '-Command',
+        `Compress-Archive -Path '${PKG_DIR}\*' -DestinationPath '${zipOut}' -Force`,
+      ],
+      { stdio: 'inherit' },
+    );
+  } else {
+    execSync(`cd "${PKG_DIR}" && zip -q -r "${zipOut}" . -x "PSK.txt"`, { stdio: 'inherit' });
+  }
 
-  const size = execSync(`du -sh "${zipOut}"`, { encoding: 'utf8' }).split('\t')[0];
-  log(`\n✓ 完成: ${zipOut}（${size.trim()}）`);
+  const kb = statSync(zipOut).size / 1024;
+  const size = kb > 1024 ? `${(kb / 1024).toFixed(0)}M` : `${kb.toFixed(0)}K`;
+  log(`\n✓ 完成: ${zipOut}（${size}）`);
   log('  分发方式：解压到固定目录 → 双击 install.cmd（自提权，零命令行知识）');
   log('  日后管理：双击 control.cmd');
 }
