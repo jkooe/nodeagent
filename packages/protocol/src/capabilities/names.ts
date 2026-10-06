@@ -18,6 +18,7 @@ export const CapabilityNames = {
   MouseDrag: 'input.mouse.drag',
   KeyType: 'input.key.type',
   KeyPress: 'input.key.press',
+  GuiAwait: 'gui.await',
   // v3+ 审计
   AuditList: 'system.audit.list',
   // v5 文件传输

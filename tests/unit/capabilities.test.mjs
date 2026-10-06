@@ -63,7 +63,7 @@ test('清单：v7~v11 新能力均已登记', () => {
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 42, '当前应有 42 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 43, '当前应有 43 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------

@@ -81,7 +81,28 @@ OEM 符号键（`oem_plus`/`oem_comma`/`oem_period`… → 支持 `win+d`、`ctr
 
 > MCP 侧同名工具为 `na_key`（`action: "press"`），支持同一套参数。
 
-**36 项能力** · **32 个 MCP 工具** · **114 项单元测试** · **26 项端到端用例**（CI 在真实 Windows 上验证）
+## 等待条件 gui.await —— v1.6
+
+GUI 操作从「按一下→睡几秒→截图碰运气」变成**可断言**流程：
+
+```bash
+# 等界面元素出现（最多 30s）
+nodeagent --node win invoke gui.await --args '{"condition":"control","text":"完成","timeout_ms":30000}'
+# 等它消失
+nodeagent --node win invoke gui.await --args '{"condition":"control","text":"安装中","state":"absent"}'
+# 等窗口 / 进程 / 文件
+nodeagent --node win invoke gui.await --args '{"condition":"window","title":"安装程序","timeout_ms":10000}'
+nodeagent --node win invoke gui.await --args '{"condition":"process","process":"setup.exe"}'
+nodeagent --node win invoke gui.await --args '{"condition":"file","path":"C:\\log.txt"}'
+```
+
+四类条件各自复用 `window.list` / `screen.find` / `process.list` / `fs.stat`，
+平台行为（Windows UIA/OCR、macOS Vision OCR）与那些能力完全一致，**只读低危**。
+轮询期单次异常不视为失败（启动中的程序常短暂报错），超时未命中才带回 `last_error`。
+
+**典型闭环**：`await control(text:"立即安装")` → `mouse.click(x, y)` → `await control(text:"完成", timeout_ms:60000)` → `click` → `await absent(text:"安装中")`。
+
+**43 项能力** · **32 个 MCP 工具** · **114 项单元测试** · **26 项端到端用例**（CI 在真实 Windows 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -513,11 +534,12 @@ nodeagent/
 - [`docs/SECURITY.md`](docs/SECURITY.md) —— **安全模型与加固指南**（钥匙=root、证书指纹钉住、网段白名单、应急处置）
 - [`docs/VERSIONING.md`](docs/VERSIONING.md) —— **版本与兼容性契约**（升级顺序、什么算破坏性、发版流程、更新方式）
 - [`docs/REMOTE-LIMITS.md`](docs/REMOTE-LIMITS.md) —— 远程能力边界与真实故障案例（含杀软误拦）
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) —— **当前进度盘点与下一步路线**（2026-10-07 基线：待办收尾 / 语义可断言 / 状态采样 / 安全残余）
 
 - [产品需求文档（PRD）](./PRD.md)
 - [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md) —— 协议细节、能力 schema、安全模型、各端实现指南
 - [**跨机接管的边界与局限**](./docs/REMOTE-LIMITS.md) —— 哪些问题能远程修、哪些必须人工，附真实故障诊断案例
-- [**实战复盘：短板与改进优先级**](./docs/RETROSPECTIVE.md) —— 基于真机使用的短板分析（GUI 语义 / 编码 / 自愈 / 可观测性）
+- [**实战复盘：短板与改进优先级**](./docs/RETROSPECTIVE.md) —— 基于真机使用的短板分析（GUI 语义 / 编码 / 自愈 / 可观测性）。**写于 2026-09-28（19 项能力时），多数 P0/P1 已解决 —— 最新状态见 [ROADMAP](./docs/ROADMAP.md) §3 对照表**
 
 ## 关键决策
 

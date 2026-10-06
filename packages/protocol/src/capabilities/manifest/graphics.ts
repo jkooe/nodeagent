@@ -488,4 +488,61 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
       },
     },
   },
+  {
+    name: CapabilityNames.GuiAwait,
+    version: '1.0',
+    description:
+      '等待一个条件成立再返回（v1.6，**只读低危**）。四类条件：' +
+      'window=等窗口出现/消失；control=等界面元素出现/消失（复用 screen.find）；' +
+      'process=等进程出现/消失；file=等文件出现/消失。' +
+      '用途：把 GUI 操作从「按一下→睡几秒→截图碰运气」变成**可断言**的流程，例如：' +
+      'await control(text:"完成", timeout_ms:30000) → mouse.click(found.x, found.y) → await state:absent(text:"安装中")。' +
+      'state=present（默认）等到出现，absent 等到消失。' +
+      '四个条件各自复用 window.list / screen.find / process.list / fs.stat，' +
+      '平台行为（Windows UIA/OCR、macOS Vision OCR）与那些能力完全一致。' +
+      '轮询期单次异常不视为失败（启动中的程序常短暂报错），只在超时未命中时带回 last_error。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        condition: {
+          type: 'string',
+          enum: ['window', 'control', 'process', 'file'],
+          description: '等待哪类条件',
+        },
+        state: {
+          type: 'string',
+          enum: ['present', 'absent'],
+          default: 'present',
+          description: '等到出现（默认）还是等到消失',
+        },
+        timeout_ms: { type: 'integer', minimum: 0, maximum: 60000, default: 5000, description: '总超时' },
+        interval_ms: { type: 'integer', minimum: 50, maximum: 5000, default: 400, description: '轮询间隔' },
+        title: { type: 'string', description: 'window 条件：窗口标题（正则）' },
+        pattern: { type: 'string', description: 'window 条件的 title 别名' },
+        text: { type: 'string', description: 'control 条件：元素文本' },
+        window: { type: 'string', description: 'control 条件：限定窗口标题（正则）' },
+        control_type: { type: 'string', description: 'control 条件：限定控件类型（仅 UIA）' },
+        method: { type: 'string', enum: ['auto', 'uia', 'ocr', 'image'], description: 'control 条件：查找方式' },
+        template: { type: 'string', description: 'control 条件 + method=image 时的模板' },
+        process: { type: 'string', description: 'process 条件：进程名（正则）' },
+        path: { type: 'string', description: 'file 条件：文件路径' },
+        limit: { type: 'integer', description: '底层 list 类条件的返回条数' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        satisfied: { type: 'boolean' },
+        condition: { type: 'string' },
+        state: { type: 'string' },
+        elapsed_ms: { type: 'integer' },
+        attempts: { type: 'integer', description: '实际轮询次数' },
+        last_seen: { type: 'string' },
+        last_error: { type: 'string', description: '超时未命中时带回的末次异常（若有）' },
+        note: { type: 'string' },
+      },
+    },
+  },
 ];
