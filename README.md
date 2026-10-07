@@ -102,7 +102,7 @@ nodeagent --node win invoke gui.await --args '{"condition":"file","path":"C:\\lo
 
 **典型闭环**：`await control(text:"立即安装")` → `mouse.click(x, y)` → `await control(text:"完成", timeout_ms:60000)` → `click` → `await absent(text:"安装中")`。
 
-**43 项能力** · **32 个 MCP 工具** · **114 项单元测试** · **26 项端到端用例**（CI 在真实 Windows 上验证）
+**43 项能力** · **38 个 MCP 工具** · **215 项单元测试** · **30 项端到端用例** · **11 项 Rust 单测**（CI 在真实 Windows / Linux runner 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -113,8 +113,14 @@ nodeagent --node win invoke gui.await --args '{"condition":"file","path":"C:\\lo
 
 ```bash
 pnpm install
-pnpm build
+pnpm build          # 全部 workspace（protocol/client/agent/cli/mcp/hub + 桌面控制台前端）
+pnpm test:unit      # 单元测试（协议纯函数 / 清单守护 / 编码脚本守卫 / 契约守卫）
+pnpm test:e2e       # 端到端（起真实被控端跑全链路）
+pnpm test:rust      # Rust 控制端客户端（需 cargo）
 ```
+
+> 桌面控制台是 Tauri 应用，**打包**需另进目录：`cd apps/console && pnpm tauri build`。
+> 仅前端产物则 `pnpm build` 已覆盖。
 
 ### 1. Windows 侧（被控端）
 
@@ -239,11 +245,17 @@ nodeagent pull "C:\big.iso" --out ./big.iso          # 下载（大文件自动�
 ## 架构
 
 ```
-┌────────────────────┐                          ┌────────────────────┐
-│  控制端 (macOS)     │ ◄──── JSON-RPC 2.0 ────► │  被控端 (Windows)   │
-│  CLI · MCP Server  │        over WebSocket    │  Agent（开机自启）  │
-└────────────────────┘                          └────────────────────┘
-         │                                                │
+                    ┌──────────────────────────────────────────┐
+                    │  控制端 (macOS / Windows)                │
+                    │  ① 桌面控制台（Tauri 2）  ② CLI  ③ MCP   │
+                    └──────────────────────────────────────────┘
+                                        │
+                         JSON-RPC 2.0 over WebSocket
+                                        │
+                    ┌──────────────────────────────────────────┐
+                    │  被控端 Agent（Windows 常驻 / 开机自启）   │
+                    │  同时也是「本地被控端」，供本机控制台直连   │
+                    └──────────────────────────────────────────┘
          └──────────── 三种链路可选 ──────────────────────┘
           ① 局域网直连     ② UDP 广播自动发现     ③ Hub 中转（跨网段/公网）
 ```
@@ -255,6 +267,35 @@ nodeagent pull "C:\big.iso" --out ./big.iso          # 下载（大文件自动�
 | 授权 | 能力级 ACL：`deny` → `allow` → 默认拒绝 |
 | 审计 | JSONL 落盘 + 轮转 + 参数脱敏 + 查询能力 |
 | 传输 | TLS（自签证书可用 `--insecure` 跳过校验，鉴权另有保障） |
+
+### 桌面控制台（Tauri 2）
+
+`apps/console` —— 跨端图形控制台，**主控与被控一体**：本机也可作为被控端，
+由控制台经 loopback 直连（复用同一个 Agent，不做第二套被控端实现）。
+
+技术栈 Tauri 2（Rust 壳 + 系统 WebView）+ Vue 3 + TypeScript + Pinia + Naive UI。
+协议客户端是 `crates/nodeagent-client`（Rust 复刻 `@nodeagent/client`，
+Tauri 侧经 Cargo path 依赖），**不引入第二套协议实现**。
+
+| 页面 | 能力 |
+|---|---|
+| 设备管理 | 连接/断开、保存多台设备、能力清单与握手元信息、实时日志 |
+| 状态总览 | CPU / 内存 / 磁盘 / 网卡，3s 轮询 |
+| 终端 | `system.shell.exec`（可设超时）、历史回放 |
+| 进程与服务 | 进程表（CPU/内存/已运行）+ Windows 服务表 |
+| 软件 | `app.list` / `app.install`（winget 静默安装，超时放大到 10 分钟） |
+| 文件 | 浏览 / 预览 / 写入（走分块能力，天然支持大文件） |
+| 审计 | `system.audit.list` 筛选 + `system.audit.verify` 链完整性校验 + 导出 JSONL |
+
+```bash
+pnpm -r build                       # 含 console 前端
+cd apps/console && pnpm tauri dev   # 开发态（起 Vite + Tauri 窗口）
+cd apps/console && pnpm tauri build # 打包（macOS 实测 .app ≈ 6.8 MiB）
+```
+
+⚠️ 平台差异：`app.*` 与 `system.service.list` **仅在被控端为 Windows 时可用**，
+非 Windows 被控端会返回 `E_UNSUPPORTED_PLATFORM`。控制台连接后会探测
+`system.info.os` 并**事前禁用**这些入口，而不是发出注定失败的请求。
 
 ## 安全模型
 

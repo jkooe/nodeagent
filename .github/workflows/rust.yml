@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       # 版本**锁死**而不跟 stable 漂 —— 否则「本地全绿」与「CI 绿」会因为 lint 集合随
       # 工具链变化而分叉（本仓库已因同类原因吃过 8 轮 Windows CI 的苦头）。
