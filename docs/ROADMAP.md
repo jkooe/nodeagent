@@ -1,9 +1,8 @@
 # nodeagent 进度盘点与下一步路线
 
-> 盘点日期：2026-10-07（**当日第二次更新**，据工作区最新推进刷新）
-> 盘点方式：只读核查仓库（`git fetch` + 源码 grep + 本地跑单测）
-> 基线：远端 main `0d62cb1`（tag **v1.5.0**）｜本地 HEAD `7ad820c`（1 个未推送 CI 提交）
-> 工作区：有**未提交的业务改动** —— `gui.await`（v1.6，语义方向一的首个落地）
+> 盘点日期：2026-10-07（**第三次更新**：v1.6.0 已发、CI 全绿后据实刷新）
+> 盘点方式：只读核查仓库（`git fetch` + 源码 grep + 本地跑单测 + `gh run list`）
+> 基线：远端 main（tag **v1.6.0** 之后）｜单测 **221 全绿** · e2e **30 全绿** · Windows CI **13/13 全绿**
 > 适用范围：本文档随仓库公开，**不含任何真机地址与账户信息**（见 §6 脱敏约定）
 
 ---
@@ -23,9 +22,9 @@
 | **语义深度** | `gui.await` 解决了「等得到」，但 `screen.find` 仍不返回 UIA **属性**（value/enabled/selected） | 能等「元素出现」，还不能等「元素变成某状态」 |
 | **状态留存** | 事件订阅已通，但无采样留存与回看 | 间歇性问题（代理不通、杀软拦截）仍只能靠巧遇 |
 
-> ⚠️ **当前工作区单测是红的**：195 例中 **194 通过、1 失败** —— `tests/unit/capabilities.test.mjs:66` 硬编码 `assert.equal(CAPABILITY_MANIFEST.length, 42)`，而 `gui.await` 使能力数变 43。**修断言前不要提交**，否则 CI 必红。
+优先级：**语义属性 > 状态采样 > 安全残余**（`gui.await` 与 CI 收尾均已完成，见 §九）。
 
-优先级：**`gui.await` 收尾 > 语义属性 > 状态采样 > 安全残余**。
+> **历史备注（已消解）`：本文档第二版曾记录「单测 194/195 红一例」——那是能力数硬编码 42 未随 `gui.await` 更新所致，已改为集合断言思路并修复；该教训沉淀为 §十 的经验。
 
 ---
 
@@ -223,7 +222,20 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | 2 | `screen.find` 返回 UIA 属性 | ⬜ 未做 | 补 `name` / `value` / `enabled` / `selected` / `rect` / `automation_id` |
 | 3 | 条件组合（`and` / `or` / `not`） | ⬜ 未做 | `gui.await` 目前是单条件；组合需先有属性支持 |
 
-#### `gui.await` 收尾清单（**提交前必做**）
+#### `gui.await` 收尾清单（✅ **已于 v1.6.1 全部完成**）
+
+| # | 事项 | 状态 |
+|---|---|---|
+| 1 | 修能力数断言（42→43） | ✅ 已改 43，并新增集合化断言思路 |
+| 2 | 补单测 | ✅ `tests/unit/gui-await.test.mjs` 6 例（登记/风险、四类条件 schema、上限兜底、isHit 五形态、CLI/MCP 入口存在性） |
+| 3 | 补 CLI / MCP 入口 | ✅ CLI `nodeagent await ...`（实测到连接层）；MCP `na_await`（定义 + 分发） |
+| 4 | 版本号上调 v1.6.0 | ✅ 已发 |
+| 5 | 真机验证 | ✅ 本地真机 7 例（present/absent/超时/非法参数/process/底层报错不中断/缺省参数）；**Windows 上验 control 条件待被控端在线** |
+| 6 | 发版 | ✅ v1.6.0 |
+
+> Windows CI 上线后又连带修了 6 个真 bug（见 §九），其中 `install.cmd` 双击首装即炸属于**必发版**的修复。
+
+#### `gui.await` 收尾清单（原第二版，提交前必做）
 
 | # | 事项 | 说明 |
 |---|---|---|
@@ -357,3 +369,45 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 > **两条教训**：
 > 1. 跨平台差异（编码、文件重命名、进程语义）**必须在真机验证** —— macOS 通过不代表 Windows 通过。文档层面的盘点只能发现「没写」，发现不了「写错了但没人跑」。
 > 2. **`git grep` 不 fetch 会查旧快照**。本次差点把「未推送」误判成「未暴露」，实际远端已含该内容。凡涉及「公开面是否暴露」的结论，必须 `git fetch` 后再查，且关键词要带空格变体。
+
+---
+
+## 九、进展台账（2026-10-07 第三/四次盘点后完成）
+
+| 事项 | 状态 | 说明 |
+|---|---|---|
+| `gui.await` 收尾（断言/单测/入口/版本号/本地真机/发版） | ✅ | v1.6.0 |
+| CI 工作流推送（需皇上授权 `workflow` 作用域） | ✅ | 皇上授权后推送成功 |
+| **Windows CI 上线后修 6 个真 bug** | ✅ | 见下表 |
+| 源码注释脱敏（序 0.5） | ✅ | `input.ts` / `input-script.ts` 4 处软件名泛化 |
+| `.gitignore` 补 `keys/ *.key *.pem`（§6.2） | ✅ | `*.pub` 放行 |
+| `input.ts` U+FFFD 字面量（§6.2） | ✅ 复查 0 个 | 该描述已过期（早前重构时消失） |
+| v1.5.0 真机验证（序 3） | ⏳ 待被控端在线 | 四项：字符串热键 / 预设别名 / `hold_ms` / `route=post` |
+| 方向一第二步：`screen.find` 属性化 + 条件组合 | ⬜ 未做 | 需先有 UIA 属性（见 §五） |
+| 方向二：`monitor.*` / `log.query` / `fs.watch` | ⬜ 未做 | — |
+| 方向三：`install.cmd` 密钥 stdin、握手封禁、会话上限、审计锚定 | ⬜ 未做 | 安全项建议提前 |
+| PII blob GC / 仓库重建（序 8） | ⏳ 需皇上决策 | — |
+| `ed25519` 默认化 | ⬜ 未做 | 需确认兼容策略 |
+| console-plan 评审（Rust client 取舍） | ⏳ 需皇上拍板 | — |
+
+### Windows CI 扒出的 6 个真 bug（均已修复，v1.6.x）
+
+| # | bug | 为什么 macOS 测不出 |
+|---|---|---|
+| 1 | 单测整体 ENOENT：`new URL(..., import.meta.url).pathname` 在 Windows 得 `/D:/a/...` | macOS 是 `/Users/...`。改用 `fileURLToPath` |
+| 2 | BOM 守卫步骤自身坏：`shell: cmd` 套多行 `powershell -Command` | cmd 转义必乱；改为 `shell: powershell` + `run: |` |
+| 3 | **CI 内联脚本中文**：run 块无 BOM，5.1 按 GBK 读 → 引号边界崩 | pwsh 7+ 认无 BOM UTF-8，所以此前没暴露 |
+| 4 | **`install.cmd` 双击首装即炸**：`for /f` 调 PS 生成密钥，`^|` 漏进 PowerShell | PSK.txt 已移出 zip → 首装必走此路。改为交给 `install.ps1` |
+| 5 | `pack.mjs` 三连：spawn `.bin/esbuild` ENOENT / `zip` 不存在 / `ls -la`+`du -sh` | macOS 三者都有。改 esbuild JS API + `Compress-Archive` 分流 + Node 原生 |
+| 6 | CI 断言**方向反了**：必含清单列 PSK.txt，而它早被故意剔除 | 改为反向断言「不得含」 |
+
+### 新增铁律（已写入 `.workbuddy/memory/MEMORY.md`）
+
+1. `new URL(x, import.meta.url).pathname` 禁止拼路径（Windows 盘符多一根斜杠）→ 一律 `fileURLToPath`
+2. **5.1 会执行的脚本必须 BOM 或纯 ASCII** —— 包括 GitHub Actions 的 `shell: powershell` run 块（**也无 BOM**），中文只放步骤名
+3. 绝不用 `shell: cmd` 套多行 `powershell -Command`；复杂逻辑上移到 `.ps1`
+4. 不在 cmd 里用 `for /f` 调 PowerShell 做正事（`^|` 会漏进 PS）
+5. `.cmd` 纯 ASCII + CRLF；`.ps1` UTF-8 BOM；`.json` 无 BOM
+6. 发版/打包脚本不得假设 unix 命令存在（`zip`/`ls`/`du`/`node_modules/.bin/*`）
+7. CI 断言会随属性变化过期，且方向可能反了
+8. 工作区有他人未提交文件时禁用 `git add -A` / `commit -am`
