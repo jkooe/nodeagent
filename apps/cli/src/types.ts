@@ -17,6 +17,14 @@ export interface Options {
   duration?: string;
   interval?: string;
   /** 媒体键定向投递的目标进程 PID（v1.2 keyPress） */
+  /** 通用选项：文本 / 标题 */
+  text?: string;
+  title?: string;
+  /** v1.6 gui.await */
+  condition?: string;
+  state?: string;
+  path?: string;
+  process?: string;
   /** v1.5 快捷键扩展：长按毫秒 */
   hold?: string;
   /** v1.5 快捷键扩展：投递路由 foreground|post */
@@ -56,7 +64,6 @@ export interface Options {
   /** v11 多设备并发 */
   nodes?: string;
   /** v11 部署目标路径 */
-  path?: string;
   /** v12 事件订阅 */
   kind?: string;
   /** v12 宏变量 */

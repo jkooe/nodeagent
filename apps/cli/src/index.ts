@@ -40,7 +40,7 @@ import {
 import {
   cmdBg, cmdClip, cmdDeploy, cmdEvents, cmdFanout, cmdMacro, cmdRecord, cmdTask, cmdTasks,
 } from './cmd/ops.js';
-import { cmdKey, cmdMouse, cmdScreen, cmdScreenshot } from './cmd/gui.js';
+import { cmdAwait, cmdKey, cmdMouse, cmdScreen, cmdScreenshot } from './cmd/gui.js';
 import { cmdCat, cmdLs, cmdPull, cmdPush, cmdStat } from './cmd/fs.js';
 import { cmdNet } from './cmd/net.js';
 import { DAEMON_SOCK, fail, getClientConfig, setNodeOverride } from './core.js';
@@ -302,6 +302,10 @@ async function main(): Promise<void> {
     case 'key': {
       const [action, ...rest2] = positionals;
       await cmdKey(action, rest2, opts);
+      return;
+    }
+    case 'await': {
+      await cmdAwait(opts);
       return;
     }
     case undefined:

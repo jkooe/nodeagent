@@ -346,6 +346,32 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_await',
+    description:
+      '等待一个条件成立再返回（只读低危，v1.6）。\n' +
+      '四类条件：window=等窗口出现/消失；control=等界面元素出现/消失（复用 screen.find）；' +
+      'process=等进程出现/消失；file=等文件出现/消失。\n' +
+      'state=present（默认，等出现）或 absent（等消失）。\n' +
+      '用途：把 GUI 操作从「按一下→睡几秒→截图碰运气」变成**可断言**流程：\n' +
+      '  await control(text:"立即安装") → na_mouse click → await control(text:"完成", timeout:60000) → click → await absent(text:"安装中")\n' +
+      '超时是**正常返回**（satisfied:false + note，不抛异常）；轮询期单次异常不视为失败。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        condition: { type: 'string', enum: ['window', 'control', 'process', 'file'], description: '等待哪类条件' },
+        state: { type: 'string', enum: ['present', 'absent'], default: 'present', description: '等出现还是等消失' },
+        timeout_ms: { type: 'integer', minimum: 0, maximum: 60000, default: 5000, description: '总超时' },
+        interval_ms: { type: 'integer', minimum: 50, maximum: 5000, default: 400, description: '轮询间隔' },
+        text: { type: 'string', description: 'control 条件：元素文本' },
+        title: { type: 'string', description: 'window 条件：窗口标题（正则）' },
+        process: { type: 'string', description: 'process 条件：进程名（正则）' },
+        path: { type: 'string', description: 'file 条件：文件路径' },
+      },
+      required: ['condition'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_window_list',
     description:
       '列出被控端当前可见的顶层窗口（标题 / 进程 / 精确矩形 / 是否前台）。' +
@@ -754,6 +780,14 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
         return { capability: CapabilityNames.MouseDrag, args };
       }
       return { error: `不支持的 action: ${String(action)}` };
+    }
+    case 'na_await': {
+      const args: Record<string, unknown> = {};
+      for (const k of ['condition', 'state', 'timeout_ms', 'interval_ms', 'text', 'title', 'process', 'path']) {
+        if (input[k] !== undefined) args[k] = input[k];
+      }
+      if (!args['condition']) return { error: 'await 需要 condition' };
+      return { capability: CapabilityNames.GuiAwait, args };
     }
     case 'na_key': {
       const action = input['action'];

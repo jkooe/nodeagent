@@ -26,10 +26,10 @@ export const VK_MAP: Record<string, number> = {
 
   // 媒体键（0xA6-0xB7 区段）—— 2026-10-05 补
   //
-  // 为何必要：远程控媒体播放器（QQ 音乐 / 网易云 / 浏览器视频）时，
+  // 为何必要：远程控媒体播放器（音乐 / 视频 / 浏览器内视频）时，
   // 若软件热键不可用（精简模式常不注册全局热键），系统媒体键是唯一
   // 与「窗口是否可见/被遮挡」无关的通道 —— 窗口最小化、被游戏全屏盖住时
-  // 依然有效。实测：QQ 音乐精简窗被 DNF 全屏遮挡时，媒体键仍能控制。
+  // 依然有效。实测：精简模式的播放器被全屏游戏遮挡时，媒体键仍能控制。
   media_play: 0xb3, media_pause: 0xb3, media_play_pause: 0xb3, play_pause: 0xb3,
   media_stop: 0xb2, stop: 0xb2,
   media_prev: 0xb1, media_previous: 0xb1, prev_track: 0xb1, prev: 0xb1,

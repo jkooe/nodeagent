@@ -142,8 +142,8 @@ public static class NAInput {
     /// —— 只有当前获得媒体会话焦点的窗口才会响应。而 WM_APPCOMMAND 可直接
     /// 投递给指定 hwnd，绕开「谁是当前媒体会话焦点」这层不确定性。
     ///
-    /// 用途：远程控制 QQ 音乐 / 网易云 / 浏览器视频，且**窗口最小化或被全屏游戏
-    /// 遮挡时依然有效**（实测 QQ 音乐精简窗被 DNF 全屏压住时该通道可用）。
+    /// 用途：远程控制主流媒体播放器（音乐 / 视频）或浏览器视频，且**窗口最小化
+    /// 或被全屏独占应用遮挡时依然有效**（实测：精简模式的播放器被全屏游戏压住时该通道可用）。
     /// </summary>
     [DllImport("user32.dll", CharSet = CharSet.Auto)]
     private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
@@ -160,7 +160,7 @@ public static class NAInput {
     /// appCommand 取值：14=PLAY 15=STOP 12=PLAY_PAUSE 6=PREV 7=NEXT
     ///                  3=FFWD 4=REWIND 10=CLOSE 0=PLAY 1=PAUSE
     /// targetPid 非 0 时，自动找到该进程的所有顶层窗口并逐个投递
-    /// （QQ 音乐等会创建 30+ 个辅助窗口，只投主窗口常常无效）。
+    /// （部分播放器会创建数十个辅助窗口，只投主窗口常常无效）。
     /// </summary>
     public static int MediaCommand(int appCommand, int targetPid) {
         int sent = 0;
@@ -407,7 +407,7 @@ export async function keyPress(args: Args): Promise<unknown> {
   // 则回退到 VK 注入 —— 那种组合场景本就罕见，SendInput 足够。
   const allMedia = isAllMedia(chords);
   if (allMedia) {
-    // target_pid 非 0 时定向投递到该进程的全部顶层窗口（QQ 音乐会建 30+ 辅助窗口，
+    // target_pid 非 0 时定向投递到该进程的全部顶层窗口（部分播放器会建数十个辅助窗口，
     // 只投主窗口常常无效 —— 实测踩过）；否则广播。
     const mediaBody = buildMediaBody(chords, { gapMs: gap, holdMs, targetPid: pid, route });
     await runPs(mediaBody);

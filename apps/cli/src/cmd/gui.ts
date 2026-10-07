@@ -232,6 +232,53 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
   }
 }
 
+// ---------- v1.6 等待条件（gui.await） ----------
+
+/**
+ * 等待一个条件成立再返回（只读低危）。
+ *
+ *   nodeagent await --condition control --text "完成" --timeout 30000
+ *   nodeagent await --condition window --title "安装程序"
+ *   nodeagent await --condition process --process setup.exe
+ *   nodeagent await --condition file --path "C:\\log.txt" --state absent
+ *
+ * 四类条件各自复用 window.list / screen.find / process.list / fs.stat，
+ * 平台行为与那些能力一致。超时是**正常返回**（satisfied:false + note），不抛异常。
+ */
+export async function cmdAwait(opts: Options): Promise<void> {
+  const condition = opts.condition as string | undefined;
+  if (!condition) {
+    fail('用法: nodeagent await --condition <window|control|process|file> --timeout <ms> [--text/--title/--process/--path] [--state absent]');
+  }
+  const args: Record<string, unknown> = { condition };
+  if (opts.text !== undefined) args['text'] = opts.text;
+  if (opts.title !== undefined) args['title'] = opts.title;
+  if (opts.process !== undefined) args['process'] = opts.process;
+  if (opts.path !== undefined) args['path'] = opts.path;
+  if (opts.state !== undefined) args['state'] = opts.state;
+  if (opts.timeoutMs !== undefined) args['timeout_ms'] = Number(opts.timeoutMs);
+  if (opts.interval !== undefined) args['interval_ms'] = Number(opts.interval);
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.GuiAwait, args, opts.json, (d) => {
+      const r = d as {
+        satisfied: boolean; condition: string; state: string;
+        elapsed_ms: number; attempts: number; last_seen: string; last_error?: string; note?: string;
+      };
+      const mark = r.satisfied ? '✓' : '✗';
+      const label = r.condition === 'control' ? String(args['text'] ?? '')
+        : r.condition === 'window' ? String(args['title'] ?? '')
+        : r.condition === 'process' ? String(args['process'] ?? '')
+        : String(args['path'] ?? '');
+      console.log(
+        `${mark} ${r.state === 'absent' ? '已消失' : '已出现'}: ${r.condition} ${label}` +
+          `（${r.elapsed_ms}ms，${r.attempts} 次轮询，末次=${r.last_seen}）`,
+      );
+      if (r.note) console.log(`  ℹ️ ${r.note}`);
+      if (r.last_error) console.log(`  ⚠️ 期间末次异常：${r.last_error.slice(0, 120)}`);
+    }),
+  );
+}
+
 // ---------- v3+ 审计 ----------
 
 /** v11：审计链完整性校验。 */
