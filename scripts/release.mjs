@@ -97,15 +97,23 @@ const remote = sh('git', ['remote', 'get-url', 'origin'])
 const repoPath = remote.replace(/^https:\/\/github\.com\//, '');
 if (!/^[\w.-]+\/[\w.-]+$/.test(repoPath)) fail(`无法从 remote 推断 GitHub 仓库: ${remote}`);
 
-// ---------- ② 改版本（单一版本源：根 + 各 workspace）----------
+// ---------- ② 改版本（单一版本源：根 + 各 workspace + Tauri 清单）----------
 const pkgFiles = ['package.json'];
 for (const f of sh('git', ['ls-files', '*package.json']).split('\n').filter(Boolean)) {
   if (f === 'package.json' || f.includes('node_modules')) continue;
   pkgFiles.push(f);
 }
+// Tauri 的版本号不在 package.json 里，另存于 src-tauri/tauri.conf.json，
+// 且它才是最终打进 .app / 安装包的版本。漏掉会「包里是旧版本号」，故一并纳入。
+const tauriConfFiles = sh('git', ['ls-files', '*src-tauri/tauri.conf.json'])
+  .split('\n')
+  .filter(Boolean);
 if (dryRun) {
   // dry-run 绝不改文件 —— 演练就该是无副作用的
   console.log(`（dry-run）将把 ${pkgFiles.length} 个 package.json 的 version 改为 ${version}`);
+  if (tauriConfFiles.length) {
+    console.log(`（dry-run）以及 ${tauriConfFiles.length} 个 tauri.conf.json：${tauriConfFiles.join(', ')}`);
+  }
   console.log('（dry-run）将执行：构建 → pack:win → pack:mac → 生成资产 → 提交打标签 → gh release create');
   process.exit(0);
 }
@@ -116,7 +124,14 @@ for (const f of pkgFiles) {
   j.version = version;
   writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
 }
-console.log(`✓ 版本号已写入 ${pkgFiles.length} 个 package.json`);
+for (const f of tauriConfFiles) {
+  const p = join(root, f);
+  const j = JSON.parse(readFileSync(p, 'utf8'));
+  if (!j.version) continue;
+  j.version = version;
+  writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
+}
+console.log(`✓ 版本号已写入 ${pkgFiles.length} 个 package.json + ${tauriConfFiles.length} 个 tauri.conf.json`);
 
 // ---------- ③ 构建 + 打包 ----------
 console.log('=== 构建 ===');
@@ -186,9 +201,12 @@ for (const a of assets) {
 console.log(`  latest.json / SHA256SUMS`);
 
 // ---------- ⑤ 提交 + 标签 + 推送 ----------
-// ⚠️ 安全闸：发版前若存在**未跟踪**文件，先停下来问，绝不盲目 add -A。
-// 2026-10-07 真机教训：工作区里有用户在建工程（crates/、docs/console-plan.md 等），
-// 发版脚本的 add -A 把它们连同版本号变更一起提交并推到公开仓库。
+// ⚠️ 安全闸（两层）：发版会把工作区**整体**提交并推到公开仓库，故提交前必须确认
+// 「将要提交的内容」正好等于「想提交的内容」。历史上两种偏差都真发生过，
+// 且都不报错、只是静默推走不想要的东西，故分两层拦。
+//
+// 第一层：未跟踪文件。2026-10-07 真机教训：工作区里有用户在建工程，
+// 发版脚本的 add -A 把它们连同版本号变更一起提交并推到了公开仓库。
 const untracked = sh('git', ['ls-files', '--others', '--exclude-standard'])
   .split('\n')
   .filter((f) => f && !f.startsWith('.github/') && f !== '.github');
@@ -200,6 +218,27 @@ if (untracked.length > 0) {
       '若不要，加入 .gitignore 后重试。',
   );
 }
+// 第二层：已修改的**跟踪**文件。只拦未跟踪文件是不够的 —— 下面的 `git add -A`
+// 同样会提交已修改的跟踪文件，而它们不在第一层的视野里。
+// 真例：`pnpm install` 把某个应用的依赖写进了跟踪中的根 pnpm-lock.yaml
+// （+1401 行），发版时静默推走，第一层闸门完全不响。
+// 故此处用「脏文件白名单」：除脚本自己改的 package.json 外，一律不许有别处改动。
+// 正常发版应在**干净工作区**上开始，所以这条不该有例外。
+const allowedDirty = new Set([...pkgFiles, ...tauriConfFiles]);
+const dirty = sh('git', ['diff', '--name-only', 'HEAD'])
+  .split('\n')
+  .filter(Boolean);
+const unexpectedDirty = dirty.filter((f) => !allowedDirty.has(f));
+if (unexpectedDirty.length > 0) {
+  fail(
+    '发现**版本号变更之外**的已修改文件，发版已中止（避免误提交）：\n' +
+      unexpectedDirty.map((f) => `  ${f}`).join('\n') +
+      '\n这些文件本不该在发版时变动。请 `git checkout -- <文件>` 还原，或先单独提交后重试。\n' +
+      '若其中有 pnpm-lock.yaml，说明依赖图发生了计划外的变化 ——\n' +
+      '应查清是哪个 workspace 成员引入的，而不是让 lock 带着它发版。',
+  );
+}
+
 sh('git', ['add', '-A', '--', '.', ':(exclude).github']);
 sh('git', ['commit', '-m', `chore(release): v${version}`]);
 sh('git', ['tag', '-a', `v${version}`, '-m', `nodeagent v${version}`]);

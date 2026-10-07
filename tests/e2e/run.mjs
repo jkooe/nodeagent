@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { NodeAgentClient, runMacro } from '../../packages/client/dist/index.js';
-import { generateKeyPair } from '../../packages/protocol/dist/index.js';
+import { generateKeyPair, findCapability } from '../../packages/protocol/dist/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '../..');
@@ -1116,6 +1116,73 @@ async function testMetricsAndAudit() {
   }
 }
 
+/**
+ * 契约形状守卫（v-contract）：对**真实被控端**调用只读能力，
+ * 断言返回字段 **⊆** manifest `returns_schema` 声明的字段。
+ *
+ * 补上「agent 实现 ↔ 协议契约」这一环。与控制台类型守卫
+ * （tests/unit/console-contract.test.mjs）合起来，构成
+ *   agent 实现 ↔ 协议契约 ↔ 前端类型
+ * 的三段闭环 —— 任一段漂移都会红。
+ *
+ * ⚠️ 只调用**无副作用**的只读能力（不写文件、不装软件、不动输入），
+ *    避免 e2e 产生难以回收的变更。
+ */
+async function testContractShapes() {
+  const c = await connect();
+  try {
+    const info0 = await c.invoke('system.info', {});
+    assert.equal(info0.status, 'ok');
+    const home = info0.data.agent_home;
+    assert.ok(home, 'system.info 应返回 agent_home');
+
+    const cases = [
+      ['system.info', {}],
+      ['system.status', {}],
+      ['system.process.list', { limit: 3 }],
+      ['fs.list', { path: home }],
+      ['fs.read', { path: join(home, 'agent.json'), max_bytes: 512 }],
+      ['system.audit.list', { limit: 2 }],
+      ['system.audit.verify', {}],
+    ];
+
+    for (const [cap, args] of cases) {
+      const meta = findCapability(cap);
+      assert.ok(meta, `${cap} 不在 manifest 清单中`);
+
+      const declared = new Set(Object.keys(meta.returns_schema?.properties ?? {}));
+      assert.ok(declared.size > 0, `${cap} 的 returns_schema 未枚举字段，无法校验`);
+
+      const res = await c.invoke(cap, args);
+      assert.equal(res.status, 'ok', `${cap} 调用失败：${JSON.stringify(res.error)}`);
+
+      // 顶层字段 ⊆ 契约
+      const extraTop = Object.keys(res.data ?? {}).filter((k) => !declared.has(k));
+      assert.deepEqual(
+        extraTop,
+        [],
+        `${cap} 返回了契约外的顶层字段：${extraTop.join(', ')}（契约：${[...declared].join(', ')}）`,
+      );
+
+      // 数组字段：首元素字段 ⊆ 契约 items.properties
+      for (const [field, schema] of Object.entries(meta.returns_schema.properties)) {
+        const actual = res.data?.[field];
+        if (!Array.isArray(actual) || actual.length === 0) continue;
+        const itemProps = new Set(Object.keys(schema.items?.properties ?? {}));
+        if (itemProps.size === 0) continue; // 契约是空壳（type:'object'），无法校验
+        const extraItem = Object.keys(actual[0]).filter((k) => !itemProps.has(k));
+        assert.deepEqual(
+          extraItem,
+          [],
+          `${cap}.${field}[0] 返回了契约外字段：${extraItem.join(', ')}（契约：${[...itemProps].join(', ')}）`,
+        );
+      }
+    }
+  } finally {
+    c.close();
+  }
+}
+
 async function main() {
   console.log('\nnodeagent 端到端测试\n');
   const agent = startAgent();
@@ -1321,6 +1388,9 @@ async function main() {
     await test('v17 音频控制：读状态 / 写回原值 / 参数校验', testAudio);
     await test('v19 拉取式自更新：HTTP 下载 + 哈希校验（dry-run）', testSelfUpdate);
     await test('v21 网络安全：网段白名单 + 证书指纹钉住（TOFU 与拒绝）', testNetworkSecurity);
+
+    // ---------- 契约形状（agent 实现 ↔ 协议契约）----------
+    await test('契约形状：只读能力返回字段与 manifest returns_schema 一致', testContractShapes);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

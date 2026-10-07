@@ -1,0 +1,54 @@
+name: Rust Client
+
+# crates/nodeagent-client 是桌面控制台的协议客户端（Tauri 壳经 Cargo path 依赖它）。
+# 它是纯 Rust、无平台相关代码，故单开一个 Linux 快车道：
+# 比 Windows 那条 E2E 长流程反馈快得多，失败归属也一目了然。
+#
+# ⚠️ 本工作流与仓库其余部分的铁律不同：**不涉及** .ps1/.cmd 编码，无需 BOM 守卫。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'packages/protocol/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'packages/protocol/**'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Rust 客户端单测 + E2E
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      # 版本**锁死**而不跟 stable 漂 —— 否则「本地全绿」与「CI 绿」会因为 lint 集合随
+      # 工具链变化而分叉（本仓库已因同类原因吃过 8 轮 Windows CI 的苦头）。
+      # 当前值与 crates/ 开发环境一致：rustc/cargo 1.98.1、clippy 0.1.98。
+      # 升级时两边同改，升完先本地复跑 `cargo clippy ... -- -D warnings`。
+      - name: 安装 Rust 工具链（1.98.1，含 clippy）
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+          components: clippy
+
+      - name: 缓存 cargo 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+
+      # clippy 单列为一步：它拦的是「能编译但不该这么写」，与测试失败是两类问题。
+      # -D warnings 让告警即失败 —— 该 crate 的既定标准是**零告警**。
+      - name: Clippy（告警即失败）
+        run: cargo clippy --manifest-path crates/nodeagent-client/Cargo.toml --all-targets -- -D warnings
+
+      - name: 单测 + E2E
+        run: cargo test --manifest-path crates/nodeagent-client/Cargo.toml
