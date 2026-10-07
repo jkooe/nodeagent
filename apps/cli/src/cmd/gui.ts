@@ -251,6 +251,17 @@ export async function cmdAwait(opts: Options): Promise<void> {
     fail('用法: nodeagent await --condition <window|control|process|file> --timeout <ms> [--text/--title/--process/--path] [--state absent]');
   }
   const args: Record<string, unknown> = { condition };
+  // v1.7：where / any_of 是 JSON 字符串（属性谓词与组合条件不便用命令行开关表达）
+  for (const k of ['where', 'any_of']) {
+    const raw = (opts as unknown as Record<string, string | undefined>)[k];
+    if (raw !== undefined) {
+      try {
+        args[k] = JSON.parse(raw);
+      } catch {
+        fail(`--${k} 不是合法 JSON: ${raw.slice(0, 60)}`);
+      }
+    }
+  }
   if (opts.text !== undefined) args['text'] = opts.text;
   if (opts.title !== undefined) args['title'] = opts.title;
   if (opts.process !== undefined) args['process'] = opts.process;

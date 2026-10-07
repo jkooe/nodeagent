@@ -389,6 +389,14 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
           description:
             'auto=UIA 优先+OCR 兜底；uia=仅控件树；ocr=仅文字识别；image=仅图像模板匹配（需 template）',
         },
+        where: {
+          type: 'object',
+          description:
+            'v1.7 属性谓词（**仅 UIA 引擎生效**）：{ enabled?, selected?, value?, toggle? }。' +
+            '例：{"enabled":true} 只回可用控件；{"value":"*已完成*"} 按值模糊匹配。' +
+            '拿不到的属性（Electron/游戏 UI 常见）不参与命中，由调用方按 note 判断；' +
+            'OCR / image 引擎无属性可读，此时忽略本参数并带回 note。',
+        },
         template: {
           type: 'string',
           description:
@@ -428,6 +436,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
       type: 'object',
       properties: {
         engine: { type: 'string', description: '实际使用的引擎：uia | ocr' },
+        note: { type: 'string', description: 'v1.7：where 在非 UIA 引擎下被忽略等降级说明' },
         waited_ms: { type: 'integer', description: '实际等待时长（便于诊断是否命中等待窗口）' },
         matches: {
           type: 'array',
@@ -520,7 +529,11 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
         interval_ms: { type: 'integer', minimum: 50, maximum: 5000, default: 400, description: '轮询间隔' },
         title: { type: 'string', description: 'window 条件：窗口标题（正则）' },
         pattern: { type: 'string', description: 'window 条件的 title 别名' },
-        text: { type: 'string', description: 'control 条件：元素文本' },
+        text: { type: 'string', description: 'control 条件：元素文本（有 where 时可省）' },
+        where: {
+          type: 'object',
+          description: 'v1.7 属性谓词（仅 UIA）：{ enabled?, selected?, value?, toggle? }，如等一个可用的按钮',
+        },
         window: { type: 'string', description: 'control 条件：限定窗口标题（正则）' },
         control_type: { type: 'string', description: 'control 条件：限定控件类型（仅 UIA）' },
         method: { type: 'string', enum: ['auto', 'uia', 'ocr', 'image'], description: 'control 条件：查找方式' },
@@ -528,6 +541,15 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
         process: { type: 'string', description: 'process 条件：进程名（正则）' },
         path: { type: 'string', description: 'file 条件：文件路径' },
         limit: { type: 'integer', description: '底层 list 类条件的返回条数' },
+        any_of: {
+          type: 'array',
+          maxItems: 8,
+          description:
+            'v1.7 组合条件：数组，每项为一个条件对象（同顶层参数名），**任一命中**即算命中。' +
+            '例：[{"condition":"window","title":"安装完成"},{"condition":"control","text":"错误"}]' +
+            '——「安装成功或报错，先出现的那个算」。与 where 合用可表达' +
+            '「弹窗出现且其中某按钮 enabled」（用两条 await 亦可，任选）。',
+        },
       },
       additionalProperties: false,
     },

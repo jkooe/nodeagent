@@ -366,6 +366,8 @@ const TOOLS = [
         title: { type: 'string', description: 'window 条件：窗口标题（正则）' },
         process: { type: 'string', description: 'process 条件：进程名（正则）' },
         path: { type: 'string', description: 'file 条件：文件路径' },
+        where: { type: 'object', description: 'v1.7 属性谓词（仅 UIA）：{ enabled?, selected?, value?, toggle? }' },
+        any_of: { type: 'array', maxItems: 8, description: 'v1.7 组合条件：每项一个条件对象，任一命中即算' },
       },
       required: ['condition'],
       additionalProperties: false,
@@ -783,7 +785,7 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
     }
     case 'na_await': {
       const args: Record<string, unknown> = {};
-      for (const k of ['condition', 'state', 'timeout_ms', 'interval_ms', 'text', 'title', 'process', 'path']) {
+      for (const k of ['condition', 'state', 'timeout_ms', 'interval_ms', 'text', 'title', 'process', 'path', 'where', 'any_of']) {
         if (input[k] !== undefined) args[k] = input[k];
       }
       if (!args['condition']) return { error: 'await 需要 condition' };

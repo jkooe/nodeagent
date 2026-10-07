@@ -164,14 +164,53 @@ function Get-WinByTitle([string]$re) {
 
 # v14：按子串在给定 scope 内遍历查找（FindAll + 子串过滤）。
 # UIA 的 PropertyCondition 只能精确匹配，故必须遍历后过滤；遍历规模设上限防超大 UI 树卡死。
-function Find-UiaByText($scope, [string]$text, [int]$limit, [string]$ct) {
+# v23：读取元素的 UIA 属性（v1.7 语义属性化）。
+# 为什么逐个 try：ValuePattern / SelectionItemPattern / TogglePattern 并非所有控件
+# 都支持（不支持时 GetSupportedPattern 返回 false 或抛异常），而且**部分应用
+# （Electron / 游戏 UI）根本给不出值** —— 拿不到就留空，由上层判"未知"而非"false"。
+function Get-UiaProps($e) {
+  $enabled = $true
+  try { $enabled = [bool]$e.Current.IsEnabled } catch {}
+  $value = $null
+  try {
+    $vp = $e.GetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern)
+    if ($vp -ne $null) { $value = $vp.Current.Value }
+  } catch {}
+  $selected = $null
+  try {
+    $sp = $e.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern)
+    if ($sp -ne $null) { $selected = [bool]$sp.Current.IsSelected }
+  } catch {}
+  $toggle = $null
+  try {
+    $tp = $e.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    if ($tp -ne $null) { $toggle = "$($tp.Current.ToggleState)" }
+  } catch {}
+  return @{ enabled = $enabled; value = $value; selected = $selected; toggle = $toggle }
+}
+
+function Test-UiaWhere($props, $where) {
+  if ($where -eq $null) { return $true }
+  foreach ($k in $where.Keys) {
+    $want = $where[$k]
+    switch ($k) {
+      'enabled'  { if ($props.enabled -ne [bool]$want) { return $false } }
+      'selected' { if ($null -eq $props.selected -or $props.selected -ne [bool]$want) { return $false } }
+      'value'    { if ($props.value -eq $null -or $props.value -notlike [string]$want) { return $false } }
+      'toggle'   { if ($props.toggle -eq $null -or $props.toggle -notlike [string]$want) { return $false } }
+    }
+  }
+  return $true
+}
+
+function Find-UiaByText($scope, [string]$text, [int]$limit, [string]$ct, $where) {
   $cond = [System.Windows.Automation.Condition]::TrueCondition
   if ($ct -ne '') {
     $ctObj = $null
     try { $ctObj = [System.Windows.Automation.ControlType]::$ct } catch {}
     if ($ctObj -ne $null) {
       $cond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::ControlTypeProperty, $ctObj)
+        [System.Windows.Automation.AutomitionElement]::ControlTypeProperty, $ctObj)
     }
   }
   $found = $scope.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
@@ -184,9 +223,11 @@ function Find-UiaByText($scope, [string]$text, [int]$limit, [string]$ct) {
     try {
       $nm = $e.Current.Name
       if ([string]::IsNullOrEmpty($nm)) { continue }
-      if ($nm.IndexOf($text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+      if ($text -ne '' -and $nm.IndexOf($text, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
       $r = $e.Current.BoundingRectangle
       if ($r.Width -le 0 -or $r.Height -le 0) { continue }
+      $props = Get-UiaProps $e
+      if (-not (Test-UiaWhere $props $where)) { continue }
       [void]$out.Add([pscustomobject]@{
         name = $nm
         control_type = ($e.Current.ControlType.ProgrammaticName -replace 'ControlType\\.','')
@@ -195,6 +236,10 @@ function Find-UiaByText($scope, [string]$text, [int]$limit, [string]$ct) {
         y = [int]($r.Top + $r.Height / 2)
         left = [int]$r.Left; top = [int]$r.Top
         width = [int]$r.Width; height = [int]$r.Height
+        enabled = $props.enabled
+        value = $props.value
+        selected = $props.selected
+        toggle = $props.toggle
       })
     } catch {}
   }
@@ -669,6 +714,9 @@ export async function screenFind(args: Args): Promise<unknown> {
   }
   const windowTitle = args['window'] as string | undefined;
   const controlType = args['control_type'] as string | undefined;
+  // v1.7：属性谓词。仅 UIA 引擎生效；OCR / 图像模板忽略（无属性可读），
+  // 此时在返回里带 note 说明，避免调用方误以为"按属性过滤过了"。
+  const whereArg = args['where'] as Record<string, unknown> | undefined;
   const limit = (args['limit'] as number | undefined) ?? 20;
   const method = (args['method'] as string | undefined) ?? 'auto'; // auto | uia | ocr
   // v12.2：等待语义 —— 界面常有动画/加载延迟，一次性查找极易假失败。
@@ -691,12 +739,16 @@ $text = ${JSON.stringify(text)}
 $limit = ${Number(limit)}
 $ct = ${JSON.stringify(controlType ?? '')}
 $winTitle = ${JSON.stringify(windowTitle ?? '')}
+# v1.7 属性过滤：where 只含 enabled/selected/value/toggle 四类键
+# （白名单式过滤，避免把任意参数塞进 PowerShell）
+$where = ${JSON.stringify(whereArg ?? {})}
+if ($where -ne $null -and $where.Count -eq 0) { $where = $null }
 $out = New-Object System.Collections.ArrayList
 if ($winTitle -ne '') {
   # 指定窗口：直接在该窗口子树内找
   $w = Get-WinByTitle $winTitle
   if ($w -eq $null) { Write-Output '[]'; return }   # 严禁 exit：会杀掉常驻助手
-  $out = Find-UiaByText $w $text $limit $ct
+  $out = Find-UiaByText $w $text $limit $ct $where
 } else {
   # v14 优化：先在前台窗口子树内找（典型只几百个元素，快一个数量级），
   # 找不到再退回全桌面遍历（原来每次都在全桌面上跑，真机实测 3.1~3.7s）。
@@ -704,9 +756,9 @@ if ($winTitle -ne '') {
   try {
     $fgEl = [System.Windows.Automation.AutomationElement]::FromHandle([NAWin32]::GetForegroundWindow())
   } catch {}
-  if ($fgEl -ne $null) { $out = Find-UiaByText $fgEl $text $limit $ct }
+  if ($fgEl -ne $null) { $out = Find-UiaByText $fgEl $text $limit $ct $where }
   if ($out.Count -eq 0) {
-    $out = Find-UiaByText ([System.Windows.Automation.AutomationElement]::RootElement) $text $limit $ct
+    $out = Find-UiaByText ([System.Windows.Automation.AutomationElement]::RootElement) $text $limit $ct $where
   }
 }
 # ── 输出 ──（遍历与子串过滤已收敛到预加载的 Find-UiaByText，避免逻辑重复）

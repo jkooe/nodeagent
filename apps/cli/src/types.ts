@@ -20,6 +20,9 @@ export interface Options {
   /** 通用选项：文本 / 标题 */
   text?: string;
   title?: string;
+  /** v1.7 gui.await 扩展 */
+  where?: string;
+  any_of?: string;
   /** v1.6 gui.await */
   condition?: string;
   state?: string;

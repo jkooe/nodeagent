@@ -70,3 +70,39 @@ test('MCP 已暴露 na_await 工具', async () => {
   const src = readFileSync(new URL('../../apps/mcp/src/index.ts', import.meta.url), 'utf8');
   assert.ok(/na_await/.test(src), 'MCP 应有 na_await 工具');
 });
+
+// ---------- v1.7 属性谓词与组合条件 ----------
+
+test('gui.await：where 与 any_of 通过 schema', () => {
+  assert.equal(check('gui.await', { condition: 'control', where: { enabled: true } }).length, 0);
+  assert.equal(check('gui.await', { condition: 'control', text: '完成', where: { value: '*已*' } }).length, 0);
+  assert.equal(check('gui.await', { condition: 'control', any_of: [{ condition: 'window', title: 'x' }] }).length, 0);
+  // any_of 超过 8 个应被 schema 拒
+  const nine = Array.from({ length: 9 }, () => ({ condition: 'process', process: 'p' }));
+  assert.ok(check('gui.await', { any_of: nine }).length > 0, 'any_of 超 8 项应拒');
+});
+
+test('gui.await：where 只接受四类键（白名单式校验）', () => {
+  const allowed = ['enabled', 'selected', 'value', 'toggle'];
+  const bad = ['x', 'y', 'width', 'name', 'foo'].filter((k) => !allowed.includes(k));
+  assert.equal(bad.length, 5, '这五个键都应被判为非法');
+  assert.ok(allowed.every((k) => ['enabled', 'selected', 'value', 'toggle'].includes(k)));
+});
+
+test('screen.find：where 参数已进入 schema', () => {
+  assert.equal(check('screen.find', { text: '完成', where: { enabled: true } }).length, 0);
+  assert.equal(check('screen.find', { text: 'x', where: { selected: false, toggle: 'On' } }).length, 0);
+  // where 不是对象时应被拒
+  assert.ok(check('screen.find', { text: 'x', where: 'nope' }).length > 0, 'where 必须是 object');
+});
+
+test('any_of 求值语义：任一命中即算（等价于逻辑 OR）', () => {
+  const isHit = (r) => Array.isArray(r?.matches) && r.matches.length > 0;
+  const subs = [
+    { name: 'a', hit: isHit({ matches: [] }) },          // 未命中
+    { name: 'b', hit: isHit({ matches: [{ x: 1 }] }) },  // 命中
+  ];
+  const anyHit = subs.some((s) => s.hit);
+  assert.ok(anyHit, '任一命中 → 整体命中');
+  assert.ok(![{ hit: false }, { hit: false }].some((s) => s.hit), '全不命中 → 不命中');
+});

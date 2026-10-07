@@ -63,6 +63,23 @@ function buildInnerArgs(condition: Condition, args: Args): Args {
       for (const k of ['text', 'window', 'control_type', 'method', 'template', 'limit', 'timeout_ms']) {
         if (args[k] !== undefined) inner[k] = args[k];
       }
+      // v1.7：属性谓词（仅 UIA 引擎生效）。有 where 时允许不传 text ——
+      // 「等一个 enabled 的按钮」比「等一个叫某名字的按钮」更贴近真实意图。
+      const where = args['where'];
+      if (where !== undefined) {
+        if (typeof where !== 'object' || where === null || Array.isArray(where)) {
+          throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'where 必须是对象，如 {"enabled":true}');
+        }
+        const allowed = ['enabled', 'selected', 'value', 'toggle'];
+        const bad = Object.keys(where as Record<string, unknown>).filter((k) => !allowed.includes(k));
+        if (bad.length > 0) {
+          throw new CapabilityError(ErrorCodes.PARAM_INVALID, `where 只支持 ${allowed.join('/')}`, { got: bad });
+        }
+        inner['where'] = where;
+      }
+      if (inner['text'] === undefined && where === undefined) {
+        throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'control 条件需要 text 或 where 之一');
+      }
       return inner;
     }
     case 'process': {
@@ -99,9 +116,46 @@ function innerProbe(condition: Condition): (args: Args) => Promise<unknown> {
   }
 }
 
+/**
+ * v1.7 组合条件：`any_of: [ {...}, {...} ]`，任一命中原句即算命中。
+ *
+ * 为什么只做 any_of 不做 and/or/not  generalize：真实场景里"弹窗出现 **且**
+ * 其中某按钮 enabled"用 any_of(弹窗) + where(按钮 enabled) 两步就能表达，
+ * 而通用布尔表达式会把 schema 与求值都复杂化，收益不成比例。
+ * 若真需要"两个都必须成立"，上层连调两次 await 更直白。
+ */
+function buildAnyOf(args: Args): Array<{ condition: Condition; inner: Args; label: string }> {
+  const raw = args['any_of'];
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'any_of 需为非空数组，每项为一个条件对象');
+  }
+  if (raw.length > 8) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'any_of 最多 8 个条件', { got: raw.length });
+  }
+  return raw.map((item, i) => {
+    const obj = item as Record<string, unknown>;
+    const condition = obj['condition'] as Condition | undefined;
+    if (!condition || !CONDITIONS.includes(condition)) {
+      throw new CapabilityError(ErrorCodes.PARAM_INVALID, `any_of[${i}].condition 不支持: ${String(condition)}`, {
+        allowed: CONDITIONS,
+      });
+    }
+    // 每项复用主条件的构造逻辑（同等校验），顶层键名直接透传
+    const inner = buildInnerArgs(condition, obj);
+    const label =
+      condition === 'control' ? String(obj['text'] ?? JSON.stringify(obj['where'] ?? ''))
+      : condition === 'window' ? String(obj['title'] ?? obj['pattern'] ?? '')
+      : condition === 'process' ? String(obj['process'] ?? '')
+      : String(obj['path'] ?? '');
+    return { condition, inner, label };
+  });
+}
+
 export async function guiAwait(args: Args): Promise<unknown> {
+  // v1.7：有 any_of 时**不要求**顶层 condition（语义就是"这组条件任一命中"），
+  // 校验顺序也因此调整为 any_of 先行 —— 否则会先撞上"condition 缺失"的报错。
   const condition = args['condition'] as Condition | undefined;
-  if (!condition || !CONDITIONS.includes(condition)) {
+  if (!args['any_of'] && (!condition || !CONDITIONS.includes(condition))) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, `不支持的 condition: ${String(condition)}`, {
       allowed: CONDITIONS,
       hint: 'window=等窗口出现/消失；control=等界面元素；process=等进程；file=等文件',
@@ -116,13 +170,57 @@ export async function guiAwait(args: Args): Promise<unknown> {
   const timeoutMs = Math.max(0, Math.min(60_000, (args['timeout_ms'] as number | undefined) ?? 5000));
   const intervalMs = Math.max(50, Math.min(5000, (args['interval_ms'] as number | undefined) ?? 400));
 
-  const innerArgs = buildInnerArgs(condition, args);
-  const probe = innerProbe(condition);
-
   const startedAt = Date.now();
   let attempts = 0;
   let lastHit = false;
   let lastError: string | null = null;
+
+  // v1.7：组合条件走单独路径（任一命中即算），失败语义与单条完全一致
+  const anyOf = args['any_of'] !== undefined ? buildAnyOf(args) : null;
+  if (anyOf) {
+    for (;;) {
+      attempts += 1;
+      let hitLabel: string | null = null;
+      lastError = null;
+      for (const c of anyOf) {
+        try {
+          const r = await innerProbe(c.condition)(c.inner);
+          if (isHit(r)) { hitLabel = c.label; break; }
+        } catch (err) {
+          lastError = err instanceof Error ? err.message : String(err);
+        }
+      }
+      const satisfied = (state === 'present' ? hitLabel !== null : hitLabel === null) as boolean;
+      if (satisfied) {
+        return {
+          satisfied: true,
+          condition: 'any_of',
+          state,
+          elapsed_ms: Date.now() - startedAt,
+          attempts,
+          last_seen: state,
+          hit: hitLabel ?? undefined,
+          note: hitLabel ? `命中：${hitLabel}` : '所有子条件均已消失',
+        };
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        return {
+          satisfied: false,
+          condition: 'any_of',
+          state,
+          elapsed_ms: Date.now() - startedAt,
+          attempts,
+          last_seen: lastHit ? 'present' : 'absent',
+          last_error: lastError ?? undefined,
+          note: `等待 ${timeoutMs}ms，${anyOf.length} 个条件均未${state === 'present' ? '命中' : '消失'}`,
+        };
+      }
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+
+  const innerArgs = buildInnerArgs(condition, args);
+  const probe = innerProbe(condition);
 
   for (;;) {
     attempts += 1;
