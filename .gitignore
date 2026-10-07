@@ -41,9 +41,7 @@ release/
 ../win-backup/
 win-backup/
 
-# ---- 在建工程（用户 WIP，暂不入库；2026-10-07 保护性添加）----
-# 背景：发版脚本的 add -A 曾把这些未跟踪文件误提交到公开仓库，已移出跟踪。
-# 这些是皇上正在开发的 Rust 客户端与控制台方案，待其评审后再决定是否入库。
-/crates/
-/docs/console-plan.md
-/docs/ROADMAP.md
+# Rust 构建产物
+# ⚠️ 2026-10-07：crates/ 此前整体被忽略，target/ 是「顺带」没进库的；crates/ 正式入库后
+#    必须显式忽略，否则 4GB 级的 cargo target 会被 add -A 卷进提交。
+/crates/target/
