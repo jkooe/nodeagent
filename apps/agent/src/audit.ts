@@ -17,7 +17,9 @@ export type AuditType =
   /** v21：来源不在 allow_from 被拒 */
   | 'net.deny'
   /** v19：agent 自更新（拉取式） */
-  | 'agent.update';
+  | 'agent.update'
+  /** v23：连接空闲被主动断开 */
+  | 'session.idle_close';
 
 /** 一条审计记录（JSONL 单行）。 */
 export interface AuditEntry {

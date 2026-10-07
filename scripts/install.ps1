@@ -41,7 +41,11 @@ param(
     # （截屏 / UIA 找元素 / 鼠标键盘注入都依赖交互桌面）。
     [switch]$Unattended,
     # 追加「开机即启动」触发器（不依赖用户登录）
-    [switch]$AtStartup
+    [switch]$AtStartup,
+    # v23：从**标准输入**读密钥（而非命令行 -Key）。
+    # 为什么：命令行参数对同机其他用户可见（任务管理器/Get-CimInstance Win32_Process
+    # 的 CommandLine 字段就是明文）。install.cmd 用 `echo <key>| powershell ...` 喂进来。
+    [switch]$KeyFromStdin
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,6 +114,28 @@ Write-Ok "Agent entry: $agentJs"
 $cfgDir  = if ($env:NODEAGENT_HOME) { $env:NODEAGENT_HOME } else { Join-Path $env:USERPROFILE ".nodeagent" }
 $cfgPath = Join-Path $cfgDir "agent.json"
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
+
+# v23：stdin 读取要在「复用既有配置」之前 —— 调用方显式给了 key 就以它为准。
+# 同时规避了一个易错点：[Console]::In.ReadLine() 在没有管道时会阻塞，
+# 所以必须先判 [Console]::IsInputRedirected。
+if ($KeyFromStdin -and -not $Key) {
+    if (-not [Console]::IsInputRedirected) {
+        Write-Err "-KeyFromStdin requires the key on stdin (e.g. from install.cmd's pipe)."
+        exit 1
+    }
+    $line = [Console]::In.ReadLine()
+    if (-not $line) {
+        Write-Err "stdin was empty; no key to read."
+        exit 1
+    }
+    # 管道会带入 CRLF/首尾空白；密钥是纯 hex，一律 Trim
+    $Key = $line.Trim()
+    if ($Key -notmatch '^[0-9a-fA-F]{16,128}$') {
+        Write-Err "key from stdin is not valid hex (16-128 chars)."
+        exit 1
+    }
+    Write-Ok "Key read from stdin (not visible in process command line)"
+}
 
 if (Test-Path $cfgPath) {
     try { $existing = Get-Content $cfgPath -Raw | ConvertFrom-Json } catch { $existing = $null }

@@ -203,7 +203,8 @@ export type AuditType =
   | "rate.limited"
   | "net.change"
   | "net.deny"
-  | "agent.update";
+  | "agent.update"
+  | "session.idle_close";
 
 export interface AuditEntry {
   ts?: number;

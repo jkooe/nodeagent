@@ -261,6 +261,11 @@ export async function eventPoll(args: Args): Promise<unknown> {
 }
 
 /** 连接断开时清理该连接创建的所有订阅（避免 watcher 泄漏）。 */
+/** v23：当前事件订阅数（空闲断开的豁免判据之一）。 */
+export function watchCount(): number {
+  return watches.size;
+}
+
 export function disposeWatchesByOwner(owner: string): number {
   let n = 0;
   for (const [id, rec] of watches) {

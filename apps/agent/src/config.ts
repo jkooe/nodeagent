@@ -41,6 +41,19 @@ export interface AgentConfig {
    *   "allow_from": ["192.168.0.0/16", "10.0.0.0/8"]
    */
   allow_from?: string[];
+
+  /**
+   * v23 连接层防护（三项，默认值见 server.ts）。
+   * 单项缺省即启用默认策略；显式设 0 可关闭对应项。
+   */
+  security?: {
+    /** 握手失败封禁：同来源连续失败 max_attempts 次起，ban = ban_ms × 2^(N-max)，封顶 24h */
+    auth_ban?: { max_attempts?: number; ban_ms?: number; whitelist?: string[] };
+    /** 最大并发连接数（默认 8） */
+    max_connections?: number;
+    /** 空闲断开（默认 30 分钟；0 = 关闭） */
+    idle_timeout_ms?: number;
+  };
   /** v3+：审计日志配置 */
   audit?: {
     /** 是否启用（默认 true） */
