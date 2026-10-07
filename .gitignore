@@ -45,3 +45,9 @@ win-backup/
 # ⚠️ 2026-10-07：crates/ 此前整体被忽略，target/ 是「顺带」没进库的；crates/ 正式入库后
 #    必须显式忽略，否则 4GB 级的 cargo target 会被 add -A 卷进提交。
 /crates/target/
+
+# 密钥材料（路线图 §6.2）：被控端数据目录 keys/、ed25519/TLS 私钥
+keys/
+*.key
+*.pem
+!*.pub
