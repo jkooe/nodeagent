@@ -219,8 +219,11 @@ export async function guiAwait(args: Args): Promise<unknown> {
     }
   }
 
-  const innerArgs = buildInnerArgs(condition, args);
-  const probe = innerProbe(condition);
+  // 能走到这里说明没走 any_of 分支，而进入函数时的校验已保证 condition 合法；
+  // TS 无法跨分支收窄，这里显式断言一次（buildInnerArgs / innerProbe 内部还会各自校验）。
+  const single = condition as Condition;
+  const innerArgs = buildInnerArgs(single, args);
+  const probe = innerProbe(single);
 
   for (;;) {
     attempts += 1;
