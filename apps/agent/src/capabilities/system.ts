@@ -531,10 +531,15 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
     `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdLine.replace(/'/g, "''")}'`,
     // 不限时（默认 72h 后强制结束），保证 node 能长期运行
     `$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)`,
-    // ⚠️ 必须用最高权限：agent 通常以管理员运行，普通权限的 taskkill 杀不掉它，
+    // ① 先试「最高权限」：agent 通常以管理员运行，普通权限的 taskkill 杀不掉它，
     //    否则会出现「新进程起来了但端口被占（EADDRINUSE）」。
     `$p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -RunLevel Highest -LogonType Interactive`,
     `Register-ScheduledTask -TaskName '${TASK}' -Action $a -Settings $s -Principal $p -Force | Out-Null`,
+    // ② 降级：**非管理员身份下 Highest 会被系统拒绝**（真机 2026-10-09 坐实：
+    //    agent 以普通用户运行时，deploy/restart 一律报"注册重启任务失败 exit=1"）。
+    //    此时不指定 -Principal —— 默认继承当前用户权限级别（Limited），
+    //    注册能成功，且同权限下 taskkill 自己完全够用。
+    `if ((Get-ScheduledTask -TaskName '${TASK}' -ErrorAction SilentlyContinue) -eq $null) { Register-ScheduledTask -TaskName '${TASK}' -Action $a -Settings $s -Force | Out-Null }`,
     // 校验注册真的成功（SilentlyContinue 会吞错，必须显式确认）
     `if ((Get-ScheduledTask -TaskName '${TASK}' -ErrorAction SilentlyContinue) -eq $null) { Write-Output 'register-failed'; exit 1 }`,
     `Start-ScheduledTask -TaskName '${TASK}'`,

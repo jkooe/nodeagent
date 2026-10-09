@@ -273,7 +273,10 @@ export async function cmdDeploy(localFile: string, opts: Options): Promise<void>
   const uploadInfo = await withClient(async (c) => {
     // 备份走协议自带的 fs 能力（而非 shell 的 Copy-Item）——
     // Copy-Item 是 Windows 专用，在 macOS 被控端上会静默失败（真机踩过：以为备份了，其实没有）。
-    const backup = `${target}.bak-${Date.now()}`;
+    // 备份用**固定名**（覆盖式）：此前用 `.bak-<时间戳>`，每部署一次就多一个文件 ——
+    // 真机 2026-10-09 发现 D:\Nodeagent 下堆了 15+ 个 bak（单文件 1MB，纯浪费）。
+    // 部署回滚只需要「上一个可用版本」，一份就够，故改为覆盖写。
+    const backup = `${target}.bak`;
     let backupPath = '';
     try {
       const st = await c.invoke<{ size?: number; exists?: boolean }>(CapabilityNames.FsStat, { path: target });
@@ -329,6 +332,23 @@ export async function cmdDeploy(localFile: string, opts: Options): Promise<void>
       offset += part.length;
     }
     console.log(`✓ 已上传 ${(buf.length / 1024).toFixed(0)} KB`);
+
+    // best-effort 清理历史的时间戳备份（老格式 `.bak-<ts>`）。
+    // 平台分流：Windows 用 PS，类 Unix 用 rm。清不掉不影响部署，只提示。
+    try {
+      const isWin = String((info as { os?: string }).os ?? '').toLowerCase().startsWith('win');
+      const cleanup = isWin
+        ? `Get-ChildItem '${target}.bak-*' -EA SilentlyContinue | Remove-Item -Force -EA SilentlyContinue; (Get-ChildItem '${target}.bak-*' -EA SilentlyContinue | Measure-Object).Count`
+        : `rm -f '${target}.bak-'* 2>/dev/null; ls '${target}.bak-'* 2>/dev/null | wc -l`;
+      const r = await c.invoke<{ stdout?: string }>(CapabilityNames.ShellExec, { command: cleanup, timeout_ms: 15_000 });
+      const left = Number((r.data?.stdout ?? '').trim());
+      if (r.status === 'ok' && Number.isFinite(left)) {
+        if (left === 0) console.log('✓ 已清理历史时间戳备份（老格式）');
+        else console.log(`⚠️ 仍有 ${left} 个历史备份未清理（可手动删除）`);
+      }
+    } catch {
+      /* 清理是附加项，失败不影响部署结果 */
+    }
     return { backupPath };
   });
 
