@@ -197,6 +197,7 @@ function Test-UiaWhere($props, $where) {
       'enabled'  { if ($props.enabled -ne [bool]$want) { return $false } }
       'selected' { if ($null -eq $props.selected -or $props.selected -ne [bool]$want) { return $false } }
       'value'    { if ($props.value -eq $null -or $props.value -notlike [string]$want) { return $false } }
+      default    { }   # 未知键忽略（Node 侧已白名单校验）
       'toggle'   { if ($props.toggle -eq $null -or $props.toggle -notlike [string]$want) { return $false } }
     }
   }
@@ -709,8 +710,20 @@ export async function screenFind(args: Args): Promise<unknown> {
   }
   const text = (args['text'] as string | undefined) ?? '';
   const wantImage = (args['method'] as string | undefined) === 'image';
-  if (!wantImage && (typeof text !== 'string' || text.length === 0)) {
-    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'text 不能为空（method=image 时用 template 代替）');
+  // v1.8 修正：`where` 可单独使用（不传 text）——「找一个 enabled 的按钮」比
+  // 「找一个叫某名字的按钮」更贴近真实意图。此前只在 gui.await 侧放开了，
+  // screen.find 自身的入口校验没同步，导致直连调用（以及 await 的 where-only）
+  // 被这里的"text 不能为空"拦下（真机 2026-10-09 验证时暴露）。
+  const hasWhere = (() => {
+    const w = args['where'];
+    return typeof w === 'object' && w !== null && !Array.isArray(w) && Object.keys(w as object).length > 0;
+  })();
+  if (!wantImage && text.length === 0 && !hasWhere) {
+    throw new CapabilityError(
+      ErrorCodes.PARAM_INVALID,
+      'text 与 where 至少给一个（method=image 时用 template）',
+      { hint: 'where 仅 UIA 引擎生效，如 {"enabled":true}' },
+    );
   }
   const windowTitle = args['window'] as string | undefined;
   const controlType = args['control_type'] as string | undefined;
@@ -739,10 +752,22 @@ $text = ${JSON.stringify(text)}
 $limit = ${Number(limit)}
 $ct = ${JSON.stringify(controlType ?? '')}
 $winTitle = ${JSON.stringify(windowTitle ?? '')}
-# v1.7 属性过滤：where 只含 enabled/selected/value/toggle 四类键
-# （白名单式过滤，避免把任意参数塞进 PowerShell）
-$where = ${JSON.stringify(whereArg ?? {})}
-if ($where -ne $null -and $where.Count -eq 0) { $where = $null }
+# v1.7 属性过滤：where 只含 enabled/selected/value/toggle 四类键（白名单式）。
+# ⚠️ 绝不能直接注入 JSON 字面量 —— PowerShell 不认 {"enabled":true} 这种语法，
+# 会 ParseError 让**整份助手脚本**失败（真机 2026-10-09 验证：带 where 的调用
+# 全部报"窗口操作失败"，而不带 where 的正常）。这里用字符串 + ConvertFrom-Json，
+# 再摊平成哈希表（Test-UiaWhere 依赖 .Keys 遍历，PSCustomObject 没有 Keys）。
+$whereJson = ${JSON.stringify(whereArg ? JSON.stringify(whereArg) : '')}
+$where = $null
+if ($whereJson -ne '') {
+  $where = @{}
+  try {
+    ($whereJson | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $where[$_.Name] = $_.Value }
+  } catch {
+    $where = $null   # JSON 不合法就当没传（业务层已在 Node 侧校验过键名）
+  }
+  if ($where -ne $null -and $where.Count -eq 0) { $where = $null }
+}
 $out = New-Object System.Collections.ArrayList
 if ($winTitle -ne '') {
   # 指定窗口：直接在该窗口子树内找
@@ -1006,10 +1031,22 @@ $out | ConvertTo-Json -Compress
     await new Promise((r) => setTimeout(r, intervalMs));
     last = await attempt();
   }
+  // v1.8：where 只在 UIA 引擎下有属性可读 —— 若最终走的是 OCR/image，
+  // 必须**明确告知**，否则调用方会以为"按属性过滤过了"而误判结果。
+  const whereIgnored = hasWhere && last.engine !== 'uia';
   return {
     matches: last.matches,
     engine: last.engine,
     waited_ms: Date.now() - startedAt,
     ...(waitMs > 0 ? { wait_ms: waitMs } : {}),
+    ...(whereIgnored
+      ? {
+          note:
+            `where 已忽略：实际引擎为 ${last.engine}（无控件属性可读）。` +
+            '属性过滤仅在 UIA 生效；text 过滤仍然有效。',
+          where_applied: false,
+        }
+      : {}),
+    ...(hasWhere && last.engine === 'uia' ? { where_applied: true } : {}),
   };
 }

@@ -317,7 +317,15 @@ async function ensureOcrBin(): Promise<string> {
 export async function macScreenFind(args: Args): Promise<unknown> {
   assertDarwin('screen.find');
   const text = args['text'] as string;
-  if (!text) throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'text 不能为空');
+  if (!text) {
+    // macOS 走 Vision OCR，**没有控件属性可读** —— where-only 无法满足，
+    // 明确说清原因，别让调用方以为是参数写错。
+    throw new CapabilityError(
+      ErrorCodes.UNSUPPORTED_PLATFORM,
+      'macOS 无 UIA 等价物：where 属性过滤不可用，请提供 text（OCR 按文字查找）',
+      { platform: 'darwin', engine: 'ocr' },
+    );
+  }
   const limit = (args['limit'] as number | undefined) ?? 20;
   const waitMs = Math.max(0, Math.min(30_000, (args['wait_ms'] as number | undefined) ?? 0));
   const intervalMs = Math.max(100, Math.min(2000, (args['interval_ms'] as number | undefined) ?? 400));

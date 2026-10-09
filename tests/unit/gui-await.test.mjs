@@ -106,3 +106,11 @@ test('any_of 求值语义：任一命中即算（等价于逻辑 OR）', () => {
   assert.ok(anyHit, '任一命中 → 整体命中');
   assert.ok(![{ hit: false }, { hit: false }].some((s) => s.hit), '全不命中 → 不命中');
 });
+
+test('screen.find：where-only 必须放行（v1.8 修——真机验证暴露的缺口）', () => {
+  // 之前入口校验只认 text，导致 where-only 被"text 不能为空"拦下；
+  // 真机 2026-10-09 验证时抓到。此处锁住：where 非空即可，text 可省。
+  assert.equal(check('screen.find', { where: { enabled: true } }).length, 0, 'where-only 应通过');
+  assert.equal(check('screen.find', {}).length, 0, 'schema 层 text/where 均非必填（类型校验）；「两者都缺」由**业务层**拒 —— 见真机验证');
+  assert.equal(check('screen.find', { where: {} }).length, 0, 'schema 允许空 where 对象（业务层判空后拒）');
+});
