@@ -527,4 +527,63 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     },
     returns_schema: { type: 'object', properties: { id: { type: 'string' }, deleted: { type: 'boolean' }, file: { type: 'string' } } },
   },
+  {
+    name: CapabilityNames.AuditHead,
+    version: '1.0',
+    description:
+      '返回审计链的链头（v25，只读）：{ entries, head_hash, head_ts, rotated_segments, file, file_bytes }。' +
+      '**外部锚定的一半** —— 控制端定期拉取并把它存到链外（Mac 本地 / 另一台机器 / 网盘）。' +
+      'compare=true 时附带与最近一条锚点的比对结论（另一半），能识别「有 root 的攻击者整链重写」——' +
+      '链内哈希只能发现改一条，整链重建照样自洽，唯有链外的历史记录能戳破。' +
+      '注意锚点必须连 **entries 与 rotated_segments 一起记**：轮转会丢弃最旧段使条目数下降，' +
+      '只看 head_hash 会把轮转误判成篡改。',
+    risk: 'low',
+    params_schema: {
+      type: 'object',
+      properties: {
+        compare: { type: 'boolean', default: false, description: 'true 时附带与最近锚点的比对结论' },
+        anchor_path: { type: 'string', description: '锚点文件路径（默认 <数据目录>/audit-anchors.jsonl）' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        entries: { type: 'integer' },
+        head_hash: { type: 'string', description: '链头哈希（要外部留存的核心值）' },
+        head_ts: { type: 'integer' },
+        rotated_segments: { type: 'integer' },
+        file: { type: 'string' },
+        file_bytes: { type: 'integer' },
+        computed_at: { type: 'integer' },
+        comparison: { type: 'object', description: 'compare=true 时的比对结论' },
+      },
+    },
+  },
+  {
+    name: CapabilityNames.AuditAnchor,
+    version: '1.0',
+    description:
+      '把当前审计链头**追加**写入锚点文件（v25）。追加而非覆盖：历史锚点一旦写成就不可被后续' +
+      '刷新掉，否则攻击者重写链后再锚定一次即可抹除痕迹。' +
+      '默认写 <数据目录>/audit-anchors.jsonl；指定 path 时仍受 fs_roots 白名单约束。' +
+      '建议定期（如每天）调用，或用 automation 定时执行。',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '锚点文件路径（默认 <数据目录>/audit-anchors.jsonl；受 fs_roots 限制）' },
+        note: { type: 'string', maxLength: 200, description: '备注，便于事后分辨锚定场景' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: {
+      type: 'object',
+      properties: {
+        file: { type: 'string' },
+        record: { type: 'object', description: '{ts, entries, head_hash, head_ts, rotated_segments, note?}' },
+        total_lines: { type: 'integer', description: '锚点文件累计行数（历史锚点数）' },
+      },
+    },
+  },
 ];

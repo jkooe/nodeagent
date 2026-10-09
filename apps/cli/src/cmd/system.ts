@@ -183,6 +183,54 @@ export async function cmdRestart(opts: Options): Promise<void> {
   );
 }
 
+// ---------- v25 审计链外部锚定 ----------
+
+/**
+ * 打印审计链头（可选与最近锚点比对）。
+ *
+ *   nodeagent audit head [--compare]
+ */
+export async function cmdAuditHead(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.compare === true) args['compare'] = true;
+  if (opts.anchorPath !== undefined) args['anchor_path'] = opts.anchorPath;
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.AuditHead, args, opts.json, (data) => {
+      const d = data as {
+        entries: number; head_hash: string | null; head_ts: number | null;
+        rotated_segments: number; file_bytes: number;
+        comparison?: { ok: boolean; anchors_checked: number; verdict: string };
+      };
+      console.log(`审计链头：${d.entries} 条，轮转 ${d.rotated_segments} 段，${(d.file_bytes / 1024).toFixed(0)} KB`);
+      console.log(`  head_hash : ${d.head_hash ?? '(空链)'}`);
+      console.log(`  head_ts   : ${d.head_ts ? new Date(d.head_ts).toLocaleString() : '-'}`);
+      console.log('  💡 把 head_hash 连同 entries 存到链外（另一台机器/网盘）—— 这是外部锚定');
+      if (d.comparison) {
+        const k = d.comparison.ok ? '✓' : '✗';
+        console.log(`  ${k} 锚点比对（${d.comparison.anchors_checked} 条锚点）：${d.comparison.verdict}`);
+      }
+    }),
+  );
+}
+
+/**
+ * 追加一个锚点到锚点文件。
+ *
+ *   nodeagent audit anchor [--anchor-path <文件>] [--note "每日例行"]
+ */
+export async function cmdAuditAnchor(opts: Options): Promise<void> {
+  const args: Record<string, unknown> = {};
+  if (opts.anchorPath !== undefined) args['path'] = opts.anchorPath;
+  if (opts.note !== undefined) args['note'] = opts.note;
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.AuditAnchor, args, opts.json, (data) => {
+      const d = data as { file: string; total_lines: number; record: { entries: number; head_hash: string | null } };
+      console.log(`✓ 已锚定：${d.record.entries} 条，链头 ${String(d.record.head_hash).slice(0, 16)}…`);
+      console.log(`  锚点文件：${d.file}（累计 ${d.total_lines} 条锚点）`);
+    }),
+  );
+}
+
 export async function cmdAuditVerify(opts: Options): Promise<void> {
   await withClient((c) =>
     callAndPrint(c, CapabilityNames.AuditVerify, {}, opts.json, (data) => {

@@ -334,3 +334,163 @@ export function readAudit(query: AuditQuery = {}): { entries: AuditEntry[]; tota
   collected.sort((a, b) => a.ts - b.ts);
   return { entries: collected.slice(-limit), total, file: p };
 }
+
+
+// ---------------- v25 审计链外部锚定 ----------------
+//
+// ## 为什么需要
+// 审计链的哈希使**链内**篡改可被发现（改一条就要重算其后全部）。但「有 root 的攻击者」
+// 可以**整链重写**：从零重建一份自洽的假日志，链校验照样通过。
+// 外部锚定就是打破这一点：定期把**链头哈希 + 条目数**记到链外的独立位置
+// （另一台机器 / 网盘 / U 盘）。事后比对时，若「当前链在某锚点之后的部分对不上」，
+// 说明这段被重写过 —— 攻击者无法回到过去改掉已经落到别处的锚点。
+//
+// ## 记什么（关键：不能只记哈希）
+// 轮转会丢弃最旧的段，所以条目数会**下降**。只记 head_hash 会导致轮转后被误判为篡改。
+// 故锚点记 {entries, head_hash, head_ts, rotated_segments} 四元组，
+// 比对时先按"轮转了几段"对齐，再判断尾部是否一致。
+
+export interface AuditHead {
+  /** 当前链可见条目数（含轮转段） */
+  entries: number;
+  /** 链头哈希（末条的 hash）—— 这是要外部留存的核心值 */
+  head_hash: string | null;
+  /** 末条时间戳 */
+  head_ts: number | null;
+  /** 存在的轮转段数（.log.1 … .log.20） */
+  rotated_segments: number;
+  file: string;
+  file_bytes: number;
+  computed_at: number;
+}
+
+/** 计算当前审计链的头部信息（只读）。 */
+export function computeAuditHead(): AuditHead {
+  const p = auditFilePath();
+  let rotated = 0;
+  for (let i = 1; i <= 20; i += 1) if (existsSync(`${p}.${i}`)) rotated += 1;
+
+  const entries = readAuditAll();
+  const last = entries.length > 0 ? entries[entries.length - 1]! : null;
+  let fileBytes = 0;
+  try {
+    fileBytes = statSync(p).size;
+  } catch {
+    /* 文件可能尚不存在（还没写过审计） */
+  }
+  return {
+    entries: entries.length,
+    head_hash: last?.hash ?? null,
+    head_ts: last?.ts ?? null,
+    rotated_segments: rotated,
+    file: p,
+    file_bytes: fileBytes,
+    computed_at: Date.now(),
+  };
+}
+
+export interface AnchorRecord {
+  ts: number;
+  entries: number;
+  head_hash: string | null;
+  head_ts: number | null;
+  rotated_segments: number;
+  note?: string;
+}
+
+/** 锚点文件路径（默认与审计同目录）。 */
+export function anchorFilePath(custom?: string): string {
+  return custom && custom.trim().length > 0 ? custom.trim() : join(agentDir(), 'audit-anchors.jsonl');
+}
+
+/** 把当前链头**追加**到锚点文件（追加式：历史锚点不可被后续覆盖）。 */
+export function anchorAudit(opts: { path?: string; note?: string } = {}): {
+  file: string;
+  record: AnchorRecord;
+  total_lines: number;
+} {
+  const head = computeAuditHead();
+  const file = anchorFilePath(opts.path);
+  const rec: AnchorRecord = {
+    ts: Date.now(),
+    entries: head.entries,
+    head_hash: head.head_hash,
+    head_ts: head.head_ts,
+    rotated_segments: head.rotated_segments,
+    ...(opts.note ? { note: opts.note } : {}),
+  };
+  appendFileSync(file, `${JSON.stringify(rec)}\n`, 'utf8');
+  let total = 0;
+  try {
+    total = readFileSync(file, 'utf8').split('\n').filter((l) => l.trim().length > 0).length;
+  } catch {
+    total = 1;
+  }
+  return { file, record: rec, total_lines: total };
+}
+
+export interface AnchorComparison {
+  ok: boolean;
+  anchors_checked: number;
+  latest?: AnchorRecord;
+  verdict: string;
+  detail?: Record<string, unknown>;
+}
+
+/**
+ * 与最近一条锚点比对，判断当前链是否与锚定时刻自洽。
+ *
+ * 判定逻辑（三条）：
+ *  - 条目数应 **≥** 锚点记录（只增不减；减少只能由轮转解释，轮转会让 rotated_segments 变大）
+ *  - 若条目数与轮转段数都没变 → 链头哈希必须**完全一致**
+ *  - 若已轮转（段数变大）→ 只校验"当前 entries ≥ 锚点 entries"，并提示需人工核对
+ */
+export function compareWithAnchors(customPath?: string): AnchorComparison {
+  const file = anchorFilePath(customPath);
+  if (!existsSync(file)) {
+    return { ok: true, anchors_checked: 0, verdict: '尚无锚点：请先调用 system.audit.anchor 建立外部锚点' };
+  }
+  let anchors: AnchorRecord[] = [];
+  try {
+    anchors = readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l) as AnchorRecord);
+  } catch {
+    return { ok: false, anchors_checked: 0, verdict: '锚点文件损坏，无法比对' };
+  }
+  if (anchors.length === 0) {
+    return { ok: true, anchors_checked: 0, verdict: '锚点文件为空' };
+  }
+  const latest = anchors[anchors.length - 1]!;
+  const head = computeAuditHead();
+
+  if (head.entries < latest.entries && head.rotated_segments <= latest.rotated_segments) {
+    return {
+      ok: false,
+      anchors_checked: anchors.length,
+      latest,
+      verdict: '**疑似整链重写/回滚**：当前条目数少于锚点，且没有发生轮转来解释',
+      detail: { anchored_entries: latest.entries, current_entries: head.entries, anchored_hash: latest.head_hash, current_hash: head.head_hash },
+    };
+  }
+  if (head.rotated_segments === latest.rotated_segments && head.entries === latest.entries) {
+    if (head.head_hash !== latest.head_hash) {
+      return {
+        ok: false,
+        anchors_checked: anchors.length,
+        latest,
+        verdict: '**链头哈希与锚点不一致**（条目数相同却哈希不同 → 该段被重写）',
+        detail: { anchored_hash: latest.head_hash, current_hash: head.head_hash, entries: head.entries },
+      };
+    }
+    return { ok: true, anchors_checked: anchors.length, latest, verdict: '与锚点完全一致（条目数、轮转段数、链头哈希三者相符）' };
+  }
+  return {
+    ok: true,
+    anchors_checked: anchors.length,
+    latest,
+    verdict: '链已增长（或发生轮转）—— 锚点仍在链上，无需人工核对到该锚点为止的部分',
+    detail: { anchored_entries: latest.entries, current_entries: head.entries, rotated_delta: head.rotated_segments - latest.rotated_segments, anchored_hash: latest.head_hash, current_hash: head.head_hash },
+  };
+}

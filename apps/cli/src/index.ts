@@ -34,7 +34,7 @@ import { HELP } from './help.js';
 import { parseOptions } from './options.js';
 import { cmdConnect, cmdDiscover, cmdKeygen, cmdNodes, cmdRemove, cmdUse } from './cmd/conn.js';
 import {
-  cmdApps, cmdAudio, cmdAudit, cmdAuditVerify, cmdExec, cmdInfo, cmdInstall, cmdInvoke, cmdList,
+  cmdApps, cmdAudio, cmdAudit, cmdAuditAnchor, cmdAuditHead, cmdAuditVerify, cmdExec, cmdInfo, cmdInstall, cmdInvoke, cmdList,
   cmdMetrics, cmdPs, cmdRestart, cmdServices, cmdStatus, cmdUpdate,
 } from './cmd/system.js';
 import {
@@ -276,6 +276,8 @@ async function main(): Promise<void> {
       return;
     case 'audit':
       if (positionals[0] === 'verify') await cmdAuditVerify(opts);
+      else if (positionals[0] === 'head') await cmdAuditHead(opts);
+      else if (positionals[0] === 'anchor') await cmdAuditAnchor(opts);
       else await cmdAudit(opts);
       return;
     case 'discover':

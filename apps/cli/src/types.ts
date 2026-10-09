@@ -20,6 +20,10 @@ export interface Options {
   /** 通用选项：文本 / 标题 */
   text?: string;
   title?: string;
+  /** v25 审计锚定 */
+  compare?: boolean;
+  anchorPath?: string;
+  note?: string;
   /** v1.8 状态采样 */
   source?: string;
   target?: string;
@@ -52,7 +56,6 @@ export interface Options {
   /** v5 多设备 */
   node?: string;
   name?: string;
-  note?: string;
   /** v5 文件 */
   recursive?: boolean;
   createDirs?: boolean;

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { guardPath } from './fs.js';
 import { readFileSync, statSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import os from 'node:os';
@@ -6,7 +7,7 @@ import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { currentCertFingerprint } from '../certs.js';
 import { loadAgentConfig } from '../config.js';
-import { readAudit, readAuditAll, verifyAudit } from '../audit.js';
+import { readAudit, readAuditAll, verifyAudit, computeAuditHead, anchorAudit, compareWithAnchors } from '../audit.js';
 import { computeMetrics } from '../metrics.js';
 import { allPsShellStats } from '../util/ps-helper.js';
 import { startTask } from './task.js';
@@ -603,6 +604,31 @@ export async function auditList(args: Args): Promise<unknown> {
 /** v11：审计链完整性校验（防篡改）。 */
 export async function auditVerify(_args: Args): Promise<unknown> {
   return verifyAudit();
+}
+
+/**
+ * v25：返回审计链的链头（只读）。
+ *
+ * 用途：控制端定期拉取并存到**链外**（Mac 本地 / 另一台机器）—— 这是"外部锚定"的一半。
+ * compare=true 时附带与最近一条锚点的比对结论（另一半）。
+ */
+export async function auditHead(args: Args): Promise<unknown> {
+  const head = computeAuditHead();
+  if (args['compare'] !== true) return head;
+  return { ...head, comparison: compareWithAnchors(args['anchor_path'] as string | undefined) };
+}
+
+/**
+ * v25：把当前链头**追加**写到锚点文件（默认 <数据目录>/audit-anchors.jsonl）。
+ *
+ * 为什么是追加而不是覆盖：历史锚点一旦写成就不可被后续覆盖，否则攻击者重写链后
+ * 再"刷新"锚点即可抹掉痕迹。追加式让每次锚定都留痕。
+ * path 若指定，仍受 fs_roots 白名单约束（不新开写入面）。
+ */
+export async function auditAnchor(args: Args): Promise<unknown> {
+  const raw = args['path'] as string | undefined;
+  const path = raw ? guardPath(raw) : undefined;
+  return anchorAudit({ ...(path ? { path } : {}), ...(args['note'] ? { note: String(args['note']) } : {}) });
 }
 
 /** v13：成功指标聚合（对齐 PRD 2.2）—— 数据源为审计日志，无需额外埋点。 */

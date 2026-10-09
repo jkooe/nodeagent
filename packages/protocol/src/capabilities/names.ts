@@ -47,6 +47,8 @@ export const CapabilityNames = {
   ClipSet: 'clip.set',
   // v11 安全加固
   AuditVerify: 'system.audit.verify',
+  AuditHead: 'system.audit.head',
+  AuditAnchor: 'system.audit.anchor',
   Metrics: 'system.metrics',
   // v19 拉取式自更新
   AgentUpdate: 'system.agent.update',
