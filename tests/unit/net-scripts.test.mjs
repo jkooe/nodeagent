@@ -10,11 +10,11 @@ import {
 const snap = {
   alias: 'Ethernet',
   dhcp: false,
-  ipv4: [{ ip: '192.168.1.100', prefix: 24 }],
-  gateway: ['192.168.0.1'],
+  ipv4: [{ ip: '192.168.1.159', prefix: 24 }],
+  gateway: ['192.168.1.1'],
   dns: ['223.5.5.5'],
 };
-const args = { mode: 'static', ip: '192.168.1.100', mask: '255.255.255.0', gateway: '192.168.0.1' };
+const args = { mode: 'static', ip: '192.168.1.88', mask: '255.255.255.0', gateway: '192.168.1.1' };
 
 test('掩码换算：常见掩码与前缀长度互转', () => {
   assert.equal(maskToPrefix('255.255.255.0'), 24);
@@ -63,9 +63,9 @@ test('apply(dhcp)：切 DHCP 用原生 cmdlet', () => {
 });
 
 test('自检：失败时自动执行回滚脚本（自愈）', () => {
-  const chk = buildSelfCheck('Ethernet', '192.168.1.100', 'C:/rb.ps1');
+  const chk = buildSelfCheck('Ethernet', '192.168.1.88', 'C:/rb.ps1');
   assert.match(chk, /Get-NetIPAddress/);
-  assert.match(chk, /192\.168\.0\.88/, '应校验目标地址是否真的生效');
+  assert.match(chk, /192\.168\.1\.88/, '应校验目标地址是否真的生效');
   assert.match(chk, /selfcheck FAILED -> auto rollback/);
   assert.match(chk, /& "C:\/rb\.ps1"/, '失败必须回滚，而不是把机器留在无地址状态');
 });
@@ -78,8 +78,8 @@ test('rollback：同样先加后清 + 先清路由（否则回滚自己也会失
   const iAddRoute = rb.indexOf('New-NetRoute');
   assert.ok(iAdd < iRemove, '回滚也必须先加后清');
   assert.ok(iRmRoute < iAddRoute, '回滚也必须先清路由');
-  assert.match(rb, /192\.168\.0\.159/, '必须恢复快照里的原地址');
-  assert.match(rb, /192\.168\.0\.1/, '必须恢复原网关');
+  assert.match(rb, /192\.168\.1\.159/, '必须恢复快照里的原地址');
+  assert.match(rb, /192\.168\.1\.1/, '必须恢复原网关');
   assert.match(rb, /223\.5\.5\.5/, '必须恢复原 DNS');
   assert.ok(!/netsh -f/.test(rb), '不得用 netsh -f 回滚（备份编码 + set address 双重问题）');
 });

@@ -7,7 +7,7 @@ import { computeHmac, verifyHmac } from '../../packages/protocol/dist/index.js';
  * 被控端与控制端必须**逐字节同构**，否则「🔒 已认证」永远不亮 —— 故这里做往返一致性测试。
  */
 const detail = {
-  host: '192.168.1.100',
+  host: '192.168.1.21',
   port: 8765,
   tls: true,
   auth_mode: 'psk',

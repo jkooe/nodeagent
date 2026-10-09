@@ -49,9 +49,9 @@ test('封禁退避：自定义阈值与基础时长', () => {
 
 test('IP 归一化：剥离 IPv4-mapped 前缀，同一来源不分成两个键', () => {
   const norm = (a) => a.replace(/^::ffff:/i, '');
-  assert.equal(norm('::ffff:192.168.1.100'), '192.168.1.100');
+  assert.equal(norm('::ffff:192.168.1.21'), '192.168.1.21');
   assert.equal(norm('::ffff:127.0.0.1'), '127.0.0.1');
-  assert.equal(norm('192.168.1.100'), '192.168.1.100');
+  assert.equal(norm('192.168.1.21'), '192.168.1.21');
   assert.equal(norm('::1'), '::1', '原生 IPv6 不动');
   assert.equal(norm('::FFFF:10.0.0.1'), '10.0.0.1', '大写前缀也认');
 });

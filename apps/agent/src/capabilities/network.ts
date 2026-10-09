@@ -93,7 +93,7 @@ export function psLit(v: string): string {
  *
  * ⚠️ 两个真机教训都固化在这里：
  *   1) **账号名必须用 WindowsIdentity 取**，不要用 "$env:USERDOMAIN\$env:USERNAME" 拼 ——
- *      在 TS 模板串里 `\$` 会被当转义吃掉反斜杠，拼出「机器名<user>」这种不可解析的账号，
+ *      在 TS 模板串里 `\$` 会被当转义吃掉反斜杠，拼出「机器名+纯数字」这种不可解析的账号，
  *      Register-ScheduledTask 报 HRESULT 0x80070534「No mapping between account names...」。
  *   2) 复用同一实现：此前回滚/延时两处各写一份，改了一处漏了另一处（真机踩过）。
  */

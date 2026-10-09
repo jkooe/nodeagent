@@ -31,7 +31,7 @@
 .EXAMPLE
     # 恢复为原静态地址（最常用）
     powershell -ExecutionPolicy Bypass -File rescue-network.ps1 `
-        -Interface 'Ethernet' -Ip 192.168.1.100 -PrefixLength 24 -Gateway 192.168.0.1
+        -Interface 'Ethernet' -Ip 192.168.1.100 -PrefixLength 24 -Gateway 192.168.1.1
 
 .EXAMPLE
     # 切回 DHCP（家里路由器会重新分配地址）

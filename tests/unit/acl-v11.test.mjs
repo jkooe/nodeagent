@@ -12,13 +12,13 @@ import {
 // ---------- B3：对端地址规范化（真机踩坑回归） ----------
 
 test('normalizeIp：IPv4-mapped IPv6 归一为 IPv4（真机坑）', () => {
-  assert.equal(normalizeIp('::ffff:192.168.1.100'), '192.168.1.100');
-  assert.equal(normalizeIp('::FFFF:192.168.1.100'), '192.168.1.100');
+  assert.equal(normalizeIp('::ffff:192.168.1.85'), '192.168.1.85');
+  assert.equal(normalizeIp('::FFFF:192.168.1.85'), '192.168.1.85');
 });
 
 test('normalizeIp：IPv4:port 去端口；纯 IP 原样', () => {
-  assert.equal(normalizeIp('192.168.1.100:51234'), '192.168.1.100');
-  assert.equal(normalizeIp('192.168.1.100'), '192.168.1.100');
+  assert.equal(normalizeIp('192.168.1.85:51234'), '192.168.1.85');
+  assert.equal(normalizeIp('192.168.1.85'), '192.168.1.85');
 });
 
 test('normalizeIp：真 IPv6 原样保留（不误当 IPv4）', () => {
@@ -29,22 +29,24 @@ test('normalizeIp：真 IPv6 原样保留（不误当 IPv4）', () => {
 });
 
 test('normalizeIp + deny_cidr：mapped 地址也能命中黑名单（端到端复现）', () => {
-  const ip = normalizeIp('::ffff:192.168.1.100');
-  const client = { client_id: 'mac_01', allow: [], deny_cidr: ['192.168.1.100'] };
+  const ip = normalizeIp('::ffff:192.168.1.85');
+  const client = { client_id: 'mac_01', allow: [], deny_cidr: ['192.168.1.85'] };
   assert.equal(ipAllowed(client, ip).allowed, false);
 });
 
 // ---------- B3：CIDR ----------
 
 test('CIDR：单 IP 精确匹配', () => {
-  assert.equal(ipMatchesCidr('192.168.1.100', '192.168.1.100'), true);
-  assert.equal(ipMatchesCidr('192.168.1.100', '192.168.1.100'), false);
+  assert.equal(ipMatchesCidr('192.168.1.85', '192.168.1.85'), true);
+  assert.equal(ipMatchesCidr('192.168.1.86', '192.168.1.85'), false);
 });
 
 test('CIDR：/24 网段匹配', () => {
-  assert.equal(ipMatchesCidr('192.168.1.100', '192.168.0.0/24'), true);
-  assert.equal(ipMatchesCidr('192.168.0.255', '192.168.0.0/24'), true);
-  assert.equal(ipMatchesCidr('192.168.1.1', '192.168.0.0/24'), false);
+  assert.equal(ipMatchesCidr('192.168.1.85', '192.168.1.0/24'), true);
+  assert.equal(ipMatchesCidr('192.168.1.255', '192.168.1.0/24'), true);
+  // ⚠️ 这条测的是「**跨网段不匹配**」—— 必须用不同网段的地址。
+  // （2026-10-10 一次机械 IP 替换曾把它改成同段，导致断言必红 —— 语义测试别被批量替换破坏）
+  assert.equal(ipMatchesCidr('192.168.2.1', '192.168.1.0/24'), false);
 });
 
 test('CIDR：/16 与 0.0.0.0/0', () => {
@@ -57,23 +59,23 @@ test('CIDR：/16 与 0.0.0.0/0', () => {
 test('CIDR：非法输入不误放行（IPv6/主机名/越界位）', () => {
   assert.equal(ipMatchesCidr('::1', '0.0.0.0/0'), false);
   assert.equal(ipMatchesCidr('localhost', '0.0.0.0/0'), false);
-  assert.equal(ipMatchesCidr('192.168.0.1', '192.168.0.0/99'), false);
-  assert.equal(ipMatchesCidr('192.168.0.999', '192.168.0.0/24'), false);
+  assert.equal(ipMatchesCidr('192.168.1.1', '192.168.1.0/99'), false);
+  assert.equal(ipMatchesCidr('192.168.1.999', '192.168.1.0/24'), false);
 });
 
 test('IP 白名单：deny 优先、白名单为空则放行', () => {
   assert.equal(ipAllowed({ client_id: 'a', allow: [] }, '1.2.3.4').allowed, true);
   assert.equal(
-    ipAllowed({ client_id: 'a', allow: [], allow_cidr: ['192.168.0.0/24'] }, '192.168.0.5').allowed,
+    ipAllowed({ client_id: 'a', allow: [], allow_cidr: ['192.168.1.0/24'] }, '192.168.1.5').allowed,
     true,
   );
   assert.equal(
-    ipAllowed({ client_id: 'a', allow: [], allow_cidr: ['192.168.0.0/24'] }, '10.0.0.1').allowed,
+    ipAllowed({ client_id: 'a', allow: [], allow_cidr: ['192.168.1.0/24'] }, '10.0.0.1').allowed,
     false,
   );
-  const both = { client_id: 'a', allow: [], allow_cidr: ['192.168.0.0/24'], deny_cidr: ['192.168.1.100'] };
-  assert.equal(ipAllowed(both, '192.168.1.100').allowed, false, '黑名单优先');
-  assert.equal(ipAllowed(both, '192.168.1.100').allowed, true);
+  const both = { client_id: 'a', allow: [], allow_cidr: ['192.168.1.0/24'], deny_cidr: ['192.168.1.85'] };
+  assert.equal(ipAllowed(both, '192.168.1.85').allowed, false, '黑名单优先');
+  assert.equal(ipAllowed(both, '192.168.1.86').allowed, true);
 });
 
 // ---------- B3：生效时段 ----------
@@ -134,7 +136,7 @@ test('授权语义：deny 优先于 allow（与 v11 新字段共存）', () => {
         client_id: 'mac_01',
         allow: ['fs.*'],
         deny: ['fs.write'],
-        allow_cidr: ['192.168.0.0/24'],
+        allow_cidr: ['192.168.1.0/24'],
         rate_limits: { 'fs.*': 20 },
       },
     ],
