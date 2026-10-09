@@ -527,8 +527,17 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
   const TASK = `nodeagent-selfrestart-${Date.now()}`;
   const ps = [
     `$ErrorActionPreference='SilentlyContinue'`,
-    // 清理历史 selfrestart 任务（保留 Running 的 —— 那正是当前 agent 的宿主）
-    `Get-ScheduledTask -TaskName 'nodeagent-selfrestart*' | Where-Object { $_.State -ne 'Running' } | Unregister-ScheduledTask -Confirm:$false`,
+    // 清理历史 selfrestart 任务。
+    //
+    // ⚠️ 为什么不能简单清所有非 Running 的：重启任务的 cmd 会**一直持有新 agent 进程**，
+    // 所以任务长期处于 Running；若把 Running 的全清掉，会连当前 agent 的宿主一起杀
+    // （= 自杀，表现为"restart 成功但 agent 消失"）。原实现只清非 Running，
+    // 代价是真机累积了 3 个 Running 僵尸（2026-10-09 实测）。
+    //
+    // 现策略：非 Running **或** LastRunTime 早于 1 小时 → 清。
+    // 1 小时余量远大于一次重启的耗时，因此"当前宿主"绝不会被误判（它刚刚才运行）。
+    `$cut = (Get-Date).AddHours(-1)`,
+    `Get-ScheduledTask -TaskName 'nodeagent-selfrestart*' -ErrorAction SilentlyContinue | Where-Object { if ($_.State -ne 'Running') { return $true }; $ti = ($_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue); if ($ti -and $ti.LastRunTime -and $ti.LastRunTime -lt $cut) { return $true }; return $false } | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue`,
     `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdLine.replace(/'/g, "''")}'`,
     // 不限时（默认 72h 后强制结束），保证 node 能长期运行
     `$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)`,

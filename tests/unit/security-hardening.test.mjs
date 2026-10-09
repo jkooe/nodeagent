@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 /**
  * v23 连接层防护的**规则**测试（server.ts 的纯逻辑部分）。
@@ -71,4 +72,35 @@ test('install.ps1 的 stdin 读取：校验规则与防阻塞', () => {
   assert.ok(!isHex('short'), '太短拒');
   assert.ok(!isHex('zz' + '0'.repeat(30)), '非 hex 拒');
   assert.equal('  a1b2c3d4e5f6a7b8\r\n'.trim(), 'a1b2c3d4e5f6a7b8', 'Trim 后应为纯 hex');
+});
+
+// ---------- v26 自重启任务清理的保守判定（源码断言） ----------
+//
+// 用 includes 而非正则：这里断言的是源码字面片段，正则转义层数容易写错
+// （臣本轮就在这上面栽过两次）。
+
+const restartSrc = readFileSync(
+  new URL('../../apps/agent/src/capabilities/system.ts', import.meta.url),
+  'utf8',
+);
+
+test('自重启任务清理：必须带「运行超 1 小时」余量，禁止简单清所有 Running', () => {
+  // 背景：重启任务的 cmd 长期持有新 agent 进程 → 任务状态长期 Running；
+  // 若把 Running 的全清掉会连当前 agent 的宿主一起杀（= 自杀）。
+  // 真机 2026-10-09 实测残留 3 个 Running 僵尸，故引入时间余量判定。
+  assert.ok(restartSrc.includes('AddHours(-1)'), '缺少 1 小时余量判定');
+  assert.ok(restartSrc.includes('LastRunTime -lt $cut'), '必须按 LastRunTime 与阈值比较');
+  assert.ok(restartSrc.includes('Get-ScheduledTaskInfo'), '需要读取任务的运行信息');
+  // 禁止回到"只清非 Running"的老写法
+  assert.ok(
+    !restartSrc.includes("Where-Object { $_.State -ne 'Running' } | Unregister-ScheduledTask"),
+    '检测到已废弃的「只清非 Running」写法',
+  );
+});
+
+test('自重启任务清理：清理动作带 -ErrorAction SilentlyContinue（不因个别任务失败中断重启）', () => {
+  assert.ok(
+    restartSrc.includes('Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue'),
+    '清理动作需容错，否则个别任务异常会中断整个重启流程',
+  );
 });
