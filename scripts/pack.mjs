@@ -131,7 +131,7 @@ async function main() {
 
   // 一键入口：.cmd 必须**纯 ASCII**。CMD 的代码页（中文 Windows = 936/GBK）
   // 无法可靠往返 UTF-8，中文提示一律交给带 BOM 的 .ps1 去输出。
-  for (const cmd of ['install.cmd', 'control.cmd']) {
+  for (const cmd of ['install.cmd', 'control.cmd', 'run-temp.cmd']) {
     copyFileSync(join(root, 'scripts', cmd), join(PKG_DIR, cmd));
   }
 
@@ -150,12 +150,18 @@ async function main() {
   log('  .ps1 BOM 检查通过（兼容 Windows PowerShell 5.1）');
 
   // 防呆 B：.cmd 里出现非 ASCII 字节 = 中文乱码/命令截断的隐患。
-  for (const cmd of ['install.cmd', 'control.cmd']) {
+  for (const cmd of ['install.cmd', 'control.cmd', 'run-temp.cmd']) {
     const buf = readFileSync(join(PKG_DIR, cmd));
     const bad = [...buf].findIndex((b) => b > 0x7f);
     if (bad >= 0) {
       fail(`${cmd} 含非 ASCII 字节（偏移 ${bad}）—— CMD 代码页无法可靠处理，` +
         `请把该文件改为纯 ASCII，中文提示交给 .ps1。`);
+    }
+    // 行尾必须是 CRLF：LF-only 的 .cmd 在部分 Windows 环境会解析异常
+    const lf = buf.filter((b) => b === 0x0a).length;
+    const crlf = buf.filter((b, i) => b === 0x0a && buf[i - 1] === 0x0d).length;
+    if (lf !== crlf) {
+      fail(`${cmd} 含 ${lf - crlf} 处 LF-only 行尾 —— 打包前须统一为 CRLF。`);
     }
   }
   log('  .cmd 纯 ASCII 检查通过（CMD 代码页安全）');
@@ -183,6 +189,12 @@ async function main() {
     '',
     '【日常管理】双击  control.cmd',
     '   1 状态 / 2 启动 / 3 停止 / 4 重启 / 5 日志 / 6 卸载 / 7 彻底卸载',
+    '',
+    '【临时试用，不装也行】双击  run-temp.cmd',
+    '   * 不需要管理员、不写计划任务、Ctrl+C 即停',
+    '   * 首次运行自动生成配置与密钥（agent.json），并在控制台打印连接命令',
+    '   * run-temp.cmd background = 最小化后台启动；stop = 结束；status = 看状态',
+    '   * 适合临时测一下；长期用请走 install.cmd（有开机自启与进程守护）',
     '',
     '【密钥】PSK.txt 里是预共享密钥（= Mac 端 --key 的值）',
     '   丢了可以删掉 PSK.txt 重装，会自动生成新的',
