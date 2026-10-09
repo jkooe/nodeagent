@@ -307,6 +307,41 @@
 | 17 | `fs.stat` | 🟢 | 文件元信息 | v5 |
 | 18 | `fs.read` | 🟡 | 读文件（分块续读） | v5 |
 | 19 | `fs.write` | 🔴 | 写文件（分块 / 原子写） | v5 |
+| 20 | `window.list` | 🟢 | 枚举可见顶层窗口（标题/进程/精确矩形/是否前台） | v8 |
+| 21 | `window.focus` | 🟡 | 置前聚焦（Windows + macOS；越不过全屏独占，属预期） | v8 |
+| 22 | `screen.find` | 🟢 | 元素定位三引擎（UIA → OCR → 图像模板）+ **UIA 属性**与 `where` 谓词 | v8 / v1.7 |
+| 23 | `screen.record` | 🟢 | 录屏为帧序列（有 ffmpeg 则封 mp4） | v11 |
+| 24 | `gui.await` | 🟢 | 等条件成立再返回（四类条件 × 出现/消失）+ `any_of` 组合 | v1.6 |
+| 25 | `input.mouse.drag` | 🔴🔒 | 拖拽（拖文件 / 框选） | v11 |
+| 26 | `system.task.list` | 🟢 | 列出后台异步任务 | v10 |
+| 27 | `system.task.get` | 🟢 | 查询任务状态与输出（支持增量续读） | v10 |
+| 28 | `system.task.kill` | 🟡 | 终止任务（杀整棵进程树） | v10 |
+| 29 | `clip.get` | 🟡 | 读剪贴板（文本或图片 PNG） | v10 |
+| 30 | `clip.set` | 🟡 | 写剪贴板（文本或图片） | v10 |
+| 31 | `system.audit.verify` | 🟢 | 审计链完整性校验（哈希链，防篡改） | v11 |
+| 32 | `system.audit.head` | 🟢 | 审计链头（chain head）—— 供**链外**留存 | v25 |
+| 33 | `system.audit.anchor` | 🟡 | 链头**追加**写锚点文件，防「有 root 者整链重写」 | v25 |
+| 34 | `system.metrics` | 🟢 | 成功指标聚合（数据源为审计日志） | v13 |
+| 35 | `event.watch` | 🟢 | 订阅事件（file / process / net），**主动推送** | v12 |
+| 36 | `event.unwatch` | 🟢 | 取消订阅（连接断开也会自动清理） | v12 |
+| 37 | `event.list` | 🟢 | 列出当前订阅与事件数 | v12 |
+| 38 | `event.poll` | 🟢 | 拉取缓冲事件（供 MCP 等无推送通道的调用方） | v12 |
+| 39 | `system.net.apply` | 🔴 | 网络变更两阶段提交（改错自动回滚，不会失联） | v16 |
+| 40 | `system.net.confirm` | 🟢 | 确认网络变更（取消自动回滚） | v16 |
+| 41 | `system.net.status` | 🟢 | 网络现状 / 待确认变更 / 历史备份 | v16 |
+| 42 | `system.audio.get` | 🟢 | 读音量与静音状态（Core Audio COM） | v17 |
+| 43 | `system.audio.set` | 🟡 | 设音量 / 静音 | v17 |
+| 44 | `system.agent.restart` | 🔴 | 受控重启自身（借计划任务；**非管理员时自动降级**） | v7 / v23 |
+| 45 | `system.agent.update` | 🔴 | 拉取式自更新（校验 sha256，只需被控端能上网） | v19 |
+| 46 | `log.query` | 🟢 | 日志**在被控端侧过滤**后只回匹配行（pattern/level/since/tail） | v1.8 |
+| 47 | `monitor.start` | 🟢 | 启动定时采样（port/process/command/metric）并落盘 | v1.8 |
+| 48 | `monitor.report` | 🟢 | 回看样本序列 + **摘要**（断几次 / 最长断多久 / 值域） | v1.8 |
+| 49 | `monitor.stop` | 🟢 | 停止采样并返回最终摘要 | v1.8 |
+| 50 | `monitor.list` | 🟢 | 列出运行中的监控与历史样本文件 | v1.8 |
+| 51 | `monitor.delete` | 🟢 | 删除某监控的历史样本文件 | v1.8 |
+
+> 图例：🟢 只读低危 · 🟡 需谨慎 · 🔴 高风险 · 🔒 受 `allow_input` 开关管控。
+> 本表为**总览**；权威定义（参数 schema / 返回值）以 `packages/protocol/src/capabilities/manifest/` 为准，能力数由单测守卫。
 
 > 🔒 = 受 `allow_input` 开关管控，默认禁用。
 >
