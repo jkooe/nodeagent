@@ -374,6 +374,51 @@ const TOOLS = [
     },
   },
   {
+    name: 'na_monitor',
+    description:
+      '定时采样并落盘，事后回看（v1.8，治间歇性问题）。\n' +
+      'action=start：起一个采样。source=port（target="host:port"，测连通性与延迟）/' +
+      'process（target=进程名，测存活）/command（target=命令，取退出码）/metric（CPU·内存，无需 target）。\n' +
+      'action=report：读回样本序列与**摘要**（port/process 给「断了几次 + 最长连续中断」；' +
+      'metric 给 CPU/内存 min·avg·max；command 给成功失败数与退出码）。\n' +
+      'action=stop/list/delete。\n' +
+      '典型：先 start port 采 5 分钟，再 report 回答「这 5 分钟断过几次、最长断了多久」。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'report', 'stop', 'list', 'delete'], description: '操作' },
+        source: { type: 'string', enum: ['port', 'process', 'command', 'metric'], description: 'start 时的采样源' },
+        target: { type: 'string', description: 'port=host:port；process=进程名；command=命令' },
+        interval_ms: { type: 'integer', minimum: 500, maximum: 600000, description: '采样间隔（默认 2000）' },
+        id: { type: 'string', description: '监控 id（report/stop/delete 必需；start 可自定义）' },
+        limit: { type: 'integer', description: 'report 最多回多少样本' },
+      },
+      required: ['action'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'na_log',
+    description:
+      '在被控端侧过滤日志，只回匹配行（v1.8，只读）。日志常几万行，整份拉回既慢又占带宽 —— ' +
+      '本工具把过滤下推到被控端（流式逐行读）。支持 pattern（正则）/level（ERROR|WARN|INFO|DEBUG）/\n' +
+      'since（Unix ms）/offset/limit/tail（取末尾 N 条）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: '日志文件路径（受被控端 fs_roots 限制）' },
+        pattern: { type: 'string', description: '正则过滤（忽略大小写）' },
+        level: { type: 'string', enum: ['ERROR', 'WARN', 'INFO', 'DEBUG', 'TRACE'], description: '按级别过滤' },
+        since: { type: 'integer', description: '只回该 Unix ms 之后的行' },
+        offset: { type: 'integer', description: '跳过前 N 条命中' },
+        limit: { type: 'integer', description: '最多回多少条（默认 100，上限 5000）' },
+        tail: { type: 'boolean', description: '取末尾 N 条' },
+      },
+      required: ['path'],
+      additionalProperties: false,
+    },
+  },
+  {
     name: 'na_window_list',
     description:
       '列出被控端当前可见的顶层窗口（标题 / 进程 / 精确矩形 / 是否前台）。' +
@@ -782,6 +827,33 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
         return { capability: CapabilityNames.MouseDrag, args };
       }
       return { error: `不支持的 action: ${String(action)}` };
+    }
+    case 'na_monitor': {
+      const action = (input['action'] as string | undefined) ?? 'list';
+      if (action === 'start') {
+        if (!input['source']) return { error: 'start 需要 source' };
+        const a: Record<string, unknown> = { source: input['source'] };
+        for (const k of ['target', 'interval_ms', 'id']) if (input[k] !== undefined) a[k] = input[k];
+        return { capability: CapabilityNames.MonitorStart, args: a };
+      }
+      if (action === 'report') {
+        if (!input['id']) return { error: 'report 需要 id' };
+        const a: Record<string, unknown> = { id: input['id'] };
+        if (input['limit'] !== undefined) a['limit'] = input['limit'];
+        return { capability: CapabilityNames.MonitorReport, args: a };
+      }
+      if (action === 'stop' || action === 'delete') {
+        if (!input['id']) return { error: `${action} 需要 id` };
+        return { capability: action === 'stop' ? CapabilityNames.MonitorStop : CapabilityNames.MonitorDelete, args: { id: input['id'] } };
+      }
+      if (action === 'list') return { capability: CapabilityNames.MonitorList, args: {} };
+      return { error: `不支持的 action: ${String(action)}` };
+    }
+    case 'na_log': {
+      if (!input['path']) return { error: 'na_log 需要 path' };
+      const a: Record<string, unknown> = { path: input['path'] };
+      for (const k of ['pattern', 'level', 'since', 'offset', 'limit', 'tail']) if (input[k] !== undefined) a[k] = input[k];
+      return { capability: CapabilityNames.LogQuery, args: a };
     }
     case 'na_await': {
       const args: Record<string, unknown> = {};

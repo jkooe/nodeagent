@@ -20,6 +20,14 @@ export interface Options {
   /** 通用选项：文本 / 标题 */
   text?: string;
   title?: string;
+  /** v1.8 状态采样 */
+  source?: string;
+  target?: string;
+  pattern?: string;
+  level?: string;
+  since?: string;
+  offset?: string;
+  tail?: boolean;
   /** v1.7 gui.await 扩展 */
   where?: string;
   any_of?: string;
@@ -36,7 +44,6 @@ export interface Options {
   /** v3：认证模式 psk | ed25519 */
   authMode?: string;
   /** v3+ 审计查询 */
-  since?: string;
   type?: string;
   clientId?: string;
   /** v4 发现 */
@@ -48,7 +55,6 @@ export interface Options {
   note?: string;
   /** v5 文件 */
   recursive?: boolean;
-  pattern?: string;
   createDirs?: boolean;
   /** v6 Hub */
   hubToken?: string;
@@ -58,7 +64,6 @@ export interface Options {
   /** v10 后台任务 / 剪贴板 */
   timeoutMs?: string;
   kill?: boolean;
-  offset?: string;
   set?: string;
   /** v11 剪贴板图片 */
   imageFile?: string;

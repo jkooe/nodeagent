@@ -14,6 +14,7 @@ import { agentUpdate } from './selfupdate.js';
 import { mouseMove, mouseClick, mouseScroll, mouseDrag, keyType, keyPress, setInputPolicy } from './input.js';
 import { fsList, fsStat, fsRead, fsWrite, setFsRoots } from './fs.js';
 import { guiAwait } from './await.js';
+import { logQuery, monitorStart, monitorReport, monitorStop, monitorList, monitorDelete } from './monitor.js';
 
 export interface HandlerContext {
   /** 连接标识（事件订阅归属 / 断开清理） */
@@ -55,6 +56,13 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.KeyPress]: keyPress,
     // v1.6 等待条件（把盲试变为可断言）
     [CapabilityNames.GuiAwait]: guiAwait,
+    // v1.8 状态采样（方向二）
+    [CapabilityNames.LogQuery]: logQuery,
+    [CapabilityNames.MonitorStart]: monitorStart,
+    [CapabilityNames.MonitorReport]: monitorReport,
+    [CapabilityNames.MonitorStop]: monitorStop,
+    [CapabilityNames.MonitorList]: monitorList,
+    [CapabilityNames.MonitorDelete]: monitorDelete,
     // v3+ 审计
     [CapabilityNames.AuditList]: auditList,
     // v11 审计防篡改

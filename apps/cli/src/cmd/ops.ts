@@ -620,3 +620,115 @@ export async function cmdClip(opts: Options): Promise<void> {
     }),
   );
 }
+
+// ---------- v1.8 状态采样（monitor / log） ----------
+
+/**
+ * 状态采样与回看。
+ *
+ *   nodeagent monitor start --source port --target 127.0.0.1:8765 --interval 2000
+ *   nodeagent monitor report <id>
+ *   nodeagent monitor stop <id>
+ *   nodeagent monitor list
+ *   nodeagent monitor delete <id>
+ */
+export async function cmdMonitor(action: string | undefined, positional: string[], opts: Options): Promise<void> {
+  switch (action) {
+    case 'start': {
+      const source = opts.source;
+      if (!source) fail('用法: nodeagent monitor start --source <port|process|command|metric> [--target X] [--interval ms] [--id name]');
+      const args: Record<string, unknown> = { source };
+      if (opts.target !== undefined) args['target'] = opts.target;
+      if (opts.interval !== undefined) args['interval_ms'] = Number(opts.interval);
+      if (positional[0]) args['id'] = positional[0];
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MonitorStart, args, opts.json, (d) => {
+          const r = d as { id: string; source: string; target: string; interval_ms: number; file: string };
+          console.log(`✓ 已启动监控 ${r.id}（${r.source}${r.target ? ' → ' + r.target : ''}，每 ${r.interval_ms}ms 一针）`);
+          console.log(`  样本文件：${r.file}`);
+          console.log(`  回看：nodeagent monitor report ${r.id}`);
+        }),
+      );
+      return;
+    }
+    case 'report': {
+      const id = positional[0];
+      if (!id) fail('用法: nodeagent monitor report <id> [--limit n]');
+      const args: Record<string, unknown> = { id };
+      if (opts.limit !== undefined) args['limit'] = Number(opts.limit);
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MonitorReport, args, opts.json, (d) => {
+          const r = d as {
+            running: boolean; source: string; target: string; samples: number;
+            summary: Record<string, number>;
+          };
+          console.log(`${r.running ? '● 运行中' : '○ 已停止'} ${r.source}${r.target ? ' → ' + r.target : ''}，共 ${r.samples} 个样本`);
+          // 摘要直接说人话（这是本能力的主要价值）
+          const sm = r.summary;
+          if (sm.down_count !== undefined) {
+            console.log(`  连通：${sm.up_count} 通 / ${sm.down_count} 断；最长连续中断 ${sm.longest_outage_samples} 针` +
+              (sm.ms_avg !== undefined ? `；延迟 min/avg/max = ${sm.ms_min}/${sm.ms_avg}/${sm.ms_max}ms` : ''));
+          }
+          if (sm.dead_count !== undefined) console.log(`  存活：${sm.alive_count} 在 / ${sm.dead_count} 不在；最长连续缺失 ${sm.longest_dead_samples} 针`);
+          if (sm.fail_count !== undefined) console.log(`  命令：${sm.ok_count} 成功 / ${sm.fail_count} 失败；退出码 ${JSON.stringify(sm.exit_codes_seen)}`);
+          if (sm.cpu_avg !== undefined) console.log(`  CPU min/avg/max = ${sm.cpu_min}/${sm.cpu_avg}/${sm.cpu_max}%；内存 avg ${sm.mem_avg}%`);
+          if (sm.window_ms !== undefined) console.log(`  时间窗：${(sm.window_ms / 1000).toFixed(1)}s`);
+        }),
+      );
+      return;
+    }
+    case 'stop': {
+      const id = positional[0];
+      if (!id) fail('用法: nodeagent monitor stop <id>');
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MonitorStop, { id }, opts.json, (d) => {
+          const r = d as { id: string; samples: number; file: string };
+          console.log(`✓ 已停止 ${r.id}（共 ${r.samples} 个样本）；样本留在 ${r.file}`);
+        }),
+      );
+      return;
+    }
+    case 'list': {
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MonitorList, {}, opts.json, (d) => {
+          const r = d as { running: Array<{ id: string; source: string; target: string; samples: number }>; running_count: number; history_files: string[] };
+          console.log(`运行中 ${r.running_count} 个：`);
+          for (const m of r.running) console.log(`  ● ${m.id}（${m.source}${m.target ? ' → ' + m.target : ''}，${m.samples} 样本）`);
+          if (r.history_files.length) console.log(`历史文件：${r.history_files.join(', ')}`);
+        }),
+      );
+      return;
+    }
+    case 'delete': {
+      const id = positional[0];
+      if (!id) fail('用法: nodeagent monitor delete <id>（运行中需先 stop）');
+      await withClient((c) =>
+        callAndPrint(c, CapabilityNames.MonitorDelete, { id }, opts.json, () => console.log(`✓ 已删除 ${id} 的历史样本`)),
+      );
+      return;
+    }
+    default:
+      fail('用法: nodeagent monitor <start|report|stop|list|delete> ...');
+  }
+}
+
+/** 在被控端侧过滤日志（v1.8）：日志常几万行，过滤必须发生在被控端。 */
+export async function cmdLog(opts: Options): Promise<void> {
+  const logPath = opts.path;
+  if (!logPath) fail('用法: nodeagent log --path <文件> [--pattern 正则] [--level ERROR] [--limit n] [--tail]');
+  const args: Record<string, unknown> = { path: logPath };
+  if (opts.pattern !== undefined) args['pattern'] = opts.pattern;
+  if (opts.level !== undefined) args['level'] = opts.level;
+  if (opts.since !== undefined) args['since'] = Number(opts.since);
+  if (opts.limit !== undefined) args['limit'] = Number(opts.limit);
+  if (opts.offset !== undefined) args['offset'] = Number(opts.offset);
+  if (opts.tail === true) args['tail'] = true;
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.LogQuery, args, opts.json, (d) => {
+      const r = d as { matched: Array<{ n: number; text: string }>; scanned: number; truncated: boolean; note?: string };
+      console.log(`✓ 扫描 ${r.scanned} 行，命中 ${r.matched.length} 条${r.truncated ? '（结果被截断）' : ''}`);
+      for (const m of r.matched) console.log(`  ${String(m.n).padStart(6)}  ${m.text.slice(0, 160)}`);
+      if (r.note) console.log(`  ℹ️ ${r.note}`);
+    }),
+  );
+}

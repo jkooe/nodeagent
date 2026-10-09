@@ -38,7 +38,7 @@ import {
   cmdMetrics, cmdPs, cmdRestart, cmdServices, cmdStatus, cmdUpdate,
 } from './cmd/system.js';
 import {
-  cmdBg, cmdClip, cmdDeploy, cmdEvents, cmdFanout, cmdMacro, cmdRecord, cmdTask, cmdTasks,
+  cmdBg, cmdClip, cmdDeploy, cmdEvents, cmdFanout, cmdLog, cmdMacro, cmdMonitor, cmdRecord, cmdTask, cmdTasks,
 } from './cmd/ops.js';
 import { cmdAwait, cmdKey, cmdMouse, cmdScreen, cmdScreenshot } from './cmd/gui.js';
 import { cmdCat, cmdLs, cmdPull, cmdPush, cmdStat } from './cmd/fs.js';
@@ -186,6 +186,14 @@ async function main(): Promise<void> {
       return;
     case 'events':
       await cmdEvents(opts);
+      return;
+    case 'monitor': {
+      const [action, ...rest2] = positionals;
+      await cmdMonitor(action, rest2, opts);
+      return;
+    }
+    case 'log':
+      await cmdLog(opts);
       return;
     case 'macro': {
       const sub = positionals[0];

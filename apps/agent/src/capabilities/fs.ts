@@ -29,7 +29,7 @@ export function setFsRoots(roots: string[] | undefined): void {
   allowedRoots = (roots ?? []).map((r) => resolve(r));
 }
 
-function guardPath(input: string): string {
+export function guardPath(input: string): string {
   if (typeof input !== 'string' || input.length === 0) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'path 不能为空');
   }

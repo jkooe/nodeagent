@@ -19,6 +19,12 @@ export const CapabilityNames = {
   KeyType: 'input.key.type',
   KeyPress: 'input.key.press',
   GuiAwait: 'gui.await',
+  LogQuery: 'log.query',
+  MonitorStart: 'monitor.start',
+  MonitorReport: 'monitor.report',
+  MonitorStop: 'monitor.stop',
+  MonitorList: 'monitor.list',
+  MonitorDelete: 'monitor.delete',
   // v3+ 审计
   AuditList: 'system.audit.list',
   // v5 文件传输
