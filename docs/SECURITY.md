@@ -141,6 +141,40 @@ nodeagent keygen --id mac_01        # 输出一段 JSON（acl.clients 的一项�
 > 真机验证（2026-10-09）：CASE A 有文件 → `ed25519` + `default_effect=deny` + clients 完整；
 > CASE B 无文件 → `psk` 且**不写 acl 字段**；CASE C 缺 pubkey → 告警并回退 psk。
 
+## 4.8 审计链外部锚定（v25）
+
+**问题**：链内哈希只能发现"改一条"（其后全部需重算）。「有 root 的攻击者」可以
+**整链重写** —— 从零重建一份自洽的假日志，`system.audit.verify` 照样通过。
+
+**做法**：把链头记到**链外**，攻击者改不了已经落到别处的历史记录。
+
+```bash
+nodeagent --node win audit head --compare          # 看链头 + 与最近锚点比对
+nodeagent --node win audit anchor --note "每日例行"  # 追加一个锚点
+```
+
+| 能力 | 风险 | 说明 |
+|---|---|---|
+| `system.audit.head` | low | 返回 `{entries, head_hash, head_ts, rotated_segments, file_bytes}`；`compare=true` 附比对结论 |
+| `system.audit.anchor` | medium | 把链头**追加**写入锚点文件（默认 `<数据目录>/audit-anchors.jsonl`；指定 path 时受 `fs_roots` 约束） |
+
+**两个关键设计**：
+
+1. **锚点不能只记 `head_hash`** —— 日志轮转会丢弃最旧段使条目数下降，只记哈希会把
+   **轮转误判成篡改**。故记四元组 `{entries, head_hash, head_ts, rotated_segments}`，
+   比对时先按轮转对齐再判尾部。三条判定：
+   - 条目数减少且无轮转 → **疑似整链重写**（`ok:false`）
+   - 条目数与段数都没变但哈希不同 → **该段被重写**（`ok:false`）
+   - 条目数增长 / 发生轮转 → 锚点仍在链上（`ok:true`，附 detail 供人工核对）
+2. **追加式而非覆盖式** —— 若锚点可覆盖，攻击者重写链后再"刷新"锚点即可抹掉痕迹。
+
+**已知行为**：锚定调用自身也会写一条审计（server 层统一记录 invoke），所以
+"刚锚定就比对"通常显示"链已增长" —— 属预期，不是篡改。
+
+**如何真正用起来**：定期（建议每日）调用 `system.audit.anchor`，并用
+`system.audit.head --compare` 巡检；若把锚点文件指向**另一台机器/网盘同步目录**，
+外部锚定的价值才真正落地（本机文件被整盘重写时锚点也随之消失）。
+
 ## 5. 还没做的（后续批次）
 
 | 项 | 说明 |
@@ -150,7 +184,7 @@ nodeagent keygen --id mac_01        # 输出一段 JSON（acl.clients 的一项�
 | ~~握手失败封禁~~ | ✅ **v23 已做**：连续失败达阈值 → 指数退避封禁（封顶 24h），成功即清零，支持白名单豁免 |
 | ~~会话上限~~ | ✅ **v23 已做**：并发上限 8 + 30 分钟空闲断开（有任务/订阅在跑时保守不踢） |
 | ~~安装期密钥传递~~ | ✅ **v23 已做**：`install.cmd` 改用管道喂 stdin（`-KeyFromStdin`），密钥不再出现在命令行 |
-| 审计链外部锚定 | 哈希链可被「有 root 的攻击者」整链重写；需能把链头同步到独立位置以便比对 |
+| ~~审计链外部锚定~~ | ✅ **v25 已做**（见 §4.8）：链头可读 + 锚点追加落盘 + 锚点比对 |
 
 ## 6. 应急处置
 

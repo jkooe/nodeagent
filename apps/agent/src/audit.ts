@@ -490,7 +490,12 @@ export function compareWithAnchors(customPath?: string): AnchorComparison {
     ok: true,
     anchors_checked: anchors.length,
     latest,
-    verdict: '链已增长（或发生轮转）—— 锚点仍在链上，无需人工核对到该锚点为止的部分',
+    // ⚠️ 注意：锚定动作**自身**也会被记入审计（server 层统一记录所有 invoke），
+    // 所以「刚锚定就比对」几乎必然看到"已增长"——这是正常现象，不是篡改。
+    // 想看到"完全一致"，需在同一时刻不再产生新审计（实际很难，属预期）。
+    verdict:
+      '链已增长（或发生轮转）—— 锚点仍在链上，无需人工核对到该锚点为止的部分。' +
+      '（刚锚定就比对通常显示"已增长"，因为锚定调用自身也会写一条审计。）',
     detail: { anchored_entries: latest.entries, current_entries: head.entries, rotated_delta: head.rotated_segments - latest.rotated_segments, anchored_hash: latest.head_hash, current_hash: head.head_hash },
   };
 }

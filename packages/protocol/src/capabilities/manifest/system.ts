@@ -567,7 +567,9 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
       '把当前审计链头**追加**写入锚点文件（v25）。追加而非覆盖：历史锚点一旦写成就不可被后续' +
       '刷新掉，否则攻击者重写链后再锚定一次即可抹除痕迹。' +
       '默认写 <数据目录>/audit-anchors.jsonl；指定 path 时仍受 fs_roots 白名单约束。' +
-      '建议定期（如每天）调用，或用 automation 定时执行。',
+      '建议定期（如每天）调用，或用 automation 定时执行。' +
+      '注意：锚定调用**自身也会写一条审计**（server 层统一记录 invoke），' +
+      '所以紧接着再比对通常会显示"链已增长"——这是正常现象，不是篡改。',
     risk: 'medium',
     params_schema: {
       type: 'object',
