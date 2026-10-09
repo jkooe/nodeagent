@@ -30,6 +30,9 @@ nodeagent 把一台 Windows 机器的能力**标准化成一组可授权、可�
 | **输入** | `input.mouse.move` · `input.mouse.click` · `input.mouse.scroll` · `input.mouse.drag` · `input.key.type` · `input.key.press` | 键鼠控制（🔒 **默认禁用**），含**拖拽**、**字符串热键 / 预设 / 长按 / 后台定向投递** |
 | **剪贴板** | `clip.get` · `clip.set` | 读写文本**或图片**（PNG Base64） |
 | **事件订阅** | `event.watch` · `event.unwatch` · `event.list` · `event.poll` | 文件变动 / 进程启停 / 端口开闭，**主动推送**（无需轮询） |
+| **GUI 等待** | `gui.await` | 等条件成立再返回（窗口/元素/进程/文件 × 出现/消失）；支持**属性谓词 `where`** 与 **`any_of` 组合** |
+| **状态采样** | `log.query` · `monitor.start` · `monitor.report` · `monitor.stop` · `monitor.list` · `monitor.delete` | 日志**在被控端侧过滤**（不上传整份）/ 定时采样落盘 + **摘要回看**（断几次、最长断多久、CPU/内存值域） |
+| **审计锚定** | `system.audit.head` · `system.audit.anchor` | 链头可读 + 锚点**追加**落盘，让「有 root 者整链重写」可被发现 |
 
 ## 快捷键（hotkey）控制 —— v1.5
 
@@ -102,7 +105,70 @@ nodeagent --node win invoke gui.await --args '{"condition":"file","path":"C:\\lo
 
 **典型闭环**：`await control(text:"立即安装")` → `mouse.click(x, y)` → `await control(text:"完成", timeout_ms:60000)` → `click` → `await absent(text:"安装中")`。
 
-**43 项能力** · **38 个 MCP 工具** · **215 项单元测试** · **30 项端到端用例** · **11 项 Rust 单测**（CI 在真实 Windows / Linux runner 上验证）
+### 属性谓词与组合（v1.7）
+
+`screen.find` 现在返回 UIA 属性，`gui.await` 可据此等**状态**而不只是「出现」：
+
+```bash
+# 等一个「可用」的按钮（不指定文字）
+nodeagent --node win await --condition control --where '{"enabled":true}'
+# 等值里含「已」的元素
+nodeagent --node win await --condition control --where '{"value":"*已*"}' --timeout 15000
+# 组合：装成功 或 报错，先出现的算
+nodeagent --node win await --any_of '[{"condition":"window","title":"安装完成"},{"condition":"control","text":"错误"}]'
+```
+
+| 属性 | 来源 | 拿不到时 |
+|---|---|---|
+| `enabled` | `IsEnabled` | — |
+| `value` | `ValuePattern` | `null`（**不猜**） |
+| `selected` | `SelectionItemPattern` | `null` |
+| `toggle` | `TogglePattern` | `null` |
+
+> 属性只在 **UIA 引擎**下可读（Windows）。走 OCR/图像模板时 `where` 被忽略并**带回 `note`**，
+> 不会让调用方误以为「按属性过滤过了」。macOS 无 UIA 等价物，`where` 不可用（会明确报错提示用 `text`）。
+
+---
+
+## 状态采样：日志过滤与定时采样 —— v1.8
+
+治**间歇性**问题（代理不通、杀软拦截、端口时开时闭）—— `system.status` 只能看当下快照，
+而 `event.watch` 只解决「有事件时通知」，没有「**持续记录并回看**」。
+
+```bash
+# 日志在被控端侧过滤，只回匹配行（几万行日志也不整份拉回）
+nodeagent --node win log --path "C:\app\app.log" --level ERROR --limit 20
+nodeagent --node win log --path "C:\app\app.log" --pattern "timeout|refused" --tail
+
+# 连续采样 5 分钟，事后回看「断过几次、最长断多久」
+nodeagent --node win invoke monitor.start --args '{"source":"port","target":"127.0.0.1:8765","interval_ms":2000,"id":"probe"}'
+nodeagent --node win monitor report probe
+nodeagent --node win monitor stop probe
+```
+
+采样源四类：`port`（连通性 + 延迟）/ `process`（存活 + PID）/ `command`（退出码 + 首行输出）/
+`metric`（CPU·内存）。样本落 `<数据目录>/monitors/<id>.jsonl`，**摘要直接给结论**。
+
+---
+
+## 审计链外部锚定 —— v25
+
+链内哈希只能发现「改一条」。**有 root 的攻击者可以整链重写** —— 从零重建一份自洽的假日志，
+`audit.verify` 照样通过。外部锚定是唯一能戳破它的手段：把链头记到**链外**。
+
+```bash
+nodeagent --node win audit head --compare           # 看链头 + 与最近锚点比对
+nodeagent --node win audit anchor --note "每日例行"   # 追加一个锚点
+```
+
+**锚点记四元组** `{entries, head_hash, head_ts, rotated_segments}`，不能只记哈希 ——
+日志轮转会丢弃最旧段使条目数下降，只比哈希会把**轮转误判成篡改**。
+锚点文件**只追加**（可覆盖的话，攻击者重写链后再刷新锚点即可抹痕）。
+
+> 真正发挥价值的前提：把锚点文件指向**另一台机器 / 网盘同步目录**。
+> 本机文件被整盘重写时，锚点也随之消失 —— 那就等于没锚。
+
+**51 项能力** · **41 个 MCP 工具** · **269 项单元测试** · **30 项端到端用例** · **9 项 Rust 单测**（CI 在真实 Windows / Linux runner 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
