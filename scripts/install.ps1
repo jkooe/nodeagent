@@ -45,7 +45,11 @@ param(
     # v23：从**标准输入**读密钥（而非命令行 -Key）。
     # 为什么：命令行参数对同机其他用户可见（任务管理器/Get-CimInstance Win32_Process
     # 的 CommandLine 字段就是明文）。install.cmd 用 `echo <key>| powershell ...` 喂进来。
-    [switch]$KeyFromStdin
+    [switch]$KeyFromStdin,
+    # v24 零信任优先：控制端公钥文件路径（内容是 `nodeagent keygen` 打印的那一条 JSON，
+    # 即 acl.clients 的一项）。给了它 → auth_mode 直接走 ed25519（零信任），
+    # 不再依赖可被自报的 client_id。留空则自动探测脚本同目录的 client-acl.json。
+    [string]$ClientAclFile = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -151,7 +155,23 @@ if (-not $Key) {
     Write-Ok "Generated a new pre-shared key"
 }
 
-$cfgJson = @{
+# --- v24: zero-trust-first -------------------------------------------------
+# PSK 有一个固有弱点：client_id 是调用方**自报**的，所以"谁知道共享 key，谁就能
+# 冒充任意未登记的 client_id"—— ACL 的身份维度在 psk 模式下形同虚设。
+# ed25519 没有这个问题（身份由私钥签名决定）。故：**只要拿到控制端公钥就走 ed25519**。
+$aclEntry = $null
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+$aclPath = if ($ClientAclFile) { $ClientAclFile } else { Join-Path $scriptDir 'client-acl.json' }
+if (Test-Path $aclPath) {
+    try { $aclEntry = Get-Content $aclPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $aclEntry = $null }
+    if ($aclEntry -and (-not $aclEntry.client_id -or -not $aclEntry.pubkey)) {
+        Write-Warn "client-acl.json is missing client_id or pubkey - ignored"
+        $aclEntry = $null
+    }
+}
+$useZeroTrust = ($aclEntry -ne $null)
+
+$cfgObj = [ordered]@{
     node_id     = $NodeId
     host        = "0.0.0.0"
     port        = $Port
@@ -159,8 +179,16 @@ $cfgJson = @{
     key         = $Key
     log_level   = "info"
     allow_input = [bool]$AllowInput
-    auth_mode   = "psk"
-} | ConvertTo-Json
+    auth_mode   = if ($useZeroTrust) { "ed25519" } else { "psk" }
+}
+if ($useZeroTrust) {
+    # default_effect=deny：未在 clients 中登记的一律拒绝（零信任兜底）
+    $cfgObj.acl = @{
+        default_effect = "deny"
+        clients        = @($aclEntry)
+    }
+}
+$cfgJson = $cfgObj | ConvertTo-Json -Depth 6
 # 必须写「无 BOM」的 UTF-8：Windows PowerShell 5.1 的 `Set-Content -Encoding UTF8`
 # 会写入 BOM（U+FEFF），导致 Node 侧 JSON.parse 报 "Unexpected token ''"
 [System.IO.File]::WriteAllText($cfgPath, $cfgJson, (New-Object System.Text.UTF8Encoding($false)))
@@ -292,11 +320,28 @@ if ($certFp) {
     Write-Host "  $certFp" -ForegroundColor White
 }
 Write-Host ""
-Write-Host "  On the Mac, run:" -ForegroundColor Cyan
+$primaryIp = if ($ips.Count -gt 0) { $ips[0] } else { '<target-ip>' }
 $insecureFlag = if ($NoTls) { "" } else { " --insecure" }
-$primaryIp = if ($ips.Count -gt 0) { $ips[0] } else { '<被控端IP>' }
-Write-Host "  nodeagent connect $primaryIp --port $Port --key $Key$insecureFlag"
-Write-Host ""
-Write-Host "  Zero-trust (optional): run 'nodeagent keygen' on the Mac, then add the" -ForegroundColor DarkGray
-Write-Host "  printed entry into this file's acl.clients and set auth_mode to 'ed25519'." -ForegroundColor DarkGray
+if ($useZeroTrust) {
+    Write-Host "  Zero-trust is ON (auth_mode=ed25519, default_effect=deny)." -ForegroundColor Green
+    Write-Host "  Registered client_id: $($aclEntry.client_id)" -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  On the Mac, connect with the private key you generated:" -ForegroundColor Cyan
+    Write-Host "  nodeagent connect $primaryIp --port $Port --id $($aclEntry.client_id) --auth-mode ed25519$insecureFlag"
+} else {
+    Write-Host "  On the Mac, run:" -ForegroundColor Cyan
+    Write-Host "  nodeagent connect $primaryIp --port $Port --key $Key$insecureFlag"
+    Write-Host ""
+    Write-Host "  ================  SECURITY WARNING  ================" -ForegroundColor Yellow
+    Write-Host "  This agent runs in PSK mode, where the client_id is" -ForegroundColor Yellow
+    Write-Host "  SELF-REPORTED: anyone holding the shared key can" -ForegroundColor Yellow
+    Write-Host "  impersonate any unregistered client_id, so the ACL" -ForegroundColor Yellow
+    Write-Host "  identity dimension is effectively void." -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "  To switch to zero-trust (recommended):" -ForegroundColor Cyan
+    Write-Host "    1) On the Mac: nodeagent keygen --id <name>" -ForegroundColor Cyan
+    Write-Host "    2) Save the printed JSON as client-acl.json next to this script" -ForegroundColor Cyan
+    Write-Host "    3) Re-run install.cmd (it auto-detects the file)" -ForegroundColor Cyan
+    Write-Host "  ====================================================" -ForegroundColor Yellow
+}
 Write-Host ""
