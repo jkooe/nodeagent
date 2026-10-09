@@ -753,11 +753,16 @@ $limit = ${Number(limit)}
 $ct = ${JSON.stringify(controlType ?? '')}
 $winTitle = ${JSON.stringify(windowTitle ?? '')}
 # v1.7 属性过滤：where 只含 enabled/selected/value/toggle 四类键（白名单式）。
-# ⚠️ 绝不能直接注入 JSON 字面量 —— PowerShell 不认 {"enabled":true} 这种语法，
-# 会 ParseError 让**整份助手脚本**失败（真机 2026-10-09 验证：带 where 的调用
-# 全部报"窗口操作失败"，而不带 where 的正常）。这里用字符串 + ConvertFrom-Json，
-# 再摊平成哈希表（Test-UiaWhere 依赖 .Keys 遍历，PSCustomObject 没有 Keys）。
-$whereJson = ${JSON.stringify(whereArg ? JSON.stringify(whereArg) : '')}
+#
+# ⚠️⚠️ 这里踩过**两次**同一个坑，真机 2026-10-09 连修两轮才通：
+#   ✗ 第一版：$where = {"enabled":true}          → PS 不认 JSON 字面量，ParseError
+#   ✗ 第二版：$whereJson = "{\"enabled\":true}" → PS 5.1 **不认反斜杠转义**
+#              （PS 用反引号），依然 ParseError，整份助手脚本失败
+#              （症状：带 where 一律"窗口操作失败"，不带 where 完全正常）
+#   ✓ 第三版：**PS 单引号字符串字面量**，JSON 内的单引号翻倍成 ''（本行）
+# 并在真机现场验证过：$j = '{"enabled":true}' → ConvertFrom-Json 摊平成哈希表 → OK。
+# 摊平是因为 Test-UiaWhere 依赖 .Keys 遍历，而 PSCustomObject 没有 Keys。
+$whereJson = '${(whereArg ? JSON.stringify(whereArg) : '').replace(/'/g, "''")}'
 $where = $null
 if ($whereJson -ne '') {
   $where = @{}
