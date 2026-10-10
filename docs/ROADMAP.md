@@ -206,7 +206,7 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 
 ### 4.3 大前端方案（`docs/console-plan.md`，已出文档待评审）
 
-盘点期间新增了一份前端方案文档，臣不在此展开（详见该文档），仅提示它引入了**一个新包 `crates/nodeagent-client`（Rust）**，与现有 TypeScript 的 `@nodeagent/client` 并存 —— 意味着 client 层有两套实现。这本身是个需要皇上拍板的架构决策（详见该文档的待确认项）。
+盘点期间新增了一份前端方案文档，臣不在此展开（详见该文档），仅提示它引入了**一个新包 `crates/nodeagent-client`（Rust）**〔**2026-10 已退役**：改为 Node sidecar 方案，见 `docs/console-plan.md` 文末「实施决策」〕，与现有 TypeScript 的 `@nodeagent/client` 并存 —— 意味着 client 层有两套实现。这本身是个需要皇上拍板的架构决策（详见该文档的待确认项）。
 
 ---
 

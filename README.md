@@ -168,7 +168,7 @@ nodeagent --node win audit anchor --note "每日例行"   # 追加一个锚点
 > 真正发挥价值的前提：把锚点文件指向**另一台机器 / 网盘同步目录**。
 > 本机文件被整盘重写时，锚点也随之消失 —— 那就等于没锚。
 
-**51 项能力** · **41 个 MCP 工具** · **269 项单元测试** · **30 项端到端用例** · **9 项 Rust 单测**（CI 在真实 Windows / Linux runner 上验证）
+**51 项能力** · **41 个 MCP 工具** · **269 项单元测试** · **30 项端到端用例** · **3 项 Rust 壳单测**（真跑 Node sidecar）（CI 在真实 Windows / Linux runner 上验证）
 
 > 关键里程碑：**GUI 语义**（`window.list` + `screen.find`，UIA 找不到自动降级 OCR）
 > 让 AI 从「看得到画面但读不懂界面」变成「按名字取坐标点下去」。
@@ -340,7 +340,7 @@ nodeagent pull "C:\big.iso" --out ./big.iso          # 下载（大文件自动�
 由控制台经 loopback 直连（复用同一个 Agent，不做第二套被控端实现）。
 
 技术栈 Tauri 2（Rust 壳 + 系统 WebView）+ Vue 3 + TypeScript + Pinia + Naive UI。
-协议客户端是 `crates/nodeagent-client`（Rust 复刻 `@nodeagent/client`，
+协议客户端由 **Node sidecar**（`apps/console/sidecar/`）承担（复用 `@nodeagent/client`，
 Tauri 侧经 Cargo path 依赖），**不引入第二套协议实现**。
 
 | 页面 | 能力 |

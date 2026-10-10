@@ -1,4 +1,4 @@
-/** 协议类型镜像（对齐 Rust 侧 `crates/nodeagent-client` 与 Tauri command 的序列化形状）。 */
+/** 协议类型镜像（对齐 `@nodeagent/protocol`，亦即 sidecar 与 Tauri command 的序列化形状）。 */
 
 /** 能力描述（被控端声明的能力清单条目）。 */
 export interface CapabilityDescriptor {

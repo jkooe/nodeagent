@@ -1,5 +1,10 @@
 # nodeagent 大前端开发方案（桌面操作台）
 
+> ⚠️ **本文档 §2 选型、§5.1 的 Rust 版 client、§6 目录结构描述的是「原方案」**，
+> **已于 2026-10 被文末「实施决策」取代**（改为 Node sidecar，退役 `crates/nodeagent-client`）。
+> 保留原文是为了可回溯决策过程；实现以「实施决策」节与代码为准。
+
+
 > 版本 v1.0 ｜ 日期 2026-10-07 ｜ 状态：待皇上评审
 > 定位：为「Mac 控 Windows」补上**人肉可视化操作台**——CLI 是脚本底座、MCP 是 AI 落点、本方案是**皇上自己点按钮**的桌面界面。
 
@@ -382,9 +387,10 @@ cargo run --example probe -- ws://127.0.0.1:8765 <key> /tmp/nodeagent-e2e
 | ① sidecar 实现（`apps/console/sidecar/main.mjs`） | ✅ 190 行 |
 | ② 真实链路 e2e（本地 agent → connect → invoke → 事件 → 错误 → disconnect） | ✅ **8/8 通过** |
 | ③ 单文件打包（`sidecar/build.mjs`，esbuild JS API + createRequire shim） | ✅ 227KB，**仓库外可独立运行** |
-| ④ Rust 壳改造（内部换 sidecar，command 签名不变 → 前端零改动） | ⬜ 待做 |
-| ⑤ `tauri.conf.json` 的 `externalBin` / resource 配置 + Node 运行时打包 | ⬜ 待做 |
-| ⑥ 退役 `crates/nodeagent-client`（删依赖 + rust.yml） | ⬜ 待做 |
+| ④~⑥ 见下 | ✅ 详见「Rust 壳改造」一节 |
+| ④ Rust 壳改造（`sidecar.rs` + 薄转发 `lib.rs`，5 个 command 签名与 3 个 event 名不变） | ✅ |
+| ⑤ `tauri.conf.json` 的 resource 配置（sidecar.mjs + node）+ `beforeBuildCommand` 串 sidecar:build | ✅ |
+| ⑥ 退役 `crates/nodeagent-client` | ✅ 已删 crates/；`rust.yml` 改为验证 console 壳 |
 
 ### 打包说明（步骤 ⑤ 的既定方向）
 
@@ -392,3 +398,18 @@ sidecar 是 `.mjs`，需要 Node 解释器 —— **不满足 Tauri `externalBin
 采用与 `pack:win` 一致的既有做法：**sidecar.mjs + Node 运行时都作为 Tauri resource**，
 Rust 侧从 resource 目录解析路径后 spawn（开发期直接用系统 node）。
 （`externalBin` 若要走，需 Node SEA 打成真二进制，但其动态 require 限制与 `ws` 有冲突，故不采用。）
+
+### Rust 壳改造（步骤 ④⑤⑥ 详情）
+
+| 文件 | 变更 |
+|---|---|
+| `src-tauri/src/sidecar.rs`（新增 ~290 行） | `Sidecar` 管理器：spawn node + 行分隔 JSON-RPC 请求/响应匹配（oneshot）+ 通知回调；`resolve_node`/`resolve_sidecar` 路径解析（env → resource → 开发期系统 node） |
+| `src-tauri/src/lib.rs`（重写） | 退化为薄转发：`ensure_sidecar` 懒启动；**5 个 command 签名与 3 个 event 名一律不变**；`get_capabilities`/`get_state` 读本地缓存以**保持同步签名**；`RunEvent::Exit` 时优雅 `shutdown` |
+| `Cargo.toml` | 移除 `nodeagent-client` 依赖；加 `tokio`（process/io-util/sync/time/macros）；版本 0.1.0 → **2.0.0**（原先与 tauri.conf.json 不一致） |
+| `crates/`（整目录） | **删除**（12 个文件） |
+| `.github/workflows/rust.yml` | 由「Rust client 单测」改为「**Rust 壳单测（真跑 sidecar）**」：装 Tauri 系统依赖 + Node + pnpm，跑 clippy -D warnings 与 `cargo test` |
+| `package.json` | `test:rust` 改指 console 壳；移除 `probe`（其"对真机逐项核对字段"的用途已由 CLI `nodeagent invoke` 覆盖） |
+
+**可测试性设计（关键）**：sidecar 管理器**不依赖 Tauri GUI**，故其单测能在 CI 里
+**真跑 Node 子进程**验证 spawn / 请求-响应匹配 / 错误不崩 —— 不必等到人工开窗口才敢确认。
+`cargo test` 实测：**3/3 通过**（0.49s）。

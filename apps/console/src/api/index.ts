@@ -1,4 +1,4 @@
-/** Tauri command 调用封装（前端 → Rust 壳 → nodeagent-client）。 */
+/** Tauri command 调用封装（前端 → Rust 壳 → Node sidecar → 被控端）。 */
 import { invoke } from "@tauri-apps/api/core";
 import type { CapabilityDescriptor, ConnectInfo, InvokeResult } from "../types";
 

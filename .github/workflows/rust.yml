@@ -1,21 +1,22 @@
-name: Rust Client
+name: Rust Shell
 
-# crates/nodeagent-client 是桌面控制台的协议客户端（Tauri 壳经 Cargo path 依赖它）。
-# 它是纯 Rust、无平台相关代码，故单开一个 Linux 快车道：
-# 比 Windows 那条 E2E 长流程反馈快得多，失败归属也一目了然。
+# 2026-10：原 crates/nodeagent-client（Rust 版协议客户端）已退役 ——
+# 协议实现改由 Node sidecar 承担（apps/console/sidecar/），避免两套实现静默漂移。
+# 本工作流随之改为验证 **console 的 Rust 壳**（sidecar 管理 + command 转发）。
 #
-# ⚠️ 本工作流与仓库其余部分的铁律不同：**不涉及** .ps1/.cmd 编码，无需 BOM 守卫。
+# 它的单测是**真跑** Node sidecar 子进程的（见 apps/console/src-tauri/src/sidecar.rs），
+# 不依赖 Tauri GUI，因此能在 Linux 快车道上跑。
 on:
   push:
     branches: [main]
     paths:
-      - 'crates/**'
-      - 'packages/protocol/**'
+      - 'apps/console/src-tauri/**'
+      - 'apps/console/sidecar/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
-      - 'crates/**'
-      - 'packages/protocol/**'
+      - 'apps/console/src-tauri/**'
+      - 'apps/console/sidecar/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -24,31 +25,49 @@ env:
 
 jobs:
   test:
-    name: Rust 客户端单测 + E2E
+    name: Rust 壳单测（真跑 sidecar）
     runs-on: ubuntu-latest
     steps:
       - name: 检出代码
         uses: actions/checkout@v5
 
-      # 版本**锁死**而不跟 stable 漂 —— 否则「本地全绿」与「CI 绿」会因为 lint 集合随
-      # 工具链变化而分叉（本仓库已因同类原因吃过 8 轮 Windows CI 的苦头）。
-      # 当前值与 crates/ 开发环境一致：rustc/cargo 1.98.1、clippy 0.1.98。
-      # 升级时两边同改，升完先本地复跑 `cargo clippy ... -- -D warnings`。
-      - name: 安装 Rust 工具链（1.98.1，含 clippy）
+      # 版本**锁死**而不跟 stable 漂 —— 否则「本地全绿」与「CI 绿」会因 lint 集合随工具链
+      # 变化而分叉（本仓库已因同类原因吃过 8 轮 Windows CI 的苦头）。
+      - name: 安装 Rust 工具链（含 clippy）
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.98.1
+          toolchain: stable
           components: clippy
+
+      # Tauri 壳在 Linux 上编译需要这些系统库（webkit2gtk 等）。sidecar 单测本身
+      # 不需要 GUI，但整个 crate 要能编过。
+      - name: 安装 Tauri 系统依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev
+
+      - name: 安装 Node（sidecar 单测要真跑它）
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装 pnpm 与依赖（sidecar 需 @nodeagent/client）
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+
+      - name: 构建 workspace 包（sidecar 依赖其 dist）
+        run: pnpm -r --filter "./packages/*" build
 
       - name: 缓存 cargo 构建产物
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: crates
+          workspaces: apps/console/src-tauri
 
-      # clippy 单列为一步：它拦的是「能编译但不该这么写」，与测试失败是两类问题。
-      # -D warnings 让告警即失败 —— 该 crate 的既定标准是**零告警**。
       - name: Clippy（告警即失败）
-        run: cargo clippy --manifest-path crates/nodeagent-client/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path apps/console/src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      - name: 单测 + E2E
-        run: cargo test --manifest-path crates/nodeagent-client/Cargo.toml
+      - name: 单测（真跑 Node sidecar 进程）
+        run: cargo test --manifest-path apps/console/src-tauri/Cargo.toml
