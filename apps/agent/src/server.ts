@@ -470,6 +470,13 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       connId,
       lastActiveAt: Date.now(),
     });
+    // v2.0.0 修正：**客户端对 ping 的 pong 回应也算活跃**。
+    // 之前只更新 message 的活跃时间 → 僵尸连接（TCP 未断但客户端已死）不会被判空闲，
+    // 会被永久算进 states.size → 并发上限虚高 → **可能把正常控制端挡在外面**。
+    ws.on('pong', () => {
+      const st = states.get(ws);
+      if (st) st.lastActiveAt = Date.now();
+    });
     ws.on('message', (raw: RawData) => {
       // v2.0.0：任何入站消息都算活跃（空闲断开以"完全静默"为准，不是"没有调用能力"）
       const st = states.get(ws);
@@ -548,7 +555,19 @@ export function createAgentServer(cfg: AgentConfig, tls: TlsMaterial | null): Pr
   // WebSocket 层保活：30s ping，探测死连接；v23③ 同时做空闲连接清扫
   const heartbeat = setInterval(() => {
     for (const ws of wss.clients) {
-      if (ws.readyState === WebSocket.OPEN) ws.ping();
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      // v2.0.0 修正（真机踩到）：**pong 缺失必须主动 terminate**。
+      // ws 库默认不会因「ping 无 pong」而断开 —— 客户端进程已死（TCP 未发 FIN）时，
+      // 连接会一直挂在 states 里，占用 max_connections 名额。
+      // 判据用与空闲清扫同一个 lastActiveAt（pong 已在上方更新它）。
+      const st = core.states.get(ws);
+      if (st && idleTimeoutMs > 0 && Date.now() - st.lastActiveAt > idleTimeoutMs * 2) {
+        log('warn', `连接无响应（ping 未回 pong 且静默超 ${Math.round((Date.now() - st.lastActiveAt) / 1000)}s）→ 强制断开 ${st.connId}`);
+        audit({ type: 'session.idle_close', client_id: st.clientId ?? undefined, remote: st.remote, reason: 'unresponsive (no pong)' });
+        ws.terminate();
+        continue;
+      }
+      ws.ping();
     }
     if (idleTimeoutMs <= 0) return;
     // 保守策略：只要还有任务在跑 / 还有事件订阅，就不断任何连接 ——

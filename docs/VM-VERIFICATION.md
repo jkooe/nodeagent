@@ -214,7 +214,7 @@ ARM Windows（含 Parallels Win11 ARM）请用 **arm64 包**；用 x64 包会卡
 | A 组（`verify.mjs` 17 项） | ✅ 15 通过 / 0 失败 / 1 跳过 |
 | B1 v1.5 四项 | ✅ 全过（含 `route=post` 实测命中 138 窗口） |
 | B4 锚点端到端 | ✅ 全过（含上传云盘） |
-| B2 v23 三防护 | ⏸ 阻塞：需改配置 + restart，而计划任务当前启动失败 |
+| B2 v23 三防护 | ✅ **三场景全通过**：① 握手封禁（3 次错误密钥后**连正确密钥也被拒**）② 连接上限（配 6 → 第 7 个被拒）③ 空闲断开（静默 40s 被断，符合 idle 20s + 清扫周期 30s） |
 | B3 v26 清理 | ✅ **验证并改进了策略**：实测发现「1 小时」粗阈值下频繁 restart 仍累积 → 改为「**早于本 agent 启动时刻**」精确阈值（部署到 VM 实测：restart 后旧任务被自动清理、宿主未误杀） |
 
 ### 实测新增的排查项（补进 §6）
@@ -226,4 +226,6 @@ ARM Windows（含 Parallels Win11 ARM）请用 **arm64 包**；用 x64 包会卡
 | 直接跑 `install.ps1` 后找不到 `PSK.txt` | **只有 `install.cmd` 才产生 PSK.txt** | 密钥在 `<数据目录>\agent.json` 的 `key` 字段 |
 | 装完输入类能力不可用 | `install.cmd` 不传 `-AllowInput`（默认 false） | 用 `install.ps1 -AllowInput` |
 | `nodeagent --node x cmd` 报"未知命令" | `--node` **前置需等号** | 写 `--node=x`，或放命令后 |
-| 计划任务启动后端口不通 | 待查（手工跑正常） | `(Get-ScheduledTask -TaskName nodeagent).Actions` |
+| 计划任务启动后端口不通 | **node.exe 被手工进程占用**（覆盖失败）+ 8765 被占（任务起来即冲突退出） | 先 `Get-Process node \| Stop-Process -Force` 再解压/启动 |
+| 自测时 `socket hang up` | **URL 写成 `ws://` 而服务端是 `wss`**（`tls:true`） | 用 `wss://` |
+| 测 `max_connections` 把自己锁在外面 | 测试值太小 + 被拒连接会被计入握手失败 → 恶性循环 | ① 测试时留余量 ② **给自己加 `auth_ban.whitelist`** |
