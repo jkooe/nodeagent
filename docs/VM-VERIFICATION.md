@@ -182,3 +182,41 @@ A 基础验收（verify.mjs）
 | 性能数字明显偏低 | VM + 可能的 Prism 模拟 | **不要**采信 VM 的性能指标 |
 | 杀软相关错误复现不了 | VM 里只有 Defender | 需真机（或另行安装第三方杀软） |
 | x64 Node 启动慢/异常 | 走 Prism 模拟 | 换 ARM64 Node 复核 |
+
+---
+
+## 7. 实际验证结果（2026-10-11，Parallels 27 + Win11 ARM）
+
+> 本节是**实测记录**，不是计划。环境：Parallels 共享网络，VM `10.211.55.9`，
+> Mac 侧 `bridge100=10.211.55.2`；被控端 `-NodeId win-arm -AllowInput`。
+
+### B5 结论（重要，与预期不同）
+
+| 组合 | 结果 |
+|---|---|
+| **`win-x64` 包（内含 x64 Node）** | ⚠️ **能启动、能 listen 8765，但 TLS 握手 60s 不完成** → **协议层不可用**（Prism 模拟下） |
+| **换成 ARM64 Node（同版本 v22.20.0）** | ✅ **完全正常**：TLS 握手成功、连接、51 项能力 |
+
+**结论**：`nodeagent-win-x64.zip` **不能在 ARM Windows 上实用**。
+在 ARM Windows 上需用 **ARM64 Node** 启动 `agent.mjs`（或替换包内 `node.exe`）。
+
+### 各项结果
+
+| 项 | 结果 |
+|---|---|
+| A 组（`verify.mjs` 17 项） | ✅ 15 通过 / 0 失败 / 1 跳过 |
+| B1 v1.5 四项 | ✅ 全过（含 `route=post` 实测命中 138 窗口） |
+| B4 锚点端到端 | ✅ 全过（含上传云盘） |
+| B2 v23 三防护 | ⏸ 阻塞：需改配置 + restart，而计划任务当前启动失败 |
+| B3 v26 清理 | ⏸ 同上 |
+
+### 实测新增的排查项（补进 §6）
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 装了却连不上（TLS 握手不完成） | **x64 Node 在 Prism 下协议层异常** | 换 ARM64 Node |
+| `control.ps1` 报"变量引用无效" | 脚本里 `$var:` 被当 drive 引用（**解析期**错误 → 整个脚本废） | 已修（写 `${var}`）；已加守卫 |
+| 直接跑 `install.ps1` 后找不到 `PSK.txt` | **只有 `install.cmd` 才产生 PSK.txt** | 密钥在 `<数据目录>\agent.json` 的 `key` 字段 |
+| 装完输入类能力不可用 | `install.cmd` 不传 `-AllowInput`（默认 false） | 用 `install.ps1 -AllowInput` |
+| `nodeagent --node x cmd` 报"未知命令" | `--node` **前置需等号** | 写 `--node=x`，或放命令后 |
+| 计划任务启动后端口不通 | 待查（手工跑正常） | `(Get-ScheduledTask -TaskName nodeagent).Actions` |

@@ -63,7 +63,10 @@ function fetchHead(node, headFile) {
     const j = JSON.parse(readFileSync(headFile, 'utf8'));
     return j.data ?? j; // 兼容「CLI 信封」与「裸 data」两种写法
   }
-  const args = ['audit', 'head', '--json'];
+  // ⚠️ CLI 没有 `audit head` 子命令（只有 `audit` 列表与 `audit verify`）——
+  // system.audit.head 只能走通用 `invoke`。2026-10-11 在 Parallels VM 上真跑时才发现：
+  // 不实际跑一次，这种"能力存在但 CLI 无子命令"的错配根本暴露不出来。
+  const args = ['invoke', 'system.audit.head', '--json'];
   if (node) args.push('--node', node);
   let raw;
   try {
