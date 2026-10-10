@@ -221,8 +221,8 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | # | 改动 | 状态 | 说明 |
 |---|---|---|---|
 | 1 | **新增 `gui.await` 等待条件** | ✅ **已实现，未提交** | 四类条件（window/control/process/file）× 两态（present/absent）；复用既有能力，零新增平台探测代码；超时**正常返回**不抛异常 |
-| 2 | `screen.find` 返回 UIA 属性 | ⬜ 未做 | 补 `name` / `value` / `enabled` / `selected` / `rect` / `automation_id` |
-| 3 | 条件组合（`and` / `or` / `not`） | ⬜ 未做 | `gui.await` 目前是单条件；组合需先有属性支持 |
+| 2 | `screen.find` 返回 UIA 属性 | ✅ **已完成**（v2.0.0） | 已补 `enabled` / `value` / `selected` / `toggle`；拿不到留 `null` 不猜 |
+| 3 | 条件组合（`and` / `or` / `not`） | ✅ **已完成**（v2.0.0） | 已实现 `any_of`（任一命中即算）；`and`/`not` 暂不需要 |
 
 #### `gui.await` 收尾清单（✅ **已于 v1.6.1 全部完成**）
 
@@ -416,12 +416,12 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | 源码注释脱敏（序 0.5） | ✅ | `input.ts` / `input-script.ts` 4 处软件名泛化 |
 | `.gitignore` 补 `keys/ *.key *.pem`（§6.2） | ✅ | `*.pub` 放行 |
 | `input.ts` U+FFFD 字面量（§6.2） | ✅ 复查 0 个 | 该描述已过期（早前重构时消失） |
-| v1.5.0 真机验证（序 3） | ⏳ 待被控端在线 | 四项：字符串热键 / 预设别名 / `hold_ms` / `route=post` |
-| 方向一第二步：`screen.find` 属性化 + 条件组合 | ⬜ 未做 | 需先有 UIA 属性（见 §五） |
-| 方向二：`monitor.*` / `log.query` / `fs.watch` | ⬜ 未做 | — |
-| 方向三：`install.cmd` 密钥 stdin、握手封禁、会话上限、审计锚定 | ⬜ 未做 | 安全项建议提前 |
+| v1.5.0 真机验证（序 3） | ✅ **已完成**（2026-10-11 VM） | 四项全过；含 `route=post` 实测命中 138 窗口 |
+| 方向一第二步：`screen.find` 属性化 + 条件组合 | ✅ **已完成**（v2.0.0） | 见 §五 的对应行 |
+| 方向二：`monitor.*` / `log.query` / `fs.watch` | ✅ **已完成**（v2.0.0） | `monitor.*` 5 项 + `log.query` 已实现；`fs.watch` 由 `event.watch` 覆盖 |
+| 方向三：`install.cmd` 密钥 stdin、握手封禁、会话上限、审计锚定 | ✅ **已完成**（v2.0.0，2026-10-11 真机验证） | 三防护三场景全过；锚定端到端 + 云盘链外留存已跑通 |
 | PII blob GC / 仓库重建（序 8） | ⏳ 需皇上决策 | — |
-| `ed25519` 默认化 | ⬜ 未做 | 需确认兼容策略 |
+| `ed25519` 默认化 | ✅ **已完成**（v2.0.0） | 「零信任优先安装」：有 client-acl.json 即走 ed25519（default_effect=deny） |
 | console-plan 评审（Rust client 取舍） | ⏳ 需皇上拍板 | — |
 
 ### Windows CI 扒出的 6 个真 bug（均已修复，v1.6.x）
