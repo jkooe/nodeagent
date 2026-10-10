@@ -4,7 +4,7 @@
  *
  * 用法: node scripts/pack.mjs [--node v22.20.0] [--out release]
  *
- * 产物: <out>/nodeagent-win-x64.zip
+ * 产物: <out>/nodeagent-win-<arch>.zip（arch 默认 x64，见 --arch）
  *   ├── node.exe      Node.js 运行时（免装 Node.js）
  *   ├── agent.mjs     esbuild 打包的被控端（含全部依赖）
  *   ├── install.cmd   一键安装（双击即用，自提权 + 自动生成 PSK）
@@ -36,10 +36,14 @@ const getArg = (k, d) => {
 };
 
 const NODE_VERSION = getArg('--node', 'v22.20.0');
+// 2026-10-11：Windows 也分架构。x64 包在 **ARM Windows（含 Parallels 的 Win11 ARM）** 上
+// 能启动、能 listen，但 **TLS 握手不完成**（Prism 模拟下协议层异常）→ 必须按架构出包。
+// 用法：node scripts/pack.mjs --arch arm64  → nodeagent-win-arm64.zip
+const NODE_ARCH = getArg('--arch', 'x64');
 const OUT_DIR = getArg('--out', join(root, 'release'));
-const PKG_DIR = join(OUT_DIR, 'nodeagent-win-x64');
+const PKG_DIR = join(OUT_DIR, `nodeagent-win-${NODE_ARCH}`);
 const MIRROR = process.env.NODEAGENT_NODE_MIRROR ?? 'https://npmmirror.com/mirrors/node';
-const NODE_ZIP_URL = `${MIRROR}/${NODE_VERSION}/node-${NODE_VERSION}-win-x64.zip`;
+const NODE_ZIP_URL = `${MIRROR}/${NODE_VERSION}/node-${NODE_VERSION}-win-${NODE_ARCH}.zip`;
 
 const log = (msg) => console.log(msg);
 const fail = (msg) => {
@@ -219,7 +223,7 @@ async function main() {
   log(entries.join('\n'));
 
   log('\n=== ⑤ 打 zip ===');
-  const zipOut = join(OUT_DIR, 'nodeagent-win-x64.zip');
+  const zipOut = join(OUT_DIR, `nodeagent-win-${NODE_ARCH}.zip`);
   rmSync(zipOut, { force: true });
   // ⚠️ 必须排除 PSK.txt：本 zip 会作为**公开的 GitHub Release 资产**发布，
   //    把预共享密钥打进包里等于公开密钥。install.cmd 在文件缺失时会自动生成新密钥
