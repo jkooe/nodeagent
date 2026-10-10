@@ -16,7 +16,7 @@
          （顺序颠倒会踩 Windows 的「already exists」而再次失败 —— 真机事故根因）
 
 .PARAMETER Interface
-    网卡别名（如「Ethernet」）。省略则自动选取「已连接但无有效 IPv4」的那块。
+    网卡别名（如 'Ethernet'；中文系统常见为「网络」类名称）。省略则自动选取「已连接但无有效 IPv4」的那块。
 
 .PARAMETER Ip / PrefixLength / Gateway / Dns
     要恢复的静态配置；省略 Ip 则切回 DHCP。

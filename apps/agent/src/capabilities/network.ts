@@ -68,7 +68,7 @@ async function runPsFile(script: string, timeoutMs: number, tag = 'ps'): Promise
  * 生成的 .ps1 **必须带 UTF-8 BOM**。
  *
  * ⚠️ 真机踩过：PowerShell 5.1 读**无 BOM** 的 .ps1 会按系统 ANSI(GBK) 解析，
- *    脚本里的中文（如网卡名「Ethernet」）会吃掉后面的闭合引号 →
+ *    脚本里的非 ASCII 字符（如中文网卡名）会吃掉后面的闭合引号 →
  *    报「The string is missing the terminator」→ 计划任务退出码 1 且不留日志。
  *    所有落盘的 PowerShell 脚本一律经此函数。
  */

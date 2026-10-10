@@ -395,7 +395,7 @@ export async function cmdDeploy(localFile: string, opts: Options): Promise<void>
       console.error(`  回滚方式：把备份复制回目标即可 ——`);
       console.error(`  nodeagent exec "Copy-Item '${uploadInfo.backupPath}' '${target}' -Force"`);
     }
-    console.error('  排查：被控端杀软（主流杀软/杀软）可能处置了被覆盖的 agent 文件');
+    console.error('  排查：被控端杀软可能处置了被覆盖的 agent 文件');
     process.exitCode = 1;
   }
 }

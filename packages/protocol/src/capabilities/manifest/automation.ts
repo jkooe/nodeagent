@@ -141,7 +141,7 @@ export const AUTOMATION_CAPABILITIES: CapabilityDescriptor[] = [
       type: 'object',
       properties: {
         mode: { type: 'string', enum: ['static', 'dhcp', 'command'], description: '变更类型；command=自定义命令（POSIX 仅支持此项）' },
-        interface: { type: 'string', description: '网卡别名（如「Ethernet」）；不填则自动取带默认网关的那块' },
+        interface: { type: 'string', description: '网卡别名（如 Ethernet；不填则自动取带默认网关的那块）' },
         ip: { type: 'string', description: 'mode=static：新 IPv4' },
         mask: { type: 'string', description: 'mode=static：子网掩码（如 255.255.255.0）' },
         gateway: { type: 'string', description: 'mode=static：网关（可选）' },

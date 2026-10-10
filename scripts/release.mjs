@@ -275,7 +275,7 @@ writeFileSync(
     `## 人工安装（首次）`,
     `\`\`\`powershell`,
     `Expand-Archive nodeagent-win-x64.zip C:\\nodeagent -Force`,
-    `# 先把 C:\\nodeagent 加入杀软信任区（主流杀软/杀软）`,
+    `# 先把 C:\\nodeagent 加入杀软信任区（主流杀软）`,
     `powershell -ExecutionPolicy Bypass -File C:\\nodeagent\\install.ps1 -NodeId win -AllowInput`,
     '```',
   ].join('\n') + '\n',
