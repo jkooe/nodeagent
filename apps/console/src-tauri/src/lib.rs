@@ -6,6 +6,7 @@
 //!
 //! command 面（**签名与语义保持不变，前端无需改动**）：
 //! - `connect` / `disconnect` / `invoke_capability` / `get_capabilities` / `get_state`
+//!
 //! Tauri 事件面（名字不变）：`na-state` / `na-log` / `na-event`。
 
 mod sidecar;

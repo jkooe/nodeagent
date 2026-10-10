@@ -172,7 +172,12 @@ impl Sidecar {
     /// 关掉 sidecar（app 退出或显式 disconnect 时调用）。
     pub async fn shutdown(&self) {
         let _ = self.request("disconnect", json!({}), 5).await;
-        if let Some(mut child) = self.child.lock().unwrap().take() {
+        // ⚠️ 必须**先把 child 取出来、让锁离开作用域**，再 await kill()。
+        // 若写成 `if let Some(child) = self.child.lock().unwrap().take() { child.kill().await }`，
+        // MutexGuard 会存活到 if 块结束 → 跨 await 持有 std Mutex（clippy::await_holding_lock，
+        // 且真会阻塞 executor）。
+        let child = self.child.lock().unwrap().take();
+        if let Some(mut child) = child {
             let _ = child.kill().await;
         }
     }
