@@ -319,3 +319,76 @@ cargo run --example probe -- ws://127.0.0.1:8765 <key> /tmp/nodeagent-e2e
 | C4 | 是否同步做图形接管 UI | 建议 v2 再做，首期聚焦闭环 |
 
 > 仅供参考，本方案为技术规划，不构成任何投资建议。
+
+---
+
+## 实施决策（2026-10-10）：采纳「Tauri + Node sidecar」，退役 Rust client
+
+### 为什么改
+
+原计划（本文档 §2）让 Rust 壳**自己实现一份 client**（`crates/nodeagent-client`），
+代价是「**两套协议实现**」—— Rust 版与 TS 版会**静默漂移**：改了一处漏另一处时，
+构建通过、单测通过，只在真机运行时才暴露。这是本项目已经反复吃过的一类坑
+（见 `RETROSPECTIVE.md` 的「两份真相」教训）。
+
+**sidecar 方案**让 Rust 壳退化为**进程管理者 + 消息转发者**，协议实现只剩 TS 一份：
+
+```
+┌──────────────┐   Tauri command（签名不变）   ┌─────────────────┐
+│  Vue 前端     │ ───────────────────────────► │  Rust 壳         │
+└──────────────┘ ◄──── Tauri event ──────────  │（启动/转发/监督） │
+                                               └────────┬────────┘
+                                                  stdin/stdout（JSON-RPC 2.0，行分隔）
+                                                        ▼
+                                            ┌───────────────────────────┐
+                                            │ Node sidecar（sidecar.mjs）│
+                                            │ 复用 @nodeagent/client     │
+                                            └───────────────────────────┘
+```
+
+### sidecar 协议
+
+请求（Rust → sidecar）：
+```jsonc
+{"jsonrpc":"2.0","id":1,"method":"connect","params":{url,key,client_id,insecure,auth_mode?,private_key?,cert_sha256?,hub?}}
+{"jsonrpc":"2.0","id":2,"method":"invoke","params":{capability,args,timeout_ms?}}
+{"jsonrpc":"2.0","id":3,"method":"state"}
+{"jsonrpc":"2.0","id":4,"method":"disconnect"}
+```
+通知（sidecar → Rust，用 `params.kind` 区分，Rust 侧再桥接成 Tauri event）：
+```jsonc
+{"jsonrpc":"2.0","method":"event","params":{"kind":"state","state":"connected"}}
+{"jsonrpc":"2.0","method":"event","params":{"kind":"log","message":"..."}}
+{"jsonrpc":"2.0","method":"event","params":{"kind":"agent_event","event":{…}}}
+```
+
+**两条纪律**：① **stdout 只写协议消息**（日志一律 stderr，混入非 JSON 行会让 Rust 侧解析失败）；
+② 任何异常都转成响应，**绝不因单个请求崩进程**。
+
+### 错误形态归一（真机实测中修正）
+
+被控端对「未知能力 / ACL 拒绝 / 超时」是回 **JSON-RPC error**，`client.invoke()` 因此**抛异常**。
+若原样上抛，前端要处理两种形态。sidecar 已把它归一成 `InvokeResult` 的 failed 形态：
+
+```jsonc
+{"result":{"status":"failed","error":{"name":"E_CAPABILITY_NOT_FOUND","message":"…"}}}
+```
+「调用方式不对」（未连接 / 缺参数）仍走**协议错误**（带明确 code），二者语义不同、不混淆。
+
+### 进度
+
+| 步骤 | 状态 |
+|---|---|
+| ① sidecar 实现（`apps/console/sidecar/main.mjs`） | ✅ 190 行 |
+| ② 真实链路 e2e（本地 agent → connect → invoke → 事件 → 错误 → disconnect） | ✅ **8/8 通过** |
+| ③ 单文件打包（`sidecar/build.mjs`，esbuild JS API + createRequire shim） | ✅ 227KB，**仓库外可独立运行** |
+| ④ Rust 壳改造（内部换 sidecar，command 签名不变 → 前端零改动） | ⬜ 待做 |
+| ⑤ `tauri.conf.json` 的 `externalBin` / resource 配置 + Node 运行时打包 | ⬜ 待做 |
+| ⑥ 退役 `crates/nodeagent-client`（删依赖 + rust.yml） | ⬜ 待做 |
+
+### 打包说明（步骤 ⑤ 的既定方向）
+
+sidecar 是 `.mjs`，需要 Node 解释器 —— **不满足 Tauri `externalBin`（要求可执行文件）**。
+采用与 `pack:win` 一致的既有做法：**sidecar.mjs + Node 运行时都作为 Tauri resource**，
+Rust 侧从 resource 目录解析路径后 spawn（开发期直接用系统 node）。
+（`externalBin` 若要走，需 Node SEA 打成真二进制，但其动态 require 限制与 `ws` 有冲突，故不采用。）

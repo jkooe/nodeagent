@@ -45,6 +45,12 @@ importers:
 
   apps/console:
     dependencies:
+      '@nodeagent/client':
+        specifier: workspace:*
+        version: link:../../packages/client
+      '@nodeagent/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
       '@tauri-apps/api':
         specifier: ^2
         version: 2.12.1
