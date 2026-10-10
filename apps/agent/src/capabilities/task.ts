@@ -132,7 +132,7 @@ function getTask(id: string): TaskRecord {
 
 // ---------------- system.task.list ----------------
 
-/** v23：正在跑的任务数（连接层"有空闲断开但不动长任务"的判据）。 */
+/** v2.0.0：正在跑的任务数（连接层"有空闲断开但不动长任务"的判据）。 */
 export function runningTaskCount(): number {
   let n = 0;
   for (const t of tasks.values()) if (t.state === 'running') n += 1;

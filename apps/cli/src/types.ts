@@ -20,11 +20,11 @@ export interface Options {
   /** 通用选项：文本 / 标题 */
   text?: string;
   title?: string;
-  /** v25 审计锚定 */
+  /** v2.0.0 审计锚定 */
   compare?: boolean;
   anchorPath?: string;
   note?: string;
-  /** v1.8 状态采样 */
+  /** v2.0.0 状态采样 */
   source?: string;
   target?: string;
   pattern?: string;
@@ -32,17 +32,17 @@ export interface Options {
   since?: string;
   offset?: string;
   tail?: boolean;
-  /** v1.7 gui.await 扩展 */
+  /** v2.0.0 gui.await 扩展 */
   where?: string;
   any_of?: string;
-  /** v1.6 gui.await */
+  /** v1.6.0 gui.await */
   condition?: string;
   state?: string;
   path?: string;
   process?: string;
-  /** v1.5 快捷键扩展：长按毫秒 */
+  /** v1.5.0 快捷键扩展：长按毫秒 */
   hold?: string;
-  /** v1.5 快捷键扩展：投递路由 foreground|post */
+  /** v1.5.0 快捷键扩展：投递路由 foreground|post */
   route?: string;
   pid?: string;
   /** v3：认证模式 psk | ed25519 */

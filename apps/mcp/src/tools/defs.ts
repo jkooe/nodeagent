@@ -257,7 +257,7 @@ export const TOOLS = [
   {
     name: 'na_await',
     description:
-      '等待一个条件成立再返回（只读低危，v1.6）。\n' +
+      '等待一个条件成立再返回（只读低危，v1.6.0）。\n' +
       '四类条件：window=等窗口出现/消失；control=等界面元素出现/消失（复用 screen.find）；' +
       'process=等进程出现/消失；file=等文件出现/消失。\n' +
       'state=present（默认，等出现）或 absent（等消失）。\n' +
@@ -275,8 +275,8 @@ export const TOOLS = [
         title: { type: 'string', description: 'window 条件：窗口标题（正则）' },
         process: { type: 'string', description: 'process 条件：进程名（正则）' },
         path: { type: 'string', description: 'file 条件：文件路径' },
-        where: { type: 'object', description: 'v1.7 属性谓词（仅 UIA）：{ enabled?, selected?, value?, toggle? }' },
-        any_of: { type: 'array', maxItems: 8, description: 'v1.7 组合条件：每项一个条件对象，任一命中即算' },
+        where: { type: 'object', description: 'v2.0.0 属性谓词（仅 UIA）：{ enabled?, selected?, value?, toggle? }' },
+        any_of: { type: 'array', maxItems: 8, description: 'v2.0.0 组合条件：每项一个条件对象，任一命中即算' },
       },
       required: ['condition'],
       additionalProperties: false,
@@ -285,7 +285,7 @@ export const TOOLS = [
   {
     name: 'na_monitor',
     description:
-      '定时采样并落盘，事后回看（v1.8，治间歇性问题）。\n' +
+      '定时采样并落盘，事后回看（v2.0.0，治间歇性问题）。\n' +
       'action=start：起一个采样。source=port（target="host:port"，测连通性与延迟）/' +
       'process（target=进程名，测存活）/command（target=命令，取退出码）/metric（CPU·内存，无需 target）。\n' +
       'action=report：读回样本序列与**摘要**（port/process 给「断了几次 + 最长连续中断」；' +
@@ -309,7 +309,7 @@ export const TOOLS = [
   {
     name: 'na_log',
     description:
-      '在被控端侧过滤日志，只回匹配行（v1.8，只读）。日志常几万行，整份拉回既慢又占带宽 —— ' +
+      '在被控端侧过滤日志，只回匹配行（v2.0.0，只读）。日志常几万行，整份拉回既慢又占带宽 —— ' +
       '本工具把过滤下推到被控端（流式逐行读）。支持 pattern（正则）/level（ERROR|WARN|INFO|DEBUG）/\n' +
       'since（Unix ms）/offset/limit/tail（取末尾 N 条）。',
     inputSchema: {

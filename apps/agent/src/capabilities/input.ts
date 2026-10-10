@@ -183,7 +183,7 @@ public static class NAInput {
     }
 
     /// <summary>
-    /// v1.5：向目标进程的**全部顶层窗口** PostMessage 键盘消息（后端定向快捷键投放）。
+    /// v1.5.0：向目标进程的**全部顶层窗口** PostMessage 键盘消息（后端定向快捷键投放）。
     ///
     /// 场景：目标窗口不在前台（被遮挡 / 最小化 / 聊天窗口在后台），又要给它发快捷键。
     /// WM_KEYDOWN=0x0100，WM_KEYUP=0x0101；修饰键按顺序投递，调用方负责释放顺序。
@@ -364,7 +364,7 @@ export async function keyPress(args: Args): Promise<unknown> {
   assertAllowed('input.key.press');
   requireWindows('input.key.press');
 
-  // v1.5：入参统一经 protocol 的 expandChords 展开 —— 字符串热键 / 预设名 / 老数组形式
+  // v1.5.0：入参统一经 protocol 的 expandChords 展开 —— 字符串热键 / 预设名 / 老数组形式
   // 全部收敛成「归一化和弦序列」。混用多种形式会直接报错，避免"以谁为准"的歧义。
   let expanded;
   try {
@@ -384,9 +384,9 @@ export async function keyPress(args: Args): Promise<unknown> {
   const presets = expanded.presets;
 
   const gap = Math.max(0, Math.min(2000, (args['interval_ms'] as number) ?? 40));
-  // v1.5：长按（按下到释放的保持时长），用于"长按音量/持续按住方向键"等场景
+  // v1.5.0：长按（按下到释放的保持时长），用于"长按音量/持续按住方向键"等场景
   const holdMs = Math.max(0, Math.min(5000, Math.round((args['hold_ms'] as number | undefined) ?? 0)));
-  // v1.5：投放路由。foreground = SendInput 注入当前焦点（默认，旧行为）；
+  // v1.5.0：投放路由。foreground = SendInput 注入当前焦点（默认，旧行为）；
   //       post = 向目标进程全部顶层窗口 PostMessage（窗口在后台时可用，但兼容性差）
   const route = (args['route'] as string | undefined) ?? 'foreground';
   if (route !== 'foreground' && route !== 'post') {
@@ -423,7 +423,7 @@ export async function keyPress(args: Args): Promise<unknown> {
     };
   }
 
-  // v1.5：后端定向投递（route=post）—— 目标窗口不在前台时使用
+  // v1.5.0：后端定向投递（route=post）—— 目标窗口不在前台时使用
   if (route === 'post') {
     let sent = 0;
     const out = await runPs(buildPostBody(chords, { gapMs: gap, holdMs, targetPid: pid, route }));

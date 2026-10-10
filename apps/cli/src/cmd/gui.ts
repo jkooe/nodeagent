@@ -172,7 +172,7 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
       return;
     }
     case 'press': {
-      // v1.5：三种用法（一次一种）
+      // v1.5.0：三种用法（一次一种）
       //   nodeagent key press "ctrl+shift+esc"     字符串热键
       //   nodeagent key press copy                 预设名
       //   nodeagent key press ctrl c               老形式（空格分隔的各键）
@@ -193,7 +193,7 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
       }
       // 老形式说明：位置参数以空格分隔 → 兼容"ctrl c"（无 + 号）
       if (opts.interval) args['interval_ms'] = Number(opts.interval);
-      // v1.5 新增可选参数
+      // v1.5.0 新增可选参数
       if (opts.hold) args['hold_ms'] = Number(opts.hold);
       if (opts.route) args['route'] = opts.route;
       // 媒体键可定向到指定进程（播放器常建 30+ 辅助窗口，只投主窗口往往无效）
@@ -232,7 +232,7 @@ export async function cmdKey(action: string | undefined, positionals: string[], 
   }
 }
 
-// ---------- v1.6 等待条件（gui.await） ----------
+// ---------- v1.6.0 等待条件（gui.await） ----------
 
 /**
  * 等待一个条件成立再返回（只读低危）。
@@ -251,7 +251,7 @@ export async function cmdAwait(opts: Options): Promise<void> {
     fail('用法: nodeagent await --condition <window|control|process|file> --timeout <ms> [--text/--title/--process/--path] [--state absent]');
   }
   const args: Record<string, unknown> = { condition };
-  // v1.7：where / any_of 是 JSON 字符串（属性谓词与组合条件不便用命令行开关表达）
+  // v2.0.0：where / any_of 是 JSON 字符串（属性谓词与组合条件不便用命令行开关表达）
   for (const k of ['where', 'any_of']) {
     const raw = (opts as unknown as Record<string, string | undefined>)[k];
     if (raw !== undefined) {

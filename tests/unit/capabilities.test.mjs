@@ -255,9 +255,9 @@ test('capabilityDiff：真实清单与自身比对应无差异（防手滑改坏
   assert.equal(d.unknownLocally.length, 0);
 });
 
-// ---------- v1.5 快捷键扩展：新参数必须通过 schema 校验 ----------
+// ---------- v1.5.0 快捷键扩展：新参数必须通过 schema 校验 ----------
 
-test('input.key.press：v1.5 新参数（hotkey/hotkeys/preset/hold_ms/route）通过校验', () => {
+test('input.key.press：v1.5.0 新参数（hotkey/hotkeys/preset/hold_ms/route）通过校验', () => {
   assert.equal(check('input.key.press', { hotkey: 'ctrl+shift+esc' }).length, 0);
   assert.equal(check('input.key.press', { hotkeys: ['ctrl+c', 'ctrl+v'] }).length, 0);
   assert.equal(check('input.key.press', { preset: 'copy' }).length, 0);

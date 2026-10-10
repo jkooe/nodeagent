@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { logQuery, parseLeadingTs } from '../../apps/agent/dist/capabilities/log.js';
 
 /**
- * log.query 的纯逻辑测试（v1.8 方向二第一块）。
+ * log.query 的纯逻辑测试（v2.0.0 方向二第一块）。
  * 文件级行为（流式读取/白名单）用真实临时文件验证，无需被控端进程。
  */
 

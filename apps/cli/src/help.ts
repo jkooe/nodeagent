@@ -49,12 +49,12 @@ export const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent events [--kind file|process|net] [--path <路径>] [--pattern G] [--seconds 15]
                                       订阅事件并实时接收推送（无 --kind 则列出订阅）(v12)
   nodeagent monitor start --source <port|process|command|metric> [--target X] [--interval ms] [--id 名]
-                                      启动定时采样并落盘 (v1.8)：port 验连通性/process 验存活/
+                                      启动定时采样并落盘 (v2.0.0)：port 验连通性/process 验存活/
                                       command 取退出码/metric 取 CPU·内存
-  nodeagent monitor report <id>       回看样本 + 摘要（断几次、最长断多久、值域）(v1.8)
+  nodeagent monitor report <id>       回看样本 + 摘要（断几次、最长断多久、值域）(v2.0.0)
   nodeagent monitor stop|list|delete <id>
   nodeagent log --path <文件> [--pattern 正则] [--level ERROR] [--limit n] [--tail]
-                                      在被控端侧过滤日志，只回匹配行（日志几万行也不拖网）(v1.8)
+                                      在被控端侧过滤日志，只回匹配行（日志几万行也不拖网）(v2.0.0)
   nodeagent record [--duration 5000] [--fps 2] [--scale 0.5] [--region x,y,w,h]
                                       录屏为帧序列（有 ffmpeg 则封装 mp4）(v11)
   nodeagent update --url <地址> --sha256 <哈希> [--dry-run]

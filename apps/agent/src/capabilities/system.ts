@@ -616,7 +616,7 @@ export async function auditVerify(_args: Args): Promise<unknown> {
 }
 
 /**
- * v25：返回审计链的链头（只读）。
+ * v2.0.0：返回审计链的链头（只读）。
  *
  * 用途：控制端定期拉取并存到**链外**（Mac 本地 / 另一台机器）—— 这是"外部锚定"的一半。
  * compare=true 时附带与最近一条锚点的比对结论（另一半）。
@@ -628,7 +628,7 @@ export async function auditHead(args: Args): Promise<unknown> {
 }
 
 /**
- * v25：把当前链头**追加**写到锚点文件（默认 <数据目录>/audit-anchors.jsonl）。
+ * v2.0.0：把当前链头**追加**写到锚点文件（默认 <数据目录>/audit-anchors.jsonl）。
  *
  * 为什么是追加而不是覆盖：历史锚点一旦写成就不可被后续覆盖，否则攻击者重写链后
  * 再"刷新"锚点即可抹掉痕迹。追加式让每次锚定都留痕。

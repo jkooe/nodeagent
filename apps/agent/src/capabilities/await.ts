@@ -1,5 +1,5 @@
 /**
- * gui.await —— 等待条件成立（v1.6）。
+ * gui.await —— 等待条件成立（v1.6.0）。
  *
  * ## 为什么需要它（复盘三大短板之「语义」）
  * 原来的 GUI 操作是**盲试**：按一下、截个图、看看有没有变化，不行再试。
@@ -63,7 +63,7 @@ function buildInnerArgs(condition: Condition, args: Args): Args {
       for (const k of ['text', 'window', 'control_type', 'method', 'template', 'limit', 'timeout_ms']) {
         if (args[k] !== undefined) inner[k] = args[k];
       }
-      // v1.7：属性谓词（仅 UIA 引擎生效）。有 where 时允许不传 text ——
+      // v2.0.0：属性谓词（仅 UIA 引擎生效）。有 where 时允许不传 text ——
       // 「等一个 enabled 的按钮」比「等一个叫某名字的按钮」更贴近真实意图。
       const where = args['where'];
       if (where !== undefined) {
@@ -117,7 +117,7 @@ function innerProbe(condition: Condition): (args: Args) => Promise<unknown> {
 }
 
 /**
- * v1.7 组合条件：`any_of: [ {...}, {...} ]`，任一命中原句即算命中。
+ * v2.0.0 组合条件：`any_of: [ {...}, {...} ]`，任一命中原句即算命中。
  *
  * 为什么只做 any_of 不做 and/or/not  generalize：真实场景里"弹窗出现 **且**
  * 其中某按钮 enabled"用 any_of(弹窗) + where(按钮 enabled) 两步就能表达，
@@ -152,7 +152,7 @@ function buildAnyOf(args: Args): Array<{ condition: Condition; inner: Args; labe
 }
 
 export async function guiAwait(args: Args): Promise<unknown> {
-  // v1.7：有 any_of 时**不要求**顶层 condition（语义就是"这组条件任一命中"），
+  // v2.0.0：有 any_of 时**不要求**顶层 condition（语义就是"这组条件任一命中"），
   // 校验顺序也因此调整为 any_of 先行 —— 否则会先撞上"condition 缺失"的报错。
   const condition = args['condition'] as Condition | undefined;
   if (!args['any_of'] && (!condition || !CONDITIONS.includes(condition))) {
@@ -175,7 +175,7 @@ export async function guiAwait(args: Args): Promise<unknown> {
   let lastHit = false;
   let lastError: string | null = null;
 
-  // v1.7：组合条件走单独路径（任一命中即算），失败语义与单条完全一致
+  // v2.0.0：组合条件走单独路径（任一命中即算），失败语义与单条完全一致
   const anyOf = args['any_of'] !== undefined ? buildAnyOf(args) : null;
   if (anyOf) {
     for (;;) {

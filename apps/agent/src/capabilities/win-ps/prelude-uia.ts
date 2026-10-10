@@ -32,7 +32,7 @@ function Get-WinByTitle([string]$re) {
 
 # v14：按子串在给定 scope 内遍历查找（FindAll + 子串过滤）。
 # UIA 的 PropertyCondition 只能精确匹配，故必须遍历后过滤；遍历规模设上限防超大 UI 树卡死。
-# v23：读取元素的 UIA 属性（v1.7 语义属性化）。
+# v2.0.0：读取元素的 UIA 属性（v2.0.0 语义属性化）。
 # 为什么逐个 try：ValuePattern / SelectionItemPattern / TogglePattern 并非所有控件
 # 都支持（不支持时 GetSupportedPattern 返回 false 或抛异常），而且**部分应用
 # （Electron / 游戏 UI）根本给不出值** —— 拿不到就留空，由上层判"未知"而非"false"。

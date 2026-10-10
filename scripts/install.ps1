@@ -42,11 +42,11 @@ param(
     [switch]$Unattended,
     # 追加「开机即启动」触发器（不依赖用户登录）
     [switch]$AtStartup,
-    # v23：从**标准输入**读密钥（而非命令行 -Key）。
+    # v2.0.0：从**标准输入**读密钥（而非命令行 -Key）。
     # 为什么：命令行参数对同机其他用户可见（任务管理器/Get-CimInstance Win32_Process
     # 的 CommandLine 字段就是明文）。install.cmd 用 `echo <key>| powershell ...` 喂进来。
     [switch]$KeyFromStdin,
-    # v24 零信任优先：控制端公钥文件路径（内容是 `nodeagent keygen` 打印的那一条 JSON，
+    # v2.0.0 零信任优先：控制端公钥文件路径（内容是 `nodeagent keygen` 打印的那一条 JSON，
     # 即 acl.clients 的一项）。给了它 → auth_mode 直接走 ed25519（零信任），
     # 不再依赖可被自报的 client_id。留空则自动探测脚本同目录的 client-acl.json。
     [string]$ClientAclFile = ""
@@ -119,7 +119,7 @@ $cfgDir  = if ($env:NODEAGENT_HOME) { $env:NODEAGENT_HOME } else { Join-Path $en
 $cfgPath = Join-Path $cfgDir "agent.json"
 New-Item -ItemType Directory -Force -Path $cfgDir | Out-Null
 
-# v23：stdin 读取要在「复用既有配置」之前 —— 调用方显式给了 key 就以它为准。
+# v2.0.0：stdin 读取要在「复用既有配置」之前 —— 调用方显式给了 key 就以它为准。
 # 同时规避了一个易错点：[Console]::In.ReadLine() 在没有管道时会阻塞，
 # 所以必须先判 [Console]::IsInputRedirected。
 if ($KeyFromStdin -and -not $Key) {
@@ -155,7 +155,7 @@ if (-not $Key) {
     Write-Ok "Generated a new pre-shared key"
 }
 
-# --- v24: zero-trust-first -------------------------------------------------
+# --- v2.0.0: zero-trust-first -------------------------------------------------
 # PSK 有一个固有弱点：client_id 是调用方**自报**的，所以"谁知道共享 key，谁就能
 # 冒充任意未登记的 client_id"—— ACL 的身份维度在 psk 模式下形同虚设。
 # ed25519 没有这个问题（身份由私钥签名决定）。故：**只要拿到控制端公钥就走 ed25519**。

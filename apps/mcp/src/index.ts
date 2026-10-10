@@ -262,7 +262,7 @@ function resolveToolCall(toolName: string, input: Record<string, unknown>): Reso
         return { capability: CapabilityNames.KeyType, args: { text: input['text'] } };
       }
       if (action === 'press') {
-        // v1.5：四种形式一次只用一种（hotkeys > hotkey > presets > preset > keys），
+        // v1.5.0：四种形式一次只用一种（hotkeys > hotkey > presets > preset > keys），
         // 其余各端会做同样的校验与展开，这里只做薄校验后原样透传。
         const has = (k: string): boolean =>
           input[k] !== undefined && !(Array.isArray(input[k]) && (input[k] as unknown[]).length === 0);

@@ -54,9 +54,9 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.MouseDrag]: mouseDrag,
     [CapabilityNames.KeyType]: keyType,
     [CapabilityNames.KeyPress]: keyPress,
-    // v1.6 等待条件（把盲试变为可断言）
+    // v1.6.0 等待条件（把盲试变为可断言）
     [CapabilityNames.GuiAwait]: guiAwait,
-    // v1.8 状态采样（方向二）
+    // v2.0.0 状态采样（方向二）
     [CapabilityNames.LogQuery]: logQuery,
     [CapabilityNames.MonitorStart]: monitorStart,
     [CapabilityNames.MonitorReport]: monitorReport,
@@ -67,7 +67,7 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     [CapabilityNames.AuditList]: auditList,
     // v11 审计防篡改
     [CapabilityNames.AuditVerify]: auditVerify,
-    // v25 审计链外部锚定（防整链重写）
+    // v2.0.0 审计链外部锚定（防整链重写）
     [CapabilityNames.AuditHead]: auditHead,
     [CapabilityNames.AuditAnchor]: auditAnchor,
     // v13 成功指标

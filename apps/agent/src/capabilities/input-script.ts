@@ -45,13 +45,13 @@ export const VK_MAP: Record<string, number> = {
   launch_mail: 0xb4, launch_media: 0xb5, launch_app1: 0xb6, launch_app2: 0xb7,
   browser_favorites: 0xab, browser_home: 0xac,
 
-  // ---- 左右侧修饰键（v1.5）----
+  // ---- 左右侧修饰键（v1.5.0）----
   // 游戏/部分应用区分左右（如游戏中把 LAlt 设为跑步、RAlt 设为瞄准），故不能只给一个 alt。
   lctrl: 0xa2, rctrl: 0xa3, lshift: 0xa0, rshift: 0xa1,
   lalt: 0xa4, ralt: 0xa5, lwin: 0x5b, rwin: 0x5c,
   super: 0x5b, cmd: 0x5b, left_cmd: 0x5b, right_cmd: 0x5c,
 
-  // ---- 小键盘（v1.5）----
+  // ---- 小键盘（v1.5.0）----
   // numpadN 与数字 N 分开：Excel 等程序靠 NumLock 状态区分二者行为，合成一个会坏掉快捷键。
   numpad0: 0x60, numpad1: 0x61, numpad2: 0x62, numpad3: 0x63, numpad4: 0x64,
   numpad5: 0x65, numpad6: 0x66, numpad7: 0x67, numpad8: 0x68, numpad9: 0x69,
@@ -59,7 +59,7 @@ export const VK_MAP: Record<string, number> = {
   numlock: 0x90, scrolllock: 0x91,
   numpad_enter: 0x0d,
 
-  // ---- OEM 符号键（v1.5，美式布局 VK 码）----
+  // ---- OEM 符号键（v1.5.0，美式布局 VK 码）----
   // 必备理由：大量系统/应用快捷键就是"修饰键 + 符号键"（win+d 显示桌面、win+, 速览、
   // ctrl++ 放大、ctrl+- 缩小、win+. 表情面板），此前只能靠字母数字，覆盖不到。
   oem_1: 0xba,   // : ;
@@ -75,7 +75,7 @@ export const VK_MAP: Record<string, number> = {
   oem_comma: 0xbc, // , <
   oem_period: 0xbe,// . >
 
-  // ---- 系统/IME 杂项（v1.5）----
+  // ---- 系统/IME 杂项（v1.5.0）----
   sleep: 0x5f, help: 0x2f, select: 0x29, execute: 0x2b, clear: 0x0c,
   separator: 0x6c, oem_clear: 0xfe,
   kana: 0x15, hangul: 0x15, kanji: 0x19, hanja: 0x19,

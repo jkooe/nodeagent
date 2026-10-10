@@ -18,7 +18,7 @@ export type AuditType =
   | 'net.deny'
   /** v19：agent 自更新（拉取式） */
   | 'agent.update'
-  /** v23：连接空闲被主动断开 */
+  /** v2.0.0：连接空闲被主动断开 */
   | 'session.idle_close';
 
 /** 一条审计记录（JSONL 单行）。 */
@@ -336,7 +336,7 @@ export function readAudit(query: AuditQuery = {}): { entries: AuditEntry[]; tota
 }
 
 
-// ---------------- v25 审计链外部锚定 ----------------
+// ---------------- v2.0.0 审计链外部锚定 ----------------
 //
 // ## 为什么需要
 // 审计链的哈希使**链内**篡改可被发现（改一条就要重算其后全部）。但「有 root 的攻击者」

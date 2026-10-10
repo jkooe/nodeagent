@@ -188,7 +188,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.KeyPress,
     version: '1.5',
     description:
-      '按下**快捷键**（v1.5 大幅扩展范围）。支持的输入形式（**一次只用一种**）：' +
+      '按下**快捷键**（v1.5.0 大幅扩展范围）。支持的输入形式（**一次只用一种**）：' +
       '① 字符串热键 hotkey: "ctrl+shift+esc"（配 repeat 可连按）；② 热键序列 hotkeys: ["ctrl+c","ctrl+v"]；' +
       '③ 预设别名 preset: "copy" / presets: ["copy","paste"]（约 50 个语义名，免记键位）；' +
       '④ 老数组形式 keys: ["ctrl","c"]（配 repeat）；⑤ 序列 sequence: [["up"],["enter"]]。' +
@@ -243,14 +243,14 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
           minimum: 0,
           maximum: 5000,
           default: 0,
-          description: 'v1.5 长按：按下后保持该毫秒数再释放（如长按音量键）',
+          description: 'v1.5.0 长按：按下后保持该毫秒数再释放（如长按音量键）',
         },
         route: {
           type: 'string',
           enum: ['foreground', 'post'],
           default: 'foreground',
           description:
-            'v1.5 投放路由：foreground = SendInput 注入当前焦点（默认，需目标可见）；' +
+            'v1.5.0 投放路由：foreground = SendInput 注入当前焦点（默认，需目标可见）；' +
             'post = 向 target_pid 进程全部顶层窗口 PostMessage（目标在后台时可用）',
         },
         target_pid: {
@@ -392,7 +392,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
         where: {
           type: 'object',
           description:
-            'v1.7 属性谓词（**仅 UIA 引擎生效**）：{ enabled?, selected?, value?, toggle? }。' +
+            'v2.0.0 属性谓词（**仅 UIA 引擎生效**）：{ enabled?, selected?, value?, toggle? }。' +
             '例：{"enabled":true} 只回可用控件；{"value":"*已完成*"} 按值模糊匹配。' +
             '拿不到的属性（Electron/游戏 UI 常见）不参与命中，由调用方按 note 判断；' +
             'OCR / image 引擎无属性可读，此时忽略本参数并带回 note。',
@@ -436,7 +436,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
       type: 'object',
       properties: {
         engine: { type: 'string', description: '实际使用的引擎：uia | ocr' },
-        note: { type: 'string', description: 'v1.7：where 在非 UIA 引擎下被忽略等降级说明' },
+        note: { type: 'string', description: 'v2.0.0：where 在非 UIA 引擎下被忽略等降级说明' },
         waited_ms: { type: 'integer', description: '实际等待时长（便于诊断是否命中等待窗口）' },
         matches: {
           type: 'array',
@@ -501,7 +501,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.GuiAwait,
     version: '1.0',
     description:
-      '等待一个条件成立再返回（v1.6，**只读低危**）。四类条件：' +
+      '等待一个条件成立再返回（v1.6.0，**只读低危**）。四类条件：' +
       'window=等窗口出现/消失；control=等界面元素出现/消失（复用 screen.find）；' +
       'process=等进程出现/消失；file=等文件出现/消失。' +
       '用途：把 GUI 操作从「按一下→睡几秒→截图碰运气」变成**可断言**的流程，例如：' +
@@ -532,7 +532,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
         text: { type: 'string', description: 'control 条件：元素文本（有 where 时可省）' },
         where: {
           type: 'object',
-          description: 'v1.7 属性谓词（仅 UIA）：{ enabled?, selected?, value?, toggle? }，如等一个可用的按钮',
+          description: 'v2.0.0 属性谓词（仅 UIA）：{ enabled?, selected?, value?, toggle? }，如等一个可用的按钮',
         },
         window: { type: 'string', description: 'control 条件：限定窗口标题（正则）' },
         control_type: { type: 'string', description: 'control 条件：限定控件类型（仅 UIA）' },
@@ -545,7 +545,7 @@ export const GRAPHICS_CAPABILITIES: CapabilityDescriptor[] = [
           type: 'array',
           maxItems: 8,
           description:
-            'v1.7 组合条件：数组，每项为一个条件对象（同顶层参数名），**任一命中**即算命中。' +
+            'v2.0.0 组合条件：数组，每项为一个条件对象（同顶层参数名），**任一命中**即算命中。' +
             '例：[{"condition":"window","title":"安装完成"},{"condition":"control","text":"错误"}]' +
             '——「安装成功或报错，先出现的那个算」。与 where 合用可表达' +
             '「弹窗出现且其中某按钮 enabled」（用两条 await 亦可，任选）。',

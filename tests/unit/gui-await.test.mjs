@@ -9,7 +9,7 @@ function check(capName, args) {
 }
 
 /**
- * gui.await 的**契约层**测试（v1.6）。
+ * gui.await 的**契约层**测试（v1.6.0）。
  *
  * 说明：条件命中/超时/轮询的**运行时行为**在 tests/e2e/await.mjs 里用真实 agent 进程
  * 验证（macOS 本地可跑：file/process 条件）。本文件只守**不需要平台的**部分：
@@ -71,7 +71,7 @@ test('MCP 已暴露 na_await 工具', async () => {
   assert.ok(/na_await/.test(src), 'MCP 应有 na_await 工具');
 });
 
-// ---------- v1.7 属性谓词与组合条件 ----------
+// ---------- v2.0.0 属性谓词与组合条件 ----------
 
 test('gui.await：where 与 any_of 通过 schema', () => {
   assert.equal(check('gui.await', { condition: 'control', where: { enabled: true } }).length, 0);
@@ -107,7 +107,7 @@ test('any_of 求值语义：任一命中即算（等价于逻辑 OR）', () => {
   assert.ok(![{ hit: false }, { hit: false }].some((s) => s.hit), '全不命中 → 不命中');
 });
 
-test('screen.find：where-only 必须放行（v1.8 修——真机验证暴露的缺口）', () => {
+test('screen.find：where-only 必须放行（v2.0.0 修——真机验证暴露的缺口）', () => {
   // 之前入口校验只认 text，导致 where-only 被"text 不能为空"拦下；
   // 真机 2026-10-09 验证时抓到。此处锁住：where 非空即可，text 可省。
   assert.equal(check('screen.find', { where: { enabled: true } }).length, 0, 'where-only 应通过');

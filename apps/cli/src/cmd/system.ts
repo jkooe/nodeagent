@@ -183,7 +183,7 @@ export async function cmdRestart(opts: Options): Promise<void> {
   );
 }
 
-// ---------- v25 审计链外部锚定 ----------
+// ---------- v2.0.0 审计链外部锚定 ----------
 
 /**
  * 打印审计链头（可选与最近锚点比对）。

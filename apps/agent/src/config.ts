@@ -43,7 +43,7 @@ export interface AgentConfig {
   allow_from?: string[];
 
   /**
-   * v23 连接层防护（三项，默认值见 server.ts）。
+   * v2.0.0 连接层防护（三项，默认值见 server.ts）。
    * 单项缺省即启用默认策略；显式设 0 可关闭对应项。
    */
   security?: {

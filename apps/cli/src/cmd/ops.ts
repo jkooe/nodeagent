@@ -641,7 +641,7 @@ export async function cmdClip(opts: Options): Promise<void> {
   );
 }
 
-// ---------- v1.8 状态采样（monitor / log） ----------
+// ---------- v2.0.0 状态采样（monitor / log） ----------
 
 /**
  * 状态采样与回看。
@@ -732,7 +732,7 @@ export async function cmdMonitor(action: string | undefined, positional: string[
   }
 }
 
-/** 在被控端侧过滤日志（v1.8）：日志常几万行，过滤必须发生在被控端。 */
+/** 在被控端侧过滤日志（v2.0.0）：日志常几万行，过滤必须发生在被控端。 */
 export async function cmdLog(opts: Options): Promise<void> {
   const logPath = opts.path;
   if (!logPath) fail('用法: nodeagent log --path <文件> [--pattern 正则] [--level ERROR] [--limit n] [--tail]');

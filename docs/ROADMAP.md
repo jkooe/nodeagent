@@ -4,7 +4,7 @@
 > 盘点方式：真机验证 + 本地跑单测 + `gh run list`（Windows 被控端曾于 10-10 00:15 离线）
 > 基线：**`v2.0.0` 已发布**（2026-10-10，commit `457ead1`）｜单测 **273 全绿** · e2e **30 全绿** ·
 > 能力 **51 项** · Windows CI / Rust CI 全绿
-> 📌 v2.0.0 发布时被控端整机离线 → v1.5 的四项与 v26 清理策略的真机验证**仍待补**（见 §九）
+> 📌 v2.0.0 发布时被控端整机离线 → v1.5.0 的四项与 v2.0.0 清理策略的真机验证**仍待补**（见 §九）
 > 适用范围：本文档随仓库公开，**不含任何真机地址与账户信息**（见 §6 脱敏约定）
 
 ---
@@ -49,11 +49,11 @@
 
 ```
 0d62cb1 (tag v1.5.0)  chore(release): v1.5.0
-1c836e0              feat(v1.5): 快捷键控制范围扩展（字符串热键/预设别名/长按/后台定向投递）
+1c836e0              feat(v1.5.0): 快捷键控制范围扩展（字符串热键/预设别名/长按/后台定向投递）
 0ee8231              feat(v1.2): 媒体键 WM_APPCOMMAND 通道 + 定向投递
 42ec556 (tag v1.4.3) chore(release): v1.4.3
 7ad820c (本地 HEAD)   ci: 补全 Windows 真机验证        ← 未推送
-[工作区未提交]        feat(v1.6): gui.await 等待条件    ← 在建
+[工作区未提交]        feat(v1.6.0): gui.await 等待条件    ← 在建
 ```
 
 ### 2.2 代码与测试
@@ -67,7 +67,7 @@
 | e2e | 2 个套件（`run.mjs` 通用 29 例 / `windows.mjs` Windows 专属 13 例） |
 | **`gui.await` 覆盖** | **0** —— 单测、e2e、CLI、MCP 均无 `gui.await`/`GuiAwait` 命中 |
 
-> ⚠️ 单测数从 162 增至 195（新增 33 例，来自 v1.5 快捷键的按键表覆盖断言），但**红了一例**：`tests/unit/capabilities.test.mjs:66` 的 `assert.equal(CAPABILITY_MANIFEST.length, 42)`，实际 43。**修法**：改为 43，或更稳妥地改成「断言每个 `CapabilityNames` 键都在 manifest 中」以免每加一能力都要改数。
+> ⚠️ 单测数从 162 增至 195（新增 33 例，来自 v1.5.0 快捷键的按键表覆盖断言），但**红了一例**：`tests/unit/capabilities.test.mjs:66` 的 `assert.equal(CAPABILITY_MANIFEST.length, 42)`，实际 43。**修法**：改为 43，或更稳妥地改成「断言每个 `CapabilityNames` 键都在 manifest 中」以免每加一能力都要改数。
 
 **最大的三个文件**（后续拆分候选）：
 
@@ -86,7 +86,7 @@
 | **屏幕与录制**（4） | `screen.info` `screen.capture` `screen.record` `screen.find` |
 | **输入**（6） | `input.mouse.move` `input.mouse.click` `input.mouse.scroll` `input.mouse.drag` `input.key.type` `input.key.press` |
 | **窗口**（2） | `window.list` `window.focus` |
-| **GUI 等待**（1） | **`gui.await`** 🆕 v1.6 在建未提交 —— 等条件成立再返回 |
+| **GUI 等待**（1） | **`gui.await`** 🆕 v1.6.0 在建未提交 —— 等条件成立再返回 |
 | **文件**（4） | `fs.list` `fs.stat` `fs.read` `fs.write`（分块 RPC + 原子写） |
 | **剪贴板**（2） | `clip.get` `clip.set` |
 | **异步任务**（3） | `system.task.list` `system.task.get` `system.task.kill` |
@@ -96,7 +96,7 @@
 | **音频**（2） | `system.audio.get` `system.audio.set`（Core Audio COM） |
 | **网络变更**（3） | `system.net.apply` `system.net.confirm` `system.net.status` |
 
-**`gui.await` 设计要点**（工作区在建，v1.6）：
+**`gui.await` 设计要点**（工作区在建，v1.6.0）：
 
 | 项 | 内容 |
 |---|---|
@@ -190,7 +190,7 @@ await gui.await(condition:"control", text:"完成", timeout_ms:30000)
   3. **install.cmd / control.cmd 双击链路冒烟** —— 这两个脚本是用户唯一上手入口，编码或语法坏了只有真机 cmd.exe 测得出。
 - **收尾**：推送后可清理 `ci/workflow-unit-tests` 分支（贡献已并入，留着只会误导）。
 
-### 4.2 v1.5.0 真机验证尚未做（v1.5 提交信息自陈）
+### 4.2 v1.5.0 真机验证尚未做（v1.5.0 提交信息自陈）
 
 `1c836e0` 的提交信息里写明：
 
@@ -391,7 +391,7 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | 自重启任务 Running 僵尸清理 | ✅ 代码 / ⏳ 真机 | 清理条件加「LastRunTime 早于 1 小时」余量（防误杀当前宿主） |
 | **`SECURITY.md` §5「还没做的」清单** | ✅ **全部完成** | 见 §4.5~§4.8 |
 | **发版 v2.0.0** | ✅ 2026-10-10 | 37 个提交一次发出；资产 agent.mjs(sha256 `7164ea44…`) / win-x64.zip / latest.json / SHA256SUMS |
-| v1.5 四项 + v26 清理策略**真机验证** | ⏳ 待被控端上线 | 发布时机器离线；已在 CHANGELOG 如实标注 |
+| v1.5.0 四项 + v2.0.0 清理策略**真机验证** | ⏳ 待被控端上线 | 发布时机器离线；已在 CHANGELOG 如实标注 |
 
 ### 真机验证过程中抓到的真 bug（8 个，全部只有真机能发现）
 
@@ -400,7 +400,7 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | 1 | `install.cmd` 双击首装即炸（`for /f` 调 PS，`^|` 漏进 PowerShell） | **用户首装必炸** |
 | 2 | `pack.mjs` 三连（spawn `.bin/esbuild` ENOENT / `zip` / `ls -la`+`du -sh`） | 打包脚本全平台假设 |
 | 3 | `where` 的 PS 注入语法错（连修**两轮**才通：JSON 字面量 ✗ → `\"` 转义 ✗ → PS 单引号 ✓） | 跨语言转义 |
-| 4 | `screen.find` 的 where-only 被自己入口校验拦下 | v1.7 只改了一半 |
+| 4 | `screen.find` 的 where-only 被自己入口校验拦下 | v2.0.0 只改了一半 |
 | 5 | 自重启在非管理员下失败 → `deploy` 永远"半成功" | v7 起的既有缺陷 |
 | 6 | `parseLeadingTs` 吃掉 ISO 的 `Z` 时区标记（偏 8 小时） | 单测抓到 |
 | 7 | manifest 承诺的 `note` 字段代码没实现 | 承诺未落地 |

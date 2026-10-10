@@ -300,7 +300,7 @@ export async function screenFind(args: Args): Promise<unknown> {
   }
   const text = (args['text'] as string | undefined) ?? '';
   const wantImage = (args['method'] as string | undefined) === 'image';
-  // v1.8 修正：`where` 可单独使用（不传 text）——「找一个 enabled 的按钮」比
+  // v2.0.0 修正：`where` 可单独使用（不传 text）——「找一个 enabled 的按钮」比
   // 「找一个叫某名字的按钮」更贴近真实意图。此前只在 gui.await 侧放开了，
   // screen.find 自身的入口校验没同步，导致直连调用（以及 await 的 where-only）
   // 被这里的"text 不能为空"拦下（真机 2026-10-09 验证时暴露）。
@@ -317,7 +317,7 @@ export async function screenFind(args: Args): Promise<unknown> {
   }
   const windowTitle = args['window'] as string | undefined;
   const controlType = args['control_type'] as string | undefined;
-  // v1.7：属性谓词。仅 UIA 引擎生效；OCR / 图像模板忽略（无属性可读），
+  // v2.0.0：属性谓词。仅 UIA 引擎生效；OCR / 图像模板忽略（无属性可读），
   // 此时在返回里带 note 说明，避免调用方误以为"按属性过滤过了"。
   const whereArg = args['where'] as Record<string, unknown> | undefined;
   const limit = (args['limit'] as number | undefined) ?? 20;
@@ -342,7 +342,7 @@ $text = ${JSON.stringify(text)}
 $limit = ${Number(limit)}
 $ct = ${JSON.stringify(controlType ?? '')}
 $winTitle = ${JSON.stringify(windowTitle ?? '')}
-# v1.7 属性过滤：where 只含 enabled/selected/value/toggle 四类键（白名单式）。
+# v2.0.0 属性过滤：where 只含 enabled/selected/value/toggle 四类键（白名单式）。
 #
 # ⚠️⚠️ 这里踩过**两次**同一个坑，真机 2026-10-09 连修两轮才通：
 #   ✗ 第一版：$where = {"enabled":true}          → PS 不认 JSON 字面量，ParseError
@@ -626,7 +626,7 @@ $out | ConvertTo-Json -Compress
     await new Promise((r) => setTimeout(r, intervalMs));
     last = await attempt();
   }
-  // v1.8：where 只在 UIA 引擎下有属性可读 —— 若最终走的是 OCR/image，
+  // v2.0.0：where 只在 UIA 引擎下有属性可读 —— 若最终走的是 OCR/image，
   // 必须**明确告知**，否则调用方会以为"按属性过滤过了"而误判结果。
   const whereIgnored = hasWhere && last.engine !== 'uia';
   return {

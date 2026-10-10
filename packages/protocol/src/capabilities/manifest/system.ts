@@ -393,7 +393,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.LogQuery,
     version: '1.0',
     description:
-      '在被控端侧**过滤**日志后只回匹配行（v1.8，只读低危）。' +
+      '在被控端侧**过滤**日志后只回匹配行（v2.0.0，只读低危）。' +
       '治间歇性问题的关键：日志常几万行，整份拉回既慢又占带宽，过滤必须发生在 Windows 侧。' +
       '支持 pattern（正则，忽略大小写）/ level（ERROR|WARN|INFO|DEBUG|TRACE）/ ' +
       'since（Unix ms，按行首时间戳）/ offset / limit / tail（取末尾 N 条）。' +
@@ -428,7 +428,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.MonitorStart,
     version: '1.0',
     description:
-      '启动一个定时采样并落盘（v1.8）。四类源：' +
+      '启动一个定时采样并落盘（v2.0.0）。四类源：' +
       'port（target="host:port"，连通性+延迟）/ process（target=进程名，存活+PID）/ ' +
       'command（target=命令，退出码+首行输出）/ metric（CPU/内存，无需 target）。' +
       '样本写 <数据目录>/monitors/<id>.jsonl，进程退出即停（不落定时任务）。' +
@@ -457,7 +457,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.MonitorReport,
     version: '1.0',
     description:
-      '读回某个监控的样本序列与摘要（v1.8，只读）。摘要直接给结论：' +
+      '读回某个监控的样本序列与摘要（v2.0.0，只读）。摘要直接给结论：' +
       'port/process 的「断线次数 + 最长连续中断样本数」、command 的「成功/失败数与出现过的退出码」、' +
       'metric 的「CPU/内存 min/max/avg」。运行中或已停止的都能查。',
     risk: 'low',
@@ -486,7 +486,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
   {
     name: CapabilityNames.MonitorStop,
     version: '1.0',
-    description: '停止一个运行中的监控，并返回其最终摘要（v1.8）。',
+    description: '停止一个运行中的监控，并返回其最终摘要（v2.0.0）。',
     risk: 'low',
     params_schema: {
       type: 'object',
@@ -502,7 +502,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
   {
     name: CapabilityNames.MonitorList,
     version: '1.0',
-    description: '列出运行中的监控与历史样本文件（v1.8，只读）。',
+    description: '列出运行中的监控与历史样本文件（v2.0.0，只读）。',
     risk: 'low',
     params_schema: { type: 'object', properties: {}, additionalProperties: false },
     returns_schema: {
@@ -517,7 +517,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
   {
     name: CapabilityNames.MonitorDelete,
     version: '1.0',
-    description: '删除某个监控的历史样本文件（不影响运行中的实例；运行中需先 stop）（v1.8）。',
+    description: '删除某个监控的历史样本文件（不影响运行中的实例；运行中需先 stop）（v2.0.0）。',
     risk: 'low',
     params_schema: {
       type: 'object',
@@ -531,7 +531,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.AuditHead,
     version: '1.0',
     description:
-      '返回审计链的链头（v25，只读）：{ entries, head_hash, head_ts, rotated_segments, file, file_bytes }。' +
+      '返回审计链的链头（v2.0.0，只读）：{ entries, head_hash, head_ts, rotated_segments, file, file_bytes }。' +
       '**外部锚定的一半** —— 控制端定期拉取并把它存到链外（Mac 本地 / 另一台机器 / 网盘）。' +
       'compare=true 时附带与最近一条锚点的比对结论（另一半），能识别「有 root 的攻击者整链重写」——' +
       '链内哈希只能发现改一条，整链重建照样自洽，唯有链外的历史记录能戳破。' +
@@ -564,7 +564,7 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     name: CapabilityNames.AuditAnchor,
     version: '1.0',
     description:
-      '把当前审计链头**追加**写入锚点文件（v25）。追加而非覆盖：历史锚点一旦写成就不可被后续' +
+      '把当前审计链头**追加**写入锚点文件（v2.0.0）。追加而非覆盖：历史锚点一旦写成就不可被后续' +
       '刷新掉，否则攻击者重写链后再锚定一次即可抹除痕迹。' +
       '默认写 <数据目录>/audit-anchors.jsonl；指定 path 时仍受 fs_roots 白名单约束。' +
       '建议定期（如每天）调用，或用 automation 定时执行。' +

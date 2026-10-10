@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { findCapability, validate, CapabilityNames } from '../../packages/protocol/dist/index.js';
 
 /**
- * monitor.* 的契约层测试（v1.8 方向二第二块）。
+ * monitor.* 的契约层测试（v2.0.0 方向二第二块）。
  * 运行时行为（真采样/落盘/摘要）在本地真机探针里验证：port 探测 + metric 采样 +
  * report 摘要 + stop 落盘。
  */

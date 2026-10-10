@@ -13,7 +13,7 @@ import {
 } from '../../apps/agent/dist/audit.js';
 
 /**
- * v25 审计链外部锚定的逻辑测试。
+ * v2.0.0 审计链外部锚定的逻辑测试。
  *
  * 守的是三件最容易写错的事：
  *  1. 只记 head_hash 会把**轮转**误判成篡改（必须连 entries + rotated_segments 一起记）

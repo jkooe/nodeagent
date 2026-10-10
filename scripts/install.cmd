@@ -84,7 +84,7 @@ echo.
 echo [*] Installing nodeagent ^(node: %COMPUTERNAME%, port %PORT%, input control ON^)...
 echo.
 
-REM v23: the key now travels via PIPE (stdin), not the -Key command-line arg.
+REM v2.0.0: the key now travels via PIPE (stdin), not the -Key command-line arg.
 REM Why: command lines are readable by other users on this machine
 REM (Win32_Process.CommandLine / Task Manager show them in clear text).
 REM NOTE: there must be NO space before the pipe - `echo key |` would fold the

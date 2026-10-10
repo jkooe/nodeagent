@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * 零信任优先安装（v24）的**源码断言**。
+ * 零信任优先安装（v2.0.0）的**源码断言**。
  *
  * 为什么用源码断言：install.ps1 是 5.1 脚本，Node 侧无法直接执行它；
  * 而这里要守的是「关键决策逻辑不许被误删」—— 一旦有人重构掉 acl 写入或

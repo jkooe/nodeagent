@@ -48,7 +48,7 @@ interface ConnState {
   remote: string;
   /** v12：连接标识，用于清理该连接创建的事件订阅 */
   connId: string;
-  /** v23：末次活跃时间（任何入站消息），空闲断开的依据 */
+  /** v2.0.0：末次活跃时间（任何入站消息），空闲断开的依据 */
   lastActiveAt: number;
 }
 
@@ -64,9 +64,9 @@ type LogLevel = 'debug' | 'info' | 'warn';
 export interface AgentCore {
   /** 在给定连接上提供被控端服务（连接已建立）。 */
   attach(ws: WebSocket, remote: string): void;
-  /** v23：该来源封禁剩余毫秒（0 = 不挡）。连接入口在业务握手前调用。 */
+  /** v2.0.0：该来源封禁剩余毫秒（0 = 不挡）。连接入口在业务握手前调用。 */
   banRemainingMs(remote: string): number;
-  /** v23：连接表（并发上限 / 空闲清扫判据；key 为 WebSocket）。 */
+  /** v2.0.0：连接表（并发上限 / 空闲清扫判据；key 为 WebSocket）。 */
   states: Map<WebSocket, ConnState>;
 }
 
@@ -100,7 +100,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     }
   };
 
-  // v23：用 Map 而非 WeakMap —— 连接层需要 size（并发上限）与遍历（空闲清扫）。
+  // v2.0.0：用 Map 而非 WeakMap —— 连接层需要 size（并发上限）与遍历（空闲清扫）。
   // 代价是必须手动清理：close 时 delete，否则断开的连接会一直留在表里。
   const states = new Map<WebSocket, ConnState>();
 
@@ -191,7 +191,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
 
     state.nonce = null; // 一次性，用后即废
     state.nonceExpiresAt = 0;
-    recordAuthSuccess(state.remote); // v23：握手成功即清零失败计数（避免误伤手滑的控制端）
+    recordAuthSuccess(state.remote); // v2.0.0：握手成功即清零失败计数（避免误伤手滑的控制端）
     state.authenticated = true;
     state.clientId = clientId;
     state.authorized = authorized;
@@ -414,7 +414,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     }
   }
 
-  // ---------- v23 连接层防护：握手失败封禁 ----------
+  // ---------- v2.0.0 连接层防护：握手失败封禁 ----------
   // 状态放在 core：handleAuth 在此函数内，且 server 侧连接入口也要查它。
   interface BanState { fails: number; bannedUntil: number }
   const authBan = new Map<string, BanState>();
@@ -471,7 +471,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       lastActiveAt: Date.now(),
     });
     ws.on('message', (raw: RawData) => {
-      // v23：任何入站消息都算活跃（空闲断开以"完全静默"为准，不是"没有调用能力"）
+      // v2.0.0：任何入站消息都算活跃（空闲断开以"完全静默"为准，不是"没有调用能力"）
       const st = states.get(ws);
       if (st) st.lastActiveAt = Date.now();
       void handleMessage(ws, raw.toString());
@@ -481,16 +481,16 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       // v12：连接断开即释放其事件订阅，避免 watcher 泄漏
       const n = disposeWatchesByOwner(connId);
       if (n > 0) log('debug', `已清理 ${n} 个事件订阅（连接 ${connId}）`);
-      states.delete(ws); // v23：Map 需手动清理（WeakMap 时代靠 GC）
+      states.delete(ws); // v2.0.0：Map 需手动清理（WeakMap 时代靠 GC）
     });
     ws.on('error', (err: Error) => log('warn', `连接错误: ${err.message}`));
   }
 
   return {
     attach: attachConnection,
-    /** v23：连接入口用 —— 该来源是否在封禁期（返回剩余毫秒，0=不挡）。 */
+    /** v2.0.0：连接入口用 —— 该来源是否在封禁期（返回剩余毫秒，0=不挡）。 */
     banRemainingMs,
-    /** v23：连接表（空闲清扫与并发上限判据）。 */
+    /** v2.0.0：连接表（空闲清扫与并发上限判据）。 */
     states,
   };
 }
