@@ -198,7 +198,14 @@ A 基础验收（verify.mjs）
 | **换成 ARM64 Node（同版本 v22.20.0）** | ✅ **完全正常**：TLS 握手成功、连接、51 项能力 |
 
 **结论**：`nodeagent-win-x64.zip` **不能在 ARM Windows 上实用**。
-在 ARM Windows 上需用 **ARM64 Node** 启动 `agent.mjs`（或替换包内 `node.exe`）。
+
+**解决方案（已落地）**：`scripts/pack.mjs` 新增 `--arch`：
+```bash
+node scripts/pack.mjs --arch arm64     # → release/nodeagent-win-arm64.zip（内含 ARM64 node.exe）
+node scripts/pack.mjs                  # 默认仍出 x64 包（向后兼容）
+```
+ARM Windows（含 Parallels Win11 ARM）请用 **arm64 包**；用 x64 包会卡在 TLS 握手。
+（临时替代：手工把包内 `node.exe` 换成 ARM64 版同样可行，重启后需再换 —— 故推荐用 arm64 包。）
 
 ### 各项结果
 
