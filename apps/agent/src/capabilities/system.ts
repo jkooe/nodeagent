@@ -534,9 +534,16 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
     // （= 自杀，表现为"restart 成功但 agent 消失"）。原实现只清非 Running，
     // 代价是真机累积了 3 个 Running 僵尸（2026-10-09 实测）。
     //
-    // 现策略：非 Running **或** LastRunTime 早于 1 小时 → 清。
-    // 1 小时余量远大于一次重启的耗时，因此"当前宿主"绝不会被误判（它刚刚才运行）。
-    `$cut = (Get-Date).AddHours(-1)`,
+    // 现策略：非 Running **或** LastRunTime **早于"本 agent 启动时刻"** → 清。
+    //
+    // ⚠️ 2026-10-11 真机（Parallels Win11 ARM）修正：原先用「早于 1 小时」作阈值，
+    //    实测发现**频繁 restart（间隔 < 1h）时旧任务照样累积**（v26 想治的僵尸只是从
+    //    "永不清理"变成"1 小时后才清"）。根因是阈值选得太粗：
+    //    阈值应表达「**这个任务是不是我（当前 agent）的宿主**」——
+    //    凡在**我启动之前**就运行的任务，必然不是我的宿主（我的宿主是刚刚才创建的），
+    //    因此可以安全删除。用 uptime 换算出的启动时刻正是这个边界。
+    `$agentStart = (Get-Date).AddMilliseconds(-${Math.max(0, Math.round(process.uptime() * 1000))})`,
+    `$cut = $agentStart`,
     `Get-ScheduledTask -TaskName 'nodeagent-selfrestart*' -ErrorAction SilentlyContinue | Where-Object { if ($_.State -ne 'Running') { return $true }; $ti = ($_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue); if ($ti -and $ti.LastRunTime -and $ti.LastRunTime -lt $cut) { return $true }; return $false } | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue`,
     `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdLine.replace(/'/g, "''")}'`,
     // 不限时（默认 72h 后强制结束），保证 node 能长期运行

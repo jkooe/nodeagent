@@ -85,11 +85,13 @@ const restartSrc = readFileSync(
   'utf8',
 );
 
-test('自重启任务清理：必须带「运行超 1 小时」余量，禁止简单清所有 Running', () => {
+test('自重启任务清理：阈值必须是「本 agent 启动时刻」（精确），禁止 1 小时粗阈值', () => {
   // 背景：重启任务的 cmd 长期持有新 agent 进程 → 任务状态长期 Running；
   // 若把 Running 的全清掉会连当前 agent 的宿主一起杀（= 自杀）。
   // 真机 2026-10-09 实测残留 3 个 Running 僵尸，故引入时间余量判定。
-  assert.ok(restartSrc.includes('AddHours(-1)'), '缺少 1 小时余量判定');
+  assert.ok(restartSrc.includes('$agentStart = (Get-Date).AddMilliseconds(-'), '缺少「本 agent 启动时刻」阈值');
+  assert.ok(restartSrc.includes('$cut = $agentStart'), '阈值应取自 agent 启动时刻');
+  assert.ok(!restartSrc.includes('AddHours(-1)'), '不应再回退到「1 小时」粗阈值（真机实测会累积）');
   assert.ok(restartSrc.includes('LastRunTime -lt $cut'), '必须按 LastRunTime 与阈值比较');
   assert.ok(restartSrc.includes('Get-ScheduledTaskInfo'), '需要读取任务的运行信息');
   // 禁止回到"只清非 Running"的老写法
