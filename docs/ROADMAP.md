@@ -391,7 +391,7 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | 自重启任务 Running 僵尸清理 | ✅ 代码 / ⏳ 真机 | 清理条件加「LastRunTime 早于 1 小时」余量（防误杀当前宿主） |
 | **`SECURITY.md` §5「还没做的」清单** | ✅ **全部完成** | 见 §4.5~§4.8 |
 | **发版 v2.0.0** | ✅ 2026-10-10 | 37 个提交一次发出；资产 agent.mjs(sha256 `7164ea44…`) / win-x64.zip / latest.json / SHA256SUMS |
-| v1.5.0 四项 + v2.0.0 清理策略**真机验证** | ⏳ 待被控端上线 | 发布时机器离线；已在 CHANGELOG 如实标注 |
+| v1.5.0 四项 + v2.0.0 清理策略**真机验证** | ✅ **已完成**（VM · Win11 ARM） | A 组 15/0/1 · B1 四项全过 · B2 三防护全过 · B3 清理**验证并改进** · B4 锚点端到端 · B5 结论：x64 包在 ARM 不可用→已出 arm64 包。**共发现并修复 5 个真问题**（详见 `VM-VERIFICATION.md`） |
 | ↑ **可用 VM 补验证** | 📋 见 [`VM-VERIFICATION.md`](VM-VERIFICATION.md) | Parallels 27 + Win11 **ARM**：协议层（v23/v26/锚点）与输入层（v1.5 四项）**可直接验**；杀软/显示/性能**仍需真机** |
 
 ### 真机验证过程中抓到的真 bug（8 个，全部只有真机能发现）
