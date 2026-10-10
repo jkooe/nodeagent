@@ -10,7 +10,7 @@
 | 日期 | 2026-09-27 |
 | 状态 | 开发阶段 |
 | 目标端 | macOS（控制端）/ Windows（被控端） |
-| 配套文档 | [产品需求文档（PRD）](../PRD.md) |
+| 配套文档 | [产品需求文档（PRD）](PRD.md) |
 
 ---
 
@@ -745,7 +745,7 @@ nodeagent/
 │   └── install.ps1        # Windows 一键安装脚本
 ├── docs/                  # 文档
 ├── README.md
-└── PRD.md
+└── PRD.md（已移入 docs/）
 ```
 
 | 包 | 职责 | 关键文件 |

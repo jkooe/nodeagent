@@ -605,7 +605,7 @@ nodeagent/
 ├── scripts/               # install.cmd / control.cmd（一键入口）/ install.ps1 / control.ps1 / verify.mjs
 ├── tests/e2e/             # 端到端测试
 ├── docs/                  # 开发文档
-├── PRD.md                 # 产品需求文档
+├── docs/                  # 项目文档（含 PRD）
 └── README.md
 ```
 
@@ -644,7 +644,7 @@ nodeagent/
 - [`CHANGELOG.md`](CHANGELOG.md) —— **变更日志**（未发布版本的内容汇总 / 历史版本）
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) —— **当前进度盘点与下一步路线**（2026-10-07 基线：待办收尾 / 语义可断言 / 状态采样 / 安全残余）
 
-- [产品需求文档（PRD）](./PRD.md)
+- [产品需求文档（PRD）](./docs/PRD.md)
 - [开发文档（DEVELOPMENT）](./docs/DEVELOPMENT.md) —— 协议细节、能力 schema、安全模型、各端实现指南
 - [**跨机接管的边界与局限**](./docs/REMOTE-LIMITS.md) —— 哪些问题能远程修、哪些必须人工，附真实故障诊断案例
 - [**实战复盘：短板与改进优先级**](./docs/RETROSPECTIVE.md) —— 基于真机使用的短板分析（GUI 语义 / 编码 / 自愈 / 可观测性）。**写于 2026-09-28（19 项能力时），多数 P0/P1 已解决 —— 最新状态见 [ROADMAP](./docs/ROADMAP.md) §3 对照表**

@@ -1,17 +1,17 @@
 @echo off
 REM ============================================================================
-REM  nodeagent - TEMPORARY launcher (no install, no admin, no scheduled task)
+REM  nodeagent - PORTABLE launcher (no install, no admin, no scheduled task)
 REM
 REM  Purpose: bring the agent up for a quick test WITHOUT running install.cmd.
 REM  The agent is zero-config: on first run it creates %USERPROFILE%\.nodeagent\
 REM  (agent.json with a random PSK + self-signed cert) and starts listening.
 REM
 REM  Usage:
-REM     run-temp.cmd            start in foreground (Ctrl+C to stop)
-REM     run-temp.cmd start      same as above
-REM     run-temp.cmd background start hidden, then print status
-REM     run-temp.cmd stop       stop the background instance
-REM     run-temp.cmd status     show whether it is running
+REM     run-portable.cmd        start in foreground (Ctrl+C to stop)
+REM     run-portable.cmd start  same as above
+REM     run-portable.cmd background start hidden, then print status
+REM     run-portable.cmd stop   stop the background instance
+REM     run-portable.cmd status show whether it is running
 REM
 REM  IMPORTANT: the agent takes NO command-line arguments (it does not parse
 REM  argv at all). The listen port comes from %USERPROFILE%\.nodeagent\
@@ -81,7 +81,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$cfg = Join-Path $env:USERPROFILE '.nodeagent\agent.json';" ^
   "if (Test-Path $cfg) { Write-Host ('  config  : ' + $cfg); try { (Get-Content $cfg -Raw | ConvertFrom-Json) | ForEach-Object { Write-Host ('  node_id : ' + $_.node_id); Write-Host ('  key     : ' + $_.key) } } catch {} } else { Write-Host '  config  : (not yet created)' };"
 echo.
-echo If the connect line above is empty, run:  run-temp.cmd status
+echo If the connect line above is empty, run:  run-portable.cmd status
 pause
 exit /b 0
 

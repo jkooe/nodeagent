@@ -131,7 +131,7 @@ async function main() {
 
   // 一键入口：.cmd 必须**纯 ASCII**。CMD 的代码页（中文 Windows = 936/GBK）
   // 无法可靠往返 UTF-8，中文提示一律交给带 BOM 的 .ps1 去输出。
-  for (const cmd of ['install.cmd', 'control.cmd', 'run-temp.cmd']) {
+  for (const cmd of ['install.cmd', 'control.cmd', 'run-portable.cmd']) {
     copyFileSync(join(root, 'scripts', cmd), join(PKG_DIR, cmd));
   }
 
@@ -150,7 +150,7 @@ async function main() {
   log('  .ps1 BOM 检查通过（兼容 Windows PowerShell 5.1）');
 
   // 防呆 B：.cmd 里出现非 ASCII 字节 = 中文乱码/命令截断的隐患。
-  for (const cmd of ['install.cmd', 'control.cmd', 'run-temp.cmd']) {
+  for (const cmd of ['install.cmd', 'control.cmd', 'run-portable.cmd']) {
     const buf = readFileSync(join(PKG_DIR, cmd));
     const bad = [...buf].findIndex((b) => b > 0x7f);
     if (bad >= 0) {
@@ -190,17 +190,17 @@ async function main() {
     '【日常管理】双击  control.cmd',
     '   1 状态 / 2 启动 / 3 停止 / 4 重启 / 5 日志 / 6 卸载 / 7 彻底卸载',
     '',
-    '【临时试用，不装也行】双击  run-temp.cmd',
+    '【免安装试用，不装也行】双击  run-portable.cmd',
     '   * 不需要管理员、不写计划任务、Ctrl+C 即停',
     '   * 首次运行自动生成配置与密钥（agent.json），并在控制台打印连接命令',
-    '   * run-temp.cmd background = 最小化后台启动；stop = 结束；status = 看状态',
+    '   * run-portable.cmd background = 最小化后台启动；stop = 结束；status = 看状态',
     '   * 适合临时测一下；长期用请走 install.cmd（有开机自启与进程守护）',
     '',
     '【密钥】本包**不含** PSK.txt（避免公开渠道泄露密钥）。密钥来源按序为：',
     '   1) 若本目录已有 PSK.txt -> 直接用它',
     '   2) 若本机已有 %USERPROFILE%\\.nodeagent\\agent.json -> 复用其中的 key',
     '   3) 都没有 -> 自动生成一把随机密钥',
-    '   装完 / 临时启动后，密钥会打印在屏幕上；也可用 run-temp.cmd status 查看',
+    '   装完 / 免安装启动后，密钥会打印在屏幕上；也可用 run-portable.cmd status 查看',
     '   这就是 Mac 端 --key 要填的值',
     '',
     '【注意】',
