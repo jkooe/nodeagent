@@ -38,7 +38,6 @@
 |---|---|
 | `package.json` version | `1.5.0`（root 及 6 个子包一致）—— **未随 `gui.await` 上调** |
 | 本地 HEAD | `7ad820c` ci: 补全 Windows 真机验证 |
-| ↑ **可用 VM 补验证** | 📋 见 [`VM-VERIFICATION.md`](VM-VERIFICATION.md) | Parallels 27 + Win11 **ARM**：协议层（v23/v26/锚点）与输入层（v1.5 四项）**可直接验**；杀软/显示/性能**仍需真机** |
 | 远端 main | `0d62cb1`（tag **`v1.5.0`**） |
 | 本地领先远端 | **1 个提交**（仅 `.github/workflows/windows-e2e.yml`，未推送） |
 | **未提交业务改动** | `gui.await` 全套：`apps/agent/src/capabilities/await.ts`（新增 170 行）／`capabilities/index.ts`（+3 注册）／`packages/protocol/.../names.ts`（+1 能力名）／`manifest/graphics.ts`（+57 行契约） |
@@ -393,6 +392,7 @@ node scripts/verify.mjs --host <地址> --key <密钥> --report <报告.md>
 | **`SECURITY.md` §5「还没做的」清单** | ✅ **全部完成** | 见 §4.5~§4.8 |
 | **发版 v2.0.0** | ✅ 2026-10-10 | 37 个提交一次发出；资产 agent.mjs(sha256 `7164ea44…`) / win-x64.zip / latest.json / SHA256SUMS |
 | v1.5.0 四项 + v2.0.0 清理策略**真机验证** | ⏳ 待被控端上线 | 发布时机器离线；已在 CHANGELOG 如实标注 |
+| ↑ **可用 VM 补验证** | 📋 见 [`VM-VERIFICATION.md`](VM-VERIFICATION.md) | Parallels 27 + Win11 **ARM**：协议层（v23/v26/锚点）与输入层（v1.5 四项）**可直接验**；杀软/显示/性能**仍需真机** |
 
 ### 真机验证过程中抓到的真 bug（8 个，全部只有真机能发现）
 
