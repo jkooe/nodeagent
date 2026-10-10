@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 /**
  * v2.0.0 连接层防护的**规则**测试（server.ts 的纯逻辑部分）。
@@ -103,4 +104,30 @@ test('自重启任务清理：清理动作带 -ErrorAction SilentlyContinue（�
     restartSrc.includes('Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue'),
     '清理动作需容错，否则个别任务异常会中断整个重启流程',
   );
+});
+
+// ---------- PowerShell 语法类守卫（$ident: 危险变量引用） ----------
+
+test('PowerShell 脚本不得含 `$ident:` 形式（会被当 drive 引用 → 整个脚本解析失败）', () => {
+  // 2026-10-11 真机踩到：control.ps1 里写了 "…$scheme://0.0.0.0:$Port"，
+  // PowerShell 把 `$scheme:` 当 drive 引用 → 报 "变量引用无效"，
+  // 且因为是**解析期**错误，stop/start/status 三个子命令**全部不可用**。
+  // 修法是写成 ${scheme}。这条守卫防同类再犯。
+  const files = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
+    .split('\n')
+    .filter((f) => f.endsWith('.ps1') || f.endsWith('.psm1'));
+  assert.ok(files.length >= 3, '应找到若干 .ps1（install/control/rescue 等）');
+
+  const ALLOW = new Set(['env', 'nuget', 'psitem', 'PSScriptRoot']);
+  const BAD = /\$([A-Za-z_][A-Za-z0-9_]*):/g;
+  const offenders = [];
+  for (const f of files) {
+    const text = readFileSync(new URL(`../../${f}`, import.meta.url), 'utf8');
+    text.split('\n').forEach((line, i) => {
+      for (const m of line.matchAll(BAD)) {
+        if (!ALLOW.has(m[1])) offenders.push(`${f}:${i + 1}  $${m[1]}:`);
+      }
+    });
+  }
+  assert.deepEqual(offenders, [], `发现危险变量引用（改用 \${name}）：\n${offenders.join('\n')}`);
 });

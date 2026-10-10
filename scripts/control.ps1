@@ -97,7 +97,10 @@ function Show-Status {
             $inp = if ($cfg.allow_input) { "已启用" } else { "已禁用" }
             Write-Host "  输入控制 : $inp"
             $scheme = if ($cfg.tls) { "wss" } else { "ws" }
-            Write-Host "  协议     : $scheme://0.0.0.0:$Port"
+            Write-Host "  协议     : ${scheme}://0.0.0.0:$Port"
+    # ⚠️ 变量名必须用 ${ } 包起来：裸写「变量名后紧跟冒号」会被 PowerShell 当成
+    #    drive 引用（如 env:），属**解析期**错误 → 整个脚本都跑不起来，
+    #    stop/start/status 三个子命令会全部失效（2026-10-11 真机踩到）
         } catch {
             Write-Warn "配置文件解析失败: $cfgPath"
         }
