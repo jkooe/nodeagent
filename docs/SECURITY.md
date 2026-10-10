@@ -171,6 +171,37 @@ nodeagent --node win audit anchor --note "每日例行"  # 追加一个锚点
 **已知行为**：锚定调用自身也会写一条审计（server 层统一记录 invoke），所以
 "刚锚定就比对"通常显示"链已增长" —— 属预期，不是篡改。
 
+### 外部化路径（2026-10 落地）
+
+锚点的安全性**完全来自「它在攻击者碰不到的地方」** —— 与被审计日志同机的锚点等于没有锚。
+故分两层存放：
+
+| 层 | 位置 | 能防住 |
+|---|---|---|
+| L1 | 控制端（Mac）本地 | 被控端单点被 root |
+| **L2** | **移动云盘 `…/Project/NodeAgent/anchors/`** | **控制端也被攻破**（锚点在腾讯云，被控端 root 也碰不到） |
+
+**控制端工具** `scripts/anchor-audit.mjs`：
+
+```bash
+# 每日：拉链头 → 生成锚点（再由云盘能力上传到链外）
+node scripts/anchor-audit.mjs collect --node win --out /tmp/anchor-$(date +%Y%m%d).jsonl
+
+# 每月（或怀疑时）：用链外锚点比对当前链
+node scripts/anchor-audit.mjs verify --anchors <从云盘下载的锚点文件> --node win
+#   ok:false → 退出码 2，并给出「疑似整链重写 / 链头哈希不一致」的明细
+```
+
+**为什么判定必须由控制端做**：被控端是**不可信方** —— 它若被 root，会重写日志、
+也会把自己的锚点改掉，然后回报"一切正常"。所以"锚点存哪、和什么比"只能由控制端掌握。
+
+**判定逻辑只有一份**：`packages/protocol/src/audit-anchor.ts` 的 `judgeAnchors`（纯函数），
+被控端 `compareWithAnchors` 与控制端脚本**都调用它** —— 若两端各写一份，同一份日志会
+出现"被控端说一致、控制端说被改"的荒谬局面。
+
+**云盘侧的两点约束（都正好合意）**：① 不支持覆盖/删除 → 锚点天然「追加不可改写」；
+② 一天一个文件（`nodeagent-anchor-YYYYMMDD.jsonl`）→ 保留历史锚点，可定位被改区间。
+
 **如何真正用起来**：定期（建议每日）调用 `system.audit.anchor`，并用
 `system.audit.head --compare` 巡检；若把锚点文件指向**另一台机器/网盘同步目录**，
 外部锚定的价值才真正落地（本机文件被整盘重写时锚点也随之消失）。

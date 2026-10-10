@@ -2,6 +2,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSy
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { agentDir } from './config.js';
+import {
+  judgeAnchors,
+  parseAnchorsFromJsonl,
+  type AnchorComparison,
+  type AnchorRecord,
+} from '@nodeagent/protocol';
 
 export type AuditType =
   | 'agent.start'
@@ -389,14 +395,9 @@ export function computeAuditHead(): AuditHead {
   };
 }
 
-export interface AnchorRecord {
-  ts: number;
-  entries: number;
-  head_hash: string | null;
-  head_ts: number | null;
-  rotated_segments: number;
-  note?: string;
-}
+// 锚点记录与比对结果的定义**移到了 protocol**（唯一实现，控制端脚本也用它）——
+// 见 packages/protocol/src/audit-anchor.ts 顶部的说明。此处 re-export 以保持既有导入路径可用。
+export type { AnchorRecord, AnchorComparison } from '@nodeagent/protocol';
 
 /** 锚点文件路径（默认与审计同目录）。 */
 export function anchorFilePath(custom?: string): string {
@@ -429,13 +430,6 @@ export function anchorAudit(opts: { path?: string; note?: string } = {}): {
   return { file, record: rec, total_lines: total };
 }
 
-export interface AnchorComparison {
-  ok: boolean;
-  anchors_checked: number;
-  latest?: AnchorRecord;
-  verdict: string;
-  detail?: Record<string, unknown>;
-}
 
 /**
  * 与最近一条锚点比对，判断当前链是否与锚定时刻自洽。
@@ -450,52 +444,16 @@ export function compareWithAnchors(customPath?: string): AnchorComparison {
   if (!existsSync(file)) {
     return { ok: true, anchors_checked: 0, verdict: '尚无锚点：请先调用 system.audit.anchor 建立外部锚点' };
   }
-  let anchors: AnchorRecord[] = [];
+  let anchors: AnchorRecord[] | null = null;
   try {
-    anchors = readFileSync(file, 'utf8')
-      .split('\n')
-      .filter((l) => l.trim().length > 0)
-      .map((l) => JSON.parse(l) as AnchorRecord);
+    anchors = parseAnchorsFromJsonl(readFileSync(file, 'utf8'));
   } catch {
     return { ok: false, anchors_checked: 0, verdict: '锚点文件损坏，无法比对' };
   }
-  if (anchors.length === 0) {
+  if (!anchors) {
     return { ok: true, anchors_checked: 0, verdict: '锚点文件为空' };
   }
-  const latest = anchors[anchors.length - 1]!;
-  const head = computeAuditHead();
-
-  if (head.entries < latest.entries && head.rotated_segments <= latest.rotated_segments) {
-    return {
-      ok: false,
-      anchors_checked: anchors.length,
-      latest,
-      verdict: '**疑似整链重写/回滚**：当前条目数少于锚点，且没有发生轮转来解释',
-      detail: { anchored_entries: latest.entries, current_entries: head.entries, anchored_hash: latest.head_hash, current_hash: head.head_hash },
-    };
-  }
-  if (head.rotated_segments === latest.rotated_segments && head.entries === latest.entries) {
-    if (head.head_hash !== latest.head_hash) {
-      return {
-        ok: false,
-        anchors_checked: anchors.length,
-        latest,
-        verdict: '**链头哈希与锚点不一致**（条目数相同却哈希不同 → 该段被重写）',
-        detail: { anchored_hash: latest.head_hash, current_hash: head.head_hash, entries: head.entries },
-      };
-    }
-    return { ok: true, anchors_checked: anchors.length, latest, verdict: '与锚点完全一致（条目数、轮转段数、链头哈希三者相符）' };
-  }
-  return {
-    ok: true,
-    anchors_checked: anchors.length,
-    latest,
-    // ⚠️ 注意：锚定动作**自身**也会被记入审计（server 层统一记录所有 invoke），
-    // 所以「刚锚定就比对」几乎必然看到"已增长"——这是正常现象，不是篡改。
-    // 想看到"完全一致"，需在同一时刻不再产生新审计（实际很难，属预期）。
-    verdict:
-      '链已增长（或发生轮转）—— 锚点仍在链上，无需人工核对到该锚点为止的部分。' +
-      '（刚锚定就比对通常显示"已增长"，因为锚定调用自身也会写一条审计。）',
-    detail: { anchored_entries: latest.entries, current_entries: head.entries, rotated_delta: head.rotated_segments - latest.rotated_segments, anchored_hash: latest.head_hash, current_hash: head.head_hash },
-  };
+  // 判定逻辑在 protocol（judgeAnchors）—— 与「控制端对云盘锚点」的比对共用同一份实现，
+  // 避免两处规则漂移（那会导致同一份日志两端结论不同）。
+  return judgeAnchors(computeAuditHead(), anchors);
 }
