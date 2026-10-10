@@ -389,7 +389,7 @@ cargo run --example probe -- ws://127.0.0.1:8765 <key> /tmp/nodeagent-e2e
 | ③ 单文件打包（`sidecar/build.mjs`，esbuild JS API + createRequire shim） | ✅ 227KB，**仓库外可独立运行** |
 | ④~⑥ 见下 | ✅ 详见「Rust 壳改造」一节 |
 | ④ Rust 壳改造（`sidecar.rs` + 薄转发 `lib.rs`，5 个 command 签名与 3 个 event 名不变） | ✅ |
-| ⑤ `tauri.conf.json` 的 resource 配置（sidecar.mjs + node）+ `beforeBuildCommand` 串 sidecar:build | ✅ |
+| ⑤ `tauri.conf.json` 的 resource 配置（sidecar.mjs）+ `beforeBuildCommand` 串 sidecar:build | ✅ |
 | ⑥ 退役 `crates/nodeagent-client` | ✅ 已删 crates/；`rust.yml` 改为验证 console 壳 |
 
 ### 打包说明（步骤 ⑤ 的既定方向）
@@ -413,3 +413,22 @@ Rust 侧从 resource 目录解析路径后 spawn（开发期直接用系统 node
 **可测试性设计（关键）**：sidecar 管理器**不依赖 Tauri GUI**，故其单测能在 CI 里
 **真跑 Node 子进程**验证 spawn / 请求-响应匹配 / 错误不崩 —— 不必等到人工开窗口才敢确认。
 `cargo test` 实测：**3/3 通过**（0.49s）。
+
+### ⚠️ 两处已知待办（本轮未做，均需真机/图形环境）
+
+1. **Node 运行时随包分发**：sidecar 是 `.mjs`，目标机器需有 Node。开发期用系统 node
+   （`resolve_node` 会回退到 PATH）；**分发给他人时**需把 Node 运行时作为 resource 打进包。
+   计划：写 `scripts/prepare-console.mjs` 下载对应平台 node 到 `src-tauri/resources/`，
+   并在打包时用 `tauri build --config` 注入 `bundle.resources` 的 node 项
+   （**不能写死在默认 conf 里** —— `tauri-build` 会在编译期校验文件存在性，
+   声明未下载的文件会让 `cargo check/test` 直接失败，本轮已踩并修复）。
+2. **GUI 端到端人工验证**：开窗口 → 连接被控端 → 操作界面。
+   沙箱无法运行图形应用，故本轮的验证止于 `cargo test`（真跑 sidecar）+ 单测/构建全绿。
+
+### 一个易踩的构建约束（本轮 CI 失败后查明）
+
+`tauri-build`（build.rs）会**在编译期校验** `tauri.conf.json` 里 `bundle.resources`
+声明的每个文件是否存在。因此：
+- 只声明**构建期必会生成**的产物（如 `sidecar.mjs`，由 beforeBuildCommand 产出）
+- CI 里在 clippy/test **之前**必须先生成它，否则 build.rs 阶段就失败
+- 本地复现：删掉 `sidecar/dist/` → `cargo check` 报 "failed to run custom build command" ✓

@@ -61,6 +61,11 @@ jobs:
       - name: 构建 workspace 包（sidecar 依赖其 dist）
         run: pnpm -r --filter "./packages/*" build
 
+      # ⚠️ tauri-build 在**编译期**校验 tauri.conf.json 里 resources 的文件存在性，
+      # 故必须先产出 sidecar.mjs，否则 clippy/test 会在 build.rs 阶段就失败。
+      - name: 构建 sidecar（resources 引用的产物）
+        run: pnpm --filter nodeagent-console sidecar:build
+
       - name: 缓存 cargo 构建产物
         uses: Swatinem/rust-cache@v2
         with:
