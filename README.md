@@ -647,6 +647,7 @@ nodeagent/
 - [`docs/SECURITY.md`](docs/SECURITY.md) —— **安全模型与加固指南**（钥匙=root、证书指纹钉住、网段白名单、应急处置）
 - [`docs/VERSIONING.md`](docs/VERSIONING.md) —— **版本与兼容性契约**（升级顺序、什么算破坏性、发版流程、更新方式）
 - [`docs/REMOTE-LIMITS.md`](docs/REMOTE-LIMITS.md) —— 远程能力边界与真实故障案例（含杀软误拦）
+- [`docs/VM-VERIFICATION.md`](docs/VM-VERIFICATION.md) —— **无 Windows 真机时，用 Parallels 的 Win11 ARM 虚拟机补验证**（含逐条命令与结论标注规则）
 - [`CHANGELOG.md`](CHANGELOG.md) —— **变更日志**（未发布版本的内容汇总 / 历史版本）
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) —— **当前进度盘点与下一步路线**（2026-10-07 基线：待办收尾 / 语义可断言 / 状态采样 / 安全残余）
 
