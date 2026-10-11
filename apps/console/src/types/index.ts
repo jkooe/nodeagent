@@ -247,3 +247,131 @@ export interface AuditVerifyResult {
   /** 是**对象**而非数字 */
   broken_at?: AuditBrokenAt | null;
 }
+
+// ---------------------------------------------------------------------------
+// 本机服务（本机被控端托管）—— 契约来源：src-tauri/src/agent.rs
+// ---------------------------------------------------------------------------
+
+/** 被控端进程状态机取值（与 Rust `agent::state` 一一对应）。 */
+export type AgentState = "stopped" | "starting" | "running" | "stopping" | "crashed";
+
+/** 本机被控端进程快照。 */
+export interface AgentProcess {
+  state: AgentState;
+  pid?: number | null;
+  started_at?: number | null;
+  uptime_ms?: number | null;
+  /** 自动重启已尝试次数 */
+  restarts?: number;
+  last_exit?: string | null;
+  /** 实际使用的 node 可执行文件 */
+  node?: string;
+  /** 实际运行的那份 agent.mjs（在数据目录里，不在 app 包内） */
+  script?: string;
+  data_dir?: string;
+}
+
+/** 被控端配置（读自 `<数据目录>/agent.json`）。 */
+export interface AgentConfigInfo {
+  data_dir: string;
+  config_path: string;
+  config_exists: boolean;
+  node_id: string;
+  port: number;
+  tls: boolean;
+  auth_mode: "psk" | "ed25519" | string;
+  /** PSK 明文（本机展示用；它本就在用户自己的 600 权限文件里） */
+  key: string;
+  /** 端口是否已被监听（可能是一个非本控制台托管的实例） */
+  port_in_use: boolean;
+  url: string;
+}
+
+export interface AutostartStatus {
+  enabled: boolean;
+  supported: boolean;
+  /** 落地位置（plist 路径 / 计划任务名） */
+  location: string;
+  app_exe: string;
+  /** 自启时传给应用的模式参数 */
+  mode: string;
+  note: string;
+  /** 本次操作详情（开关后返回） */
+  detail?: string;
+}
+
+export interface ConsoleSettings {
+  auto_start_agent: boolean;
+  auto_restart: boolean;
+  close_to_tray: boolean;
+  insecure: boolean;
+}
+
+export interface AgentStatus {
+  manager: AgentProcess;
+  config: AgentConfigInfo;
+  autostart: AutostartStatus;
+  settings: ConsoleSettings;
+  app_version: string;
+  config_dir: string;
+  /** 数据目录里那份脚本的版本（被控端自更新或控制台更新后写入） */
+  installed_agent_version?: string | null;
+  /** 随包内置的 agent.mjs 路径 */
+  bundled_agent?: string;
+}
+
+export interface AgentActionResult {
+  state?: AgentState;
+  pid?: number | null;
+  note?: string;
+  port_released?: boolean;
+}
+
+export interface AgentLogLine {
+  seq: number;
+  ts: number;
+  /** stdout / stderr / system */
+  stream: string;
+  line: string;
+}
+
+export interface AgentLogPage {
+  lines: AgentLogLine[];
+  total: number;
+}
+
+export interface UpdateInfo {
+  console_version: string;
+  latest_version: string;
+  has_update: boolean;
+  agent_has_update?: boolean;
+  installed_agent_version?: string;
+  published_at?: string | null;
+  commit?: string | null;
+  capabilities?: number | null;
+  agent: { url?: string | null; sha256?: string | null; bytes?: number | null };
+  release_url: string;
+  source: string;
+  checked_at: number;
+}
+
+export interface ApplyUpdateResult {
+  updated: boolean;
+  version: string;
+  bytes: number;
+  sha256: string;
+  backup: string;
+  restarted: boolean;
+}
+
+export interface ConsoleSystemInfo {
+  app_version: string;
+  config_dir: string;
+  agent_data_dir: string;
+  resource_dir: string;
+  platform: string;
+  arch: string;
+  node: string;
+  /** 是否以「仅服务模式」启动（开机自启时为 true） */
+  agent_only: boolean;
+}

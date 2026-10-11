@@ -1,7 +1,7 @@
 [package]
 name = "nodeagent-console"
-version = "2.0.0"
-description = "nodeagent 桌面控制台（主控 + 被控一体）"
+version = "2.0.2"
+description = "nodeagent 桌面控制台（主控 + 被控一体，含本机服务托管）"
 authors = ["jkooe"]
 edition = "2021"
 
@@ -18,7 +18,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+# `tray-icon`：托盘常驻（后台运行 / 开机自启的载体）必需。
+# 不给这个 feature，`TrayIconBuilder` 根本不存在（编译期就找不到符号）。
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

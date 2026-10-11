@@ -21,7 +21,7 @@
  *   ③ 两者之间的行分隔 JSON-RPC 通道真的通
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,19 +52,24 @@ function findApp() {
 
 let nodeBin;
 let sidecar;
+let agentScript;
 let source;
 
 const app = process.argv.includes('--runtime') ? undefined : findApp();
 if (app) {
   // ⚠️ Tauri 的 resource 映射 `"runtime/node": "node"` 使产物落在 Contents/Resources/node
-  //    —— 必须与 src-tauri/src/sidecar.rs 的 resolve_node/resolve_sidecar 保持一致。
+  //    —— 必须与 src-tauri/src/sidecar.rs 的 resolve_node/resolve_sidecar 保持一致；
+  //    `"runtime/agent.mjs": "agent.mjs"` 则落在 Contents/Resources/agent.mjs，
+  //    与 src-tauri/src/agent.rs 的 resolve_bundled_agent 一致。
   const res = join(app, 'Contents/Resources');
   nodeBin = join(res, NODE_NAME);
   sidecar = join(res, 'sidecar.mjs');
+  agentScript = join(res, 'agent.mjs');
   source = `打包产物 ${app}`;
 } else {
   nodeBin = join(consoleDir, `src-tauri/runtime/${NODE_NAME}`);
   sidecar = join(consoleDir, 'sidecar/dist/sidecar.mjs');
+  agentScript = join(consoleDir, 'src-tauri/runtime/agent.mjs');
   source = '准备产物（runtime + sidecar/dist）';
 }
 
@@ -74,6 +79,7 @@ console.log(`  来源：${source}`);
 for (const [label, p] of [
   ['Node 运行时', nodeBin],
   ['sidecar', sidecar],
+  ['被控端 agent.mjs', agentScript],
 ]) {
   if (!existsSync(p)) {
     console.error(`✗ 缺少 ${label}：${p}`);
@@ -81,6 +87,21 @@ for (const [label, p] of [
     process.exit(1);
   }
   console.log(`  ✓ ${label}：${p}`);
+}
+
+// ---------- ③ 打包内的 node 必须能真正**解析**打包内的 agent.mjs ----------
+// 只查「文件存在」是不够的：截断、半写、依赖缺失都会让文件在、却加载不了，
+// 而那要到用户点「启动」时才炸。`node --check` 只做语法/模块解析、不执行，
+// 无副作用、不占端口，适合流水线。
+{
+  const r = spawnSync(nodeBin, ['--check', agentScript], { encoding: 'utf8' });
+  if (r.status !== 0) {
+    console.error('\n✗ 打包内的 node 无法解析 agent.mjs —— 被控端资源已损坏');
+    console.error('  ' + (r.stderr || r.stdout || '').trim().split('\n').slice(0, 4).join('\n  '));
+    console.error('  提示：重跑 `pnpm prepare:node`（会重新 esbuild 打包被控端）。');
+    process.exit(1);
+  }
+  console.log('  ✓ 打包内 node 可解析 agent.mjs（语法/模块解析通过）');
 }
 
 // ---------- ①②③ 合一的实测：真 spawn，真握手 ----------

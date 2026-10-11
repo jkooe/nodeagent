@@ -1,4 +1,4 @@
-/** 路由表（7 页）。hash history 便于 Tauri 打包后稳定工作。 */
+/** 路由表。hash history 便于 Tauri 打包后稳定工作。 */
 import { createRouter, createWebHashHistory } from "vue-router";
 
 export interface NavMeta {
@@ -7,7 +7,21 @@ export interface NavMeta {
 }
 
 const routes = [
-  { path: "/", redirect: "/nodes" },
+  // 默认落在「本机服务」—— 这是「打开应用就要能启动/停止/重启」的落点，
+  // 而不是先让用户去填一个连接地址。
+  { path: "/", redirect: "/local" },
+  {
+    path: "/local",
+    name: "local",
+    component: () => import("../views/LocalServiceView.vue"),
+    meta: { title: "本机服务", icon: "🛰" } satisfies NavMeta,
+  },
+  {
+    path: "/logs",
+    name: "logs",
+    component: () => import("../views/LogsView.vue"),
+    meta: { title: "服务日志", icon: "🧾" } satisfies NavMeta,
+  },
   {
     path: "/nodes",
     name: "nodes",

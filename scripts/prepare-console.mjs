@@ -24,7 +24,14 @@
  * 产物
  * ----
  *   1. `apps/console/src-tauri/runtime/<node|node.exe>`  Node 运行时（已 strip，见下）
- *   2. `apps/console/src-tauri/tauri.bundle.gen.json`    构建期注入片段（生成物，不入库）
+ *   2. `apps/console/src-tauri/runtime/agent.mjs`        被控端单文件（架构无关的 JS）
+ *   3. `apps/console/src-tauri/tauri.bundle.gen.json`    构建期注入片段（生成物，不入库）
+ *
+ * 为什么要带被控端（agent.mjs）
+ * ----------------------------
+ * 用户要的是「打开应用就能启动 / 停止 / 重启被控端」，不该再让他去别处下载一个包。
+ * 被控端是 `.mjs`（架构无关），复用同一个 Node 运行时即可，增量仅约 1MB。
+ * 打包配置复用 `scripts/lib/bundle-agent.mjs`（与 `pack.mjs` 同一份实现）。
  *
  * 体积
  * ----
@@ -45,6 +52,7 @@ import {
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleAgent } from './lib/bundle-agent.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SRC_TAURI = join(root, 'apps/console/src-tauri');
@@ -167,6 +175,34 @@ try {
   );
 }
 
+// ---------- ②″ 打包被控端 agent.mjs（控制台要能托起本机被控端）----------
+//
+// 为什么控制台也要带被控端：用户要的是「打开应用就能启动/停止/重启被控端」，
+// 不该再让他去别处下载一个包。故把 agent.mjs（架构无关的 JS，约 1MB）也随包分发。
+// esbuild 配置复用 `lib/bundle-agent.mjs`（与 pack.mjs 同一份实现，避免漂移）。
+const AGENT_OUT = join(runtimeDir, 'agent.mjs');
+log('\n=== 打包被控端（随包资源）===');
+let agentBytes = 0;
+try {
+  const r = await bundleAgent({ outfile: AGENT_OUT, root, logLevel: 'warning' });
+  agentBytes = r.bytes;
+  log(`  agent.mjs v${r.version} @ ${r.commit} → ${AGENT_OUT}（${(r.bytes / 1024).toFixed(0)} KB）`);
+} catch (e) {
+  fail(String(e.message ?? e));
+}
+
+// 自检：产物必须是可解析的 ES 模块（不是空文件、不是半截）
+try {
+  const txt = readFileSync(AGENT_OUT, 'utf8');
+  if (txt.length < 10_000) fail(`agent.mjs 体积异常小（${txt.length} 字节），构建可能未完成`);
+  if (!txt.includes('__AGENT_VERSION__') && !/CAPABILITY_MANIFEST|node_id/.test(txt)) {
+    fail('agent.mjs 内容不像被控端产物（未找到预期标识）——拒绝打进包');
+  }
+  log(`  自检通过：agent.mjs ${(txt.length / 1024).toFixed(0)} KB，含被控端标识`);
+} catch (e) {
+  fail(`agent.mjs 自检失败：${String(e.message ?? e)}`);
+}
+
 // ---------- ③ 生成构建期注入片段 ----------
 // ⚠️ 两份资源都写明：既能保证「无论 Tauri 的 config 合并是深合并还是替换」都正确，
 //    也让注入文件自解释（单看它就知道应用内会带哪些 resource）。
@@ -176,6 +212,7 @@ const gen = {
     resources: {
       '../sidecar/dist/sidecar.mjs': 'sidecar.mjs',
       [`runtime/${nodeName}`]: nodeName,
+      'runtime/agent.mjs': 'agent.mjs',
     },
   },
 };
@@ -188,12 +225,14 @@ writeFileSync(stamp, JSON.stringify({ ...fingerprint, stripped: doStrip }, null,
 
 // ---------- ④ 体积报告（让「代价」可见，而不是悄悄变大）----------
 const nodeSize = statSync(dstNode).size;
-const sidecarSize = statSync(SIDECAR).size;
+const sizeOf = (p) => (existsSync(p) ? statSync(p).size : 0);
+const sidecarSize = sizeOf(SIDECAR);
 log('');
 log('=== 体积 ===');
 log(`  Node 运行时   ${mb(nodeSize)}`);
 log(`  sidecar      ${(sidecarSize / 1024).toFixed(0)} KB`);
-log(`  合计          ${mb(nodeSize + sidecarSize)}（未压缩，即 .app 内的增量）`);
+log(`  agent.mjs    ${(agentBytes / 1024).toFixed(0)} KB`);
+log(`  合计          ${mb(nodeSize + sidecarSize + agentBytes)}（未压缩，即 .app 内的增量）`);
 log('');
 log('下一步：');
 log('  pnpm --filter nodeagent-console bundle');

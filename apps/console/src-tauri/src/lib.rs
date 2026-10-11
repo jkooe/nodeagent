@@ -4,18 +4,43 @@
 //! 本层只做**进程管理 + 消息转发**，真正的协议实现只有 TS 一份（`@nodeagent/client`），
 //! 由 `sidecar.rs` 拉起的 Node 进程承载。原先「Rust 版 client 与 TS 版并存」的漂移风险就此消除。
 //!
-//! command 面（**签名与语义保持不变，前端无需改动**）：
+//! `agent.rs` 是同一思路的延伸：本机**被控端**也由本层托管（启动 / 停止 / 重启 / 日志 /
+//! 崩溃自愈），用户在界面上点按钮即可，全程不必碰命令行。
+//!
+//! ## command 面
+//! 连接类（签名与语义从未变过）：
 //! - `connect` / `disconnect` / `invoke_capability` / `get_capabilities` / `get_state`
 //!
-//! Tauri 事件面（名字不变）：`na-state` / `na-log` / `na-event`。
+//! 本机服务类（2026-10-11 新增）：
+//! - `agent_status` / `agent_start` / `agent_stop` / `agent_restart`
+//! - `agent_logs` / `agent_logs_clear`
+//! - `autostart_status` / `autostart_set`
+//! - `check_update` / `apply_update`
+//! - `settings_get` / `settings_set` / `system_info`
+//!
+//! ## 事件面
+//! - 连接：`na-state` / `na-log` / `na-event`
+//! - 本机服务：`na-agent-state` / `na-agent-log`
+//!
+//! ## 启动模式
+//! - 默认：显示主窗口
+//! - `--agent-only`：**不显示窗口**，直接进托盘并托管本机被控端（开机自启用它，
+//!   这样登录自启也不会有任何窗口弹出来）
 
+mod agent;
+mod autostart;
+mod settings;
 mod sidecar;
 
-use std::sync::Mutex;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, State};
 
+use agent::{AgentEvent, AgentManager};
 use sidecar::{Sidecar, SidecarEvent};
 
 /// 全局状态。
@@ -23,10 +48,32 @@ use sidecar::{Sidecar, SidecarEvent};
 /// `connect` 成功后缓存「能力清单 / 版本 / 连接态」——这样 `get_capabilities`、
 /// `get_state` 能保持**同步**（无需每次往返 sidecar），签名与改造前一致。
 struct AppState {
-    sidecar: tokio::sync::Mutex<Option<std::sync::Arc<Sidecar>>>,
+    sidecar: tokio::sync::Mutex<Option<Arc<Sidecar>>>,
     capabilities: Mutex<Value>,
     agent_version: Mutex<Option<String>>,
     conn_state: Mutex<String>,
+    /// 本机被控端管理器（在 `setup` 里建，因为需要 AppHandle 来桥接事件）
+    agent: Mutex<Option<Arc<AgentManager>>>,
+    settings: Mutex<settings::Settings>,
+    /// 控制台自身配置目录（设置存这里）
+    config_dir: PathBuf,
+    /// 控制台版本（由 `package_info` 注入，用于更新比对；不在代码里写死）
+    app_version: String,
+}
+
+impl AppState {
+    fn agent(&self) -> Result<Arc<AgentManager>, String> {
+        self.agent
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or_else(|| "被控端管理器尚未初始化".to_string())
+    }
+
+    fn settings(&self) -> settings::Settings {
+        self.settings.lock().unwrap().clone()
+    }
 }
 
 /// 连接成功后回传给前端的元信息（字段名与改造前一致）。
@@ -40,22 +87,28 @@ struct ConnectInfo {
     client_id: String,
 }
 
-impl Default for AppState {
-    fn default() -> Self {
-        Self {
-            sidecar: tokio::sync::Mutex::new(None),
-            capabilities: Mutex::new(Value::Array(vec![])),
-            agent_version: Mutex::new(None),
-            conn_state: Mutex::new("未连接".to_string()),
-        }
-    }
+/// 本机被控端的三条路径。
+struct AgentPaths {
+    node: PathBuf,
+    script: PathBuf,
+    data_dir: PathBuf,
+}
+
+/// 解析（并在需要时播种）本机被控端所需路径。
+fn resolve_agent_paths(app: &AppHandle, state: &AppState) -> Result<AgentPaths, String> {
+    let resource_dir = app.path().resource_dir().ok();
+    let node = sidecar::resolve_node(resource_dir.as_deref())?;
+    let bundled = agent::resolve_bundled_agent(resource_dir.as_deref())?;
+    let data_dir = agent::agent_data_dir();
+    let script = agent::seed_agent_script(&bundled, &data_dir, &state.app_version)?;
+    Ok(AgentPaths { node, script, data_dir })
 }
 
 /// 懒启动 sidecar（首次调用时拉起，之后复用同一进程）。
-async fn ensure_sidecar(app: &AppHandle, state: &AppState) -> Result<std::sync::Arc<Sidecar>, String> {
+async fn ensure_sidecar(app: &AppHandle, state: &AppState) -> Result<Arc<Sidecar>, String> {
     let mut guard = state.sidecar.lock().await;
     if let Some(sc) = guard.as_ref() {
-        return Ok(std::sync::Arc::clone(sc));
+        return Ok(Arc::clone(sc));
     }
 
     // 打包后 node 与 sidecar.mjs 随 resource 分发；开发期用系统 node + 仓库内脚本
@@ -65,7 +118,7 @@ async fn ensure_sidecar(app: &AppHandle, state: &AppState) -> Result<std::sync::
 
     // 事件桥接：sidecar 通知 → Tauri event（名字与改造前一致）
     let app_events = app.clone();
-    let on_event = std::sync::Arc::new(move |evt: SidecarEvent| match evt {
+    let on_event = Arc::new(move |evt: SidecarEvent| match evt {
         SidecarEvent::State(s) => {
             let _ = app_events.emit("na-state", s);
         }
@@ -81,11 +134,14 @@ async fn ensure_sidecar(app: &AppHandle, state: &AppState) -> Result<std::sync::
     });
 
     let sc = Sidecar::spawn(&node, &script, on_event)?;
-    // 连接态由事件驱动：先置「已就绪」，真正连接后会被 connected 覆盖
     *state.conn_state.lock().unwrap() = "未连接".to_string();
-    *guard = Some(std::sync::Arc::clone(&sc));
+    *guard = Some(Arc::clone(&sc));
     Ok(sc)
 }
+
+// ---------------------------------------------------------------------------
+// 连接类 command（签名与语义保持不变）
+// ---------------------------------------------------------------------------
 
 /// 建立到被控端的连接并完成握手（默认 psk 模式、接受自签证书、开启自动重连）。
 #[tauri::command]
@@ -113,7 +169,6 @@ async fn connect(
         )
         .await?;
 
-    // 缓存快照，供同步 command 使用
     let caps = snap.get("capabilities").cloned().unwrap_or_else(|| json!([]));
     let ver = snap.get("agent_version").and_then(Value::as_str).map(str::to_string);
     *state.capabilities.lock().unwrap() = caps.clone();
@@ -137,7 +192,7 @@ async fn connect(
 /// 断开连接（停止自动重连）。
 #[tauri::command]
 async fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
-    let sc = { state.sidecar.lock().await.as_ref().map(std::sync::Arc::clone) };
+    let sc = { state.sidecar.lock().await.as_ref().map(Arc::clone) };
     if let Some(sc) = sc {
         sc.request("disconnect", json!({}), 10).await?;
     }
@@ -160,7 +215,7 @@ async fn invoke_capability(
             .lock()
             .await
             .as_ref()
-            .map(std::sync::Arc::clone)
+            .map(Arc::clone)
             .ok_or_else(|| "未连接".to_string())?
     };
     let mut params = json!({ "capability": capability, "args": args.unwrap_or_else(|| json!({})) });
@@ -184,17 +239,472 @@ fn get_state(state: State<'_, AppState>) -> String {
     state.conn_state.lock().unwrap().clone()
 }
 
+// ---------------------------------------------------------------------------
+// 本机服务（被控端）command
+// ---------------------------------------------------------------------------
+
+/// 本机服务总览：进程状态 + 配置 + 自启 + 设置 + 版本。
+#[tauri::command]
+async fn agent_status(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    // 管理器可能尚未建（极早的调用）；此时给一个纯配置视图，而不是报错
+    let mgr = state.agent.lock().unwrap().clone();
+    let snap = match &mgr {
+        Some(m) => m.snapshot().await,
+        None => json!({ "state": agent::state::STOPPED }),
+    };
+
+    // 数据目录以「实际使用的」为准；管理器还没跑过就用默认值
+    let data_dir = snap
+        .get("data_dir")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(agent::agent_data_dir);
+    let cfg = agent::read_agent_config(&data_dir);
+
+    let resource_dir = app.path().resource_dir().ok();
+    Ok(json!({
+        "manager": snap,
+        "config": cfg,
+        "autostart": autostart::status(),
+        "settings": settings::to_json(&state.settings()),
+        "app_version": state.app_version,
+        "config_dir": state.config_dir.to_string_lossy(),
+        "installed_agent_version": agent::installed_agent_version(&data_dir),
+        "bundled_agent": agent::resolve_bundled_agent(resource_dir.as_deref())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+    }))
+}
+
+/// 启动本机被控端。`auto_restart` 缺省时取设置里的值。
+#[tauri::command]
+async fn agent_start(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    auto_restart: Option<bool>,
+) -> Result<Value, String> {
+    let paths = resolve_agent_paths(&app, &state)?;
+    let ar = auto_restart.unwrap_or_else(|| state.settings().auto_restart);
+    state
+        .agent()?
+        .start(&paths.node, &paths.script, &paths.data_dir, ar)
+        .await
+}
+
+/// 停止本机被控端（幂等）。
+#[tauri::command]
+async fn agent_stop(state: State<'_, AppState>) -> Result<Value, String> {
+    state.agent()?.stop().await
+}
+
+/// 重启本机被控端。
+#[tauri::command]
+async fn agent_restart(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    auto_restart: Option<bool>,
+) -> Result<Value, String> {
+    let paths = resolve_agent_paths(&app, &state)?;
+    let ar = auto_restart.unwrap_or_else(|| state.settings().auto_restart);
+    state
+        .agent()?
+        .restart(&paths.node, &paths.script, &paths.data_dir, ar)
+        .await
+}
+
+/// 取本机服务日志（增量：传上次拿到的最大 `seq`）。
+#[tauri::command]
+fn agent_logs(state: State<'_, AppState>, since: Option<u64>) -> Result<Value, String> {
+    Ok(state.agent()?.logs_since(since.unwrap_or(0)))
+}
+
+/// 清空日志缓冲。
+#[tauri::command]
+fn agent_logs_clear(state: State<'_, AppState>) -> Result<(), String> {
+    state.agent()?.clear_logs();
+    Ok(())
+}
+
+/// 开机自启状态。
+#[tauri::command]
+fn autostart_status() -> Value {
+    autostart::status()
+}
+
+/// 开关开机自启。
+#[tauri::command]
+fn autostart_set(enabled: bool) -> Result<Value, String> {
+    autostart::set(enabled)
+}
+
+// ---------------------------------------------------------------------------
+// 更新
+// ---------------------------------------------------------------------------
+
+/// 检查更新：比对最新 Release 与本控制台版本，并附上本机被控端已安装版本。
+#[tauri::command]
+async fn check_update(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
+    let sc = ensure_sidecar(&app, &state).await?;
+    let mut snap = sc
+        .request(
+            "check_update",
+            json!({ "console_version": state.app_version }),
+            45,
+        )
+        .await?;
+
+    // 本机被控端的版本（数据目录里那份），供界面区分「应用要更新」与「被控端要更新」
+    let data_dir = agent::agent_data_dir();
+    let installed_version = agent::installed_agent_version(&data_dir).unwrap_or_default();
+    let latest = snap
+        .get("latest_version")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let agent_has_update =
+        !installed_version.is_empty() && agent::cmp_version(&latest, &installed_version) > 0;
+    snap["installed_agent_version"] = json!(installed_version);
+    snap["agent_has_update"] = json!(agent_has_update);
+    Ok(snap)
+}
+
+/// 应用更新：下载 → 校验 → 替换本机被控端脚本 → 重启。
+#[tauri::command]
+async fn apply_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    url: String,
+    sha256: String,
+    version: String,
+) -> Result<Value, String> {
+    let sc = ensure_sidecar(&app, &state).await?;
+    let paths = resolve_agent_paths(&app, &state)?;
+    let mgr = state.agent()?;
+
+    // ① 下载到暂存文件（**校验通过才落盘**；不直接覆盖在跑的脚本）
+    let staged = paths
+        .data_dir
+        .join("runtime")
+        .join(format!("agent.mjs.staged-{}", std::process::id()));
+    let dl = sc
+        .request(
+            "download",
+            json!({
+                "url": url,
+                "sha256": sha256,
+                "dest": staged.to_string_lossy(),
+            }),
+            320,
+        )
+        .await?;
+
+    // ② 停被控端（Windows 上正被 node 打开的文件不能重命名/替换）
+    let was_running = mgr.snapshot().await["state"] == json!(agent::state::RUNNING);
+    if was_running {
+        mgr.stop().await?;
+    }
+
+    // ③ 原子替换：先改名旧文件做备份，再落新文件
+    let backup = paths.script.with_extension(format!("mjs.bak-{}", now_secs()));
+    let replace = (|| -> Result<(), String> {
+        if paths.script.exists() {
+            std::fs::rename(&paths.script, &backup)
+                .map_err(|e| format!("备份现有脚本失败：{e}"))?;
+        }
+        std::fs::rename(&staged, &paths.script).map_err(|e| {
+            // 失败则回滚
+            let _ = std::fs::rename(&backup, &paths.script);
+            format!("替换脚本失败（已回滚）：{e}")
+        })
+    })();
+    if let Err(e) = replace {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+
+    // ④ 记版本：这是「控制台启动时不要把已更新的被控端降级」的依据
+    agent::mark_installed_version(&paths.data_dir, &version, "console")?;
+    mgr.push_log(
+        "system",
+        format!("已更新本机被控端到 v{version}（备份：{}）", backup.display()),
+    );
+
+    // ⑤ 按需重新拉起
+    let mut restarted = false;
+    if was_running || state.settings().auto_start_agent {
+        match mgr
+            .start(&paths.node, &paths.script, &paths.data_dir, state.settings().auto_restart)
+            .await
+        {
+            Ok(_) => restarted = true,
+            Err(e) => mgr.push_log("system", format!("更新后启动失败：{e}")),
+        }
+    }
+
+    Ok(json!({
+        "updated": true,
+        "version": version,
+        "bytes": dl.get("bytes").cloned().unwrap_or(json!(0)),
+        "sha256": dl.get("sha256").cloned().unwrap_or(json!("")),
+        "backup": backup.to_string_lossy(),
+        "restarted": restarted,
+    }))
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// 设置与系统信息
+// ---------------------------------------------------------------------------
+
+/// 读设置。
+#[tauri::command]
+fn settings_get(state: State<'_, AppState>) -> Value {
+    settings::to_json(&state.settings())
+}
+
+/// 合并式写设置（只传要改的字段）。
+#[tauri::command]
+fn settings_set(state: State<'_, AppState>, patch: Value) -> Result<Value, String> {
+    let next = settings::merge(&state.config_dir, &patch)?;
+    *state.settings.lock().unwrap() = next.clone();
+    Ok(settings::to_json(&next))
+}
+
+/// 控制台自身信息（版本、数据目录、平台），供「关于」与故障上报使用。
+#[tauri::command]
+fn system_info(app: AppHandle, state: State<'_, AppState>) -> Value {
+    let resource_dir = app.path().resource_dir().ok();
+    // 先取 node 路径，再把 resource_dir 消费成字符串 —— 顺序反了会「借用已移动的值」
+    let node = sidecar::resolve_node(resource_dir.as_deref())
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    json!({
+        "app_version": state.app_version,
+        "config_dir": state.config_dir.to_string_lossy(),
+        "agent_data_dir": agent::agent_data_dir().to_string_lossy(),
+        "resource_dir": resource_dir.map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "node": node,
+        "agent_only": std::env::args().any(|a| a == autostart::AGENT_ONLY_FLAG),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// 托盘与启动模式
+// ---------------------------------------------------------------------------
+
+/// 显示主窗口（托盘菜单与第二次启动都用它）。
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// 在后台拉起被控端（忽略错误 —— 失败详情在日志里）。
+fn spawn_start_agent(app: &AppHandle, auto_restart: bool) {
+    let app2 = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app2.state::<AppState>();
+        let mgr = match state.agent() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[console] 被控端管理器不可用：{e}");
+                return;
+            }
+        };
+        if mgr.snapshot().await["state"] == json!(agent::state::RUNNING) {
+            return;
+        }
+        match resolve_agent_paths(&app2, &state) {
+            Ok(p) => {
+                if let Err(e) = mgr.start(&p.node, &p.script, &p.data_dir, auto_restart).await {
+                    mgr.push_log("system", format!("自动启动失败：{e}"));
+                }
+            }
+            Err(e) => mgr.push_log("system", format!("自动启动失败（路径解析）：{e}")),
+        }
+    });
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
+    let start = MenuItem::with_id(app, "agent_start", "启动本机被控端", true, None::<&str>)?;
+    let stop = MenuItem::with_id(app, "agent_stop", "停止本机被控端", true, None::<&str>)?;
+    let restart = MenuItem::with_id(app, "agent_restart", "重启本机被控端", true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+
+    let menu = Menu::with_items(app, &[&show, &sep1, &start, &stop, &restart, &sep2, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("na-tray")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .tooltip("nodeagent 控制台")
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref().to_string();
+            match id.as_str() {
+                "show" => show_main(app),
+                "agent_start" => {
+                    let ar = app.state::<AppState>().settings().auto_restart;
+                    spawn_start_agent(app, ar);
+                }
+                "agent_stop" => {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        if let Ok(mgr) = state.agent() {
+                            let _ = mgr.stop().await;
+                        }
+                    });
+                }
+                "agent_restart" => {
+                    let app2 = app.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app2.state::<AppState>();
+                        if let Ok(mgr) = state.agent() {
+                            if let Ok(p) = resolve_agent_paths(&app2, &state) {
+                                let ar = state.settings().auto_restart;
+                                let _ = mgr.restart(&p.node, &p.script, &p.data_dir, ar).await;
+                            }
+                        }
+                    });
+                }
+                "quit" => app.exit(0),
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            // 左键单击托盘图标 → 唤出主窗口（符合习惯）
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main(tray.app_handle());
+            }
+        });
+
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let agent_only = std::env::args().any(|a| a == autostart::AGENT_ONLY_FLAG);
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AppState::default())
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            let config_dir = handle
+                .path()
+                .app_config_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let app_version = handle.package_info().version.to_string();
+            let loaded = settings::load(&config_dir);
+
+            // 事件桥接：被控端管理器 → Tauri event
+            let app_events = handle.clone();
+            let emit: agent::AgentEmit = Arc::new(move |evt: AgentEvent| match evt {
+                AgentEvent::Log(l) => {
+                    let _ = app_events.emit("na-agent-log", l);
+                }
+                AgentEvent::State(s) => {
+                    let _ = app_events.emit("na-agent-state", s);
+                }
+            });
+
+            let manager = AgentManager::new(emit);
+            manager.push_log(
+                "system",
+                format!(
+                    "控制台 v{app_version} 就绪（{} / {}）",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ),
+            );
+
+            app.manage(AppState {
+                sidecar: tokio::sync::Mutex::new(None),
+                capabilities: Mutex::new(json!([])),
+                agent_version: Mutex::new(None),
+                conn_state: Mutex::new("未连接".to_string()),
+                agent: Mutex::new(Some(Arc::clone(&manager))),
+                settings: Mutex::new(loaded.clone()),
+                config_dir,
+                app_version,
+            });
+
+            build_tray(&handle)?;
+
+            // 仅服务模式：不显示窗口（开机自启时不该弹任何窗口出来）
+            if agent_only {
+                if let Some(w) = handle.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+                manager.push_log("system", "以「仅服务模式」启动（无窗口，常驻托盘）");
+            }
+
+            // 自动拉起被控端（默认开）——「运行应用之后就有服务」的期望
+            if loaded.auto_start_agent {
+                spawn_start_agent(&handle, loaded.auto_restart);
+            }
+
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 关窗 → 最小化到托盘（可在设置里关掉，改为直接退出）
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                let state = app.state::<AppState>();
+                let close_to_tray = state.settings().close_to_tray;
+                if close_to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    if let Ok(mgr) = state.agent() {
+                        mgr.push_log("system", "窗口已隐藏到托盘（被控端继续运行；从托盘菜单可退出）");
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            // 连接
             connect,
             disconnect,
             invoke_capability,
             get_capabilities,
-            get_state
+            get_state,
+            // 本机服务
+            agent_status,
+            agent_start,
+            agent_stop,
+            agent_restart,
+            agent_logs,
+            agent_logs_clear,
+            autostart_status,
+            autostart_set,
+            // 更新
+            check_update,
+            apply_update,
+            // 设置与信息
+            settings_get,
+            settings_set,
+            system_info,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -204,7 +714,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
                 let sc = tauri::async_runtime::block_on(async {
-                    state.sidecar.lock().await.as_ref().map(std::sync::Arc::clone)
+                    state.sidecar.lock().await.as_ref().map(Arc::clone)
                 });
                 if let Some(sc) = sc {
                     tauri::async_runtime::block_on(async {

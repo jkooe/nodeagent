@@ -1,6 +1,18 @@
 /** Tauri command 调用封装（前端 → Rust 壳 → Node sidecar → 被控端）。 */
 import { invoke } from "@tauri-apps/api/core";
-import type { CapabilityDescriptor, ConnectInfo, InvokeResult } from "../types";
+import type {
+  AgentActionResult,
+  AgentLogPage,
+  AgentStatus,
+  ApplyUpdateResult,
+  AutostartStatus,
+  CapabilityDescriptor,
+  ConnectInfo,
+  ConsoleSettings,
+  ConsoleSystemInfo,
+  InvokeResult,
+  UpdateInfo,
+} from "../types";
 
 /** 建立连接并握手。 */
 export function connect(url: string, key: string, clientId = "console", insecure = true) {
@@ -85,4 +97,73 @@ export async function ok<T = unknown>(
     );
   }
   return res.data as T;
+}
+
+// ---------------------------------------------------------------------------
+// 本机服务（本机被控端）—— 全部走 Tauri command，不经被控端协议
+// ---------------------------------------------------------------------------
+
+/** 本机服务总览：进程状态 + 配置 + 自启 + 设置 + 版本。 */
+export function agentStatus() {
+  return invoke<AgentStatus>("agent_status");
+}
+
+/** 启动本机被控端。`autoRestart` 省略时取设置里的值。 */
+export function agentStart(autoRestart?: boolean) {
+  return invoke<AgentActionResult>("agent_start", { autoRestart });
+}
+
+/** 停止本机被控端（幂等）。 */
+export function agentStop() {
+  return invoke<AgentActionResult>("agent_stop");
+}
+
+/** 重启本机被控端。 */
+export function agentRestart(autoRestart?: boolean) {
+  return invoke<AgentActionResult>("agent_restart", { autoRestart });
+}
+
+/** 增量取日志（传上次拿到的最大 seq）。 */
+export function agentLogs(since = 0) {
+  return invoke<AgentLogPage>("agent_logs", { since });
+}
+
+/** 清空日志缓冲。 */
+export function agentLogsClear() {
+  return invoke<void>("agent_logs_clear");
+}
+
+/** 开机自启状态。 */
+export function autostartStatus() {
+  return invoke<AutostartStatus>("autostart_status");
+}
+
+/** 开关开机自启。 */
+export function autostartSet(enabled: boolean) {
+  return invoke<AutostartStatus>("autostart_set", { enabled });
+}
+
+/** 检查更新（比对最新 Release）。 */
+export function checkUpdate() {
+  return invoke<UpdateInfo>("check_update");
+}
+
+/** 应用更新：下载 → 校验 → 替换本机被控端脚本 → 重启。 */
+export function applyUpdate(url: string, sha256: string, version: string) {
+  return invoke<ApplyUpdateResult>("apply_update", { url, sha256, version });
+}
+
+/** 读设置。 */
+export function settingsGet() {
+  return invoke<ConsoleSettings>("settings_get");
+}
+
+/** 合并式写设置（只传要改的字段）。 */
+export function settingsSet(patch: Partial<ConsoleSettings>) {
+  return invoke<ConsoleSettings>("settings_set", { patch });
+}
+
+/** 控制台自身信息。 */
+export function systemInfo() {
+  return invoke<ConsoleSystemInfo>("system_info");
 }
