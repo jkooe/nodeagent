@@ -13,12 +13,16 @@ on:
       - 'apps/console/src-tauri/**'
       - 'apps/console/sidecar/**'
       - 'scripts/prepare-console.mjs'
+      - 'scripts/lib/bundle-agent.mjs'
+      - 'apps/agent/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'apps/console/src-tauri/**'
       - 'apps/console/sidecar/**'
       - 'scripts/prepare-console.mjs'
+      - 'scripts/lib/bundle-agent.mjs'
+      - 'apps/agent/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -60,36 +64,48 @@ jobs:
           version: 9
       - run: pnpm install --frozen-lockfile
 
-      - name: 构建 workspace 包（sidecar 依赖其 dist）
-        run: pnpm -r --filter "./packages/*" build
+      # ⚠️ 顺序有依赖：prepare:node 现在**还要 esbuild 打包被控端**（控制台随包分发
+      # agent.mjs，用于托起本机被控端）。故 @nodeagent/agent 的 dist 必须先构建出来，
+      # 否则 prepare 阶段会以「未找到被控端构建产物」失败。
+      # （本项目已因「新步骤漏排前置产物」在 Windows CI 上红过一次，此处显式写全。）
+      - name: 构建 workspace 包（sidecar 与 agent 的 dist 都是前置产物）
+        run: pnpm --filter "./packages/*" --filter "@nodeagent/agent" build
 
       # ⚠️ tauri-build 在**编译期**校验 tauri.conf.json 里 resources 的文件存在性，
       # 故必须先产出 sidecar.mjs，否则 clippy/test 会在 build.rs 阶段就失败。
       - name: 构建 sidecar（resources 引用的产物）
         run: pnpm --filter nodeagent-console sidecar:build
 
-      # 随包分发的 Node 运行时由该脚本准备；它同时产出「构建期注入片段」。
-      # 在此真跑一遍：既验证脚本本身可用（含产物自检：node 必须真能执行），
-      # 也验证注入片段声明的两份 resource 确实就绪。
+      # 随包分发的 Node 运行时 + 被控端 agent.mjs 由该脚本准备；它同时产出
+      # 「构建期注入片段」。在此真跑一遍：既验证脚本本身可用（含两份产物自检：
+      # node 必须真能执行、agent.mjs 必须含被控端标识），也验证注入片段声明就绪。
       # 注意 Linux 上不会走 strip 分支（那是 macOS 专属，见脚本内注释），
       # 故「strip 后必须 adhoc 重签」这条由 macOS 本机实测覆盖，CI 不重复验证。
-      - name: 准备 Node 运行时（验证 prepare-console.mjs）
+      - name: 准备 Node 运行时 + 被控端（验证 prepare-console.mjs）
         run: pnpm --filter nodeagent-console prepare:node
 
-      - name: 注入片段应声明两份资源
+      - name: 注入片段应声明三份资源（node + sidecar + agent）
         run: |
           node -e '
             const g = require("./apps/console/src-tauri/tauri.bundle.gen.json");
             const r = g.bundle.resources;
             const keys = Object.keys(r);
-            if (keys.length !== 2) { console.error("资源项应为 2，实际", keys); process.exit(1); }
+            if (keys.length !== 3) { console.error("资源项应为 3，实际", keys); process.exit(1); }
+            const vals = Object.values(r);
+            for (const need of ["sidecar.mjs", "agent.mjs"]) {
+              if (!vals.includes(need)) { console.error("缺少资源", need, vals); process.exit(1); }
+            }
+            if (!vals.includes("node") && !vals.includes("node.exe")) {
+              console.error("缺少 node 运行时", vals); process.exit(1);
+            }
             console.log("✓", JSON.stringify(r));
           '
 
       # 更强的一道：不是「文件在不在」，而是「产物能不能自举」——
-      # 真 spawn 打包内的 node 跑 sidecar 并走一次 JSON-RPC 握手。
+      # 真 spawn 打包内的 node 跑 sidecar 并走一次 JSON-RPC 握手，
+      # 并用打包内的 node 解析一次 agent.mjs（截断/损坏会在此暴露）。
       # 这类问题只在产物中暴露（源码与单测都正常）。
-      - name: 验证运行时 + sidecar 可自举
+      - name: 验证运行时 + sidecar + agent 可自举
         run: node apps/console/scripts/verify-bundle.mjs --runtime
 
       - name: 缓存 cargo 构建产物

@@ -49,12 +49,14 @@ jobs:
       - name: 类型检查
         run: pnpm typecheck
 
-      # 控制台「随包分发的 Node 运行时」在 Windows 上的分支此前零覆盖
-      # （准备脚本本机只在 macOS 上跑过）。此处真跑：复制 node.exe（无 strip 分支）→
-      # 自检可执行 → 再验证它与 sidecar 能否走通一次 JSON-RPC 自举。
+      # 控制台「随包分发的 Node 运行时 + 被控端 agent.mjs」在 Windows 上的分支
+      # 此前零覆盖（准备脚本本机只在 macOS 上跑过）。此处真跑：复制 node.exe（无 strip
+      # 分支）→ 自检可执行 → 再验证它与 sidecar 能否走通一次 JSON-RPC 自举，
+      # 并用同一个 node 解析 agent.mjs。
       # ⚠️ 必须先 sidecar:build —— prepare-console.mjs 的前置检查要求 sidecar.mjs 存在
       # （首次推送时漏了这步，CI 在 Windows 上当场报「未找到 sidecar/dist/sidecar.mjs」）。
-      - name: 控制台 Node 运行时（Windows 分支）与自举验证
+      # agent.mjs 的前置是 `pnpm -r build`（上面的「构建」步骤已覆盖）。
+      - name: 控制台 Node 运行时 + 被控端（Windows 分支）与自举验证
         run: |
           pnpm --filter nodeagent-console sidecar:build
           pnpm --filter nodeagent-console prepare:node
