@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "sidecar:dev": "node sidecar/main.mjs",
-    "sidecar:build": "node sidecar/build.mjs"
+    "sidecar:build": "node sidecar/build.mjs",
+    "prepare:node": "node ../../scripts/prepare-console.mjs",
+    "verify:bundle": "node scripts/verify-bundle.mjs",
+    "bundle": "pnpm sidecar:build && pnpm prepare:node && tauri build --config src-tauri/tauri.bundle.gen.json && pnpm verify:bundle"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
