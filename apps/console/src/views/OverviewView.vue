@@ -102,7 +102,7 @@ onUnmounted(stop);
               type="line"
               :percentage="Math.round(status?.cpu_pct ?? 0)"
               :height="10"
-              :color="(status?.cpu_pct ?? 0) > 80 ? '#e88080' : '#63e2b7'"
+              :color="(status?.cpu_pct ?? 0) > 80 ? 'var(--na-err)' : 'var(--na-ok)'"
             />
           </div>
           <div class="gauge">
@@ -113,7 +113,7 @@ onUnmounted(stop);
               type="line"
               :percentage="Math.round(status?.memory_pct ?? 0)"
               :height="10"
-              :color="(status?.memory_pct ?? 0) > 85 ? '#e88080' : '#63e2b7'"
+              :color="(status?.memory_pct ?? 0) > 85 ? 'var(--na-err)' : 'var(--na-ok)'"
             />
           </div>
           <n-statistic
@@ -138,7 +138,7 @@ onUnmounted(stop);
                 type="line"
                 :percentage="Math.round(d.used_pct ?? 0)"
                 :height="8"
-                :color="(d.used_pct ?? 0) > 90 ? '#e88080' : '#63e2b7'"
+                :color="(d.used_pct ?? 0) > 90 ? 'var(--na-err)' : 'var(--na-ok)'"
               />
             </div>
           </div>

@@ -137,7 +137,7 @@ function streamType(s: string) {
   height: calc(100vh - 300px);
   min-height: 320px;
   overflow: auto;
-  background: rgba(0, 0, 0, 0.18);
+  background: var(--na-sunken);
   border-radius: 6px;
   padding: 10px 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -160,10 +160,10 @@ function streamType(s: string) {
   margin-top: 1px;
 }
 .txt.stderr {
-  color: #e88080;
+  color: var(--na-err);
 }
 .txt.system {
-  color: #63e2b7;
+  color: var(--na-info);
 }
 .empty {
   opacity: 0.5;

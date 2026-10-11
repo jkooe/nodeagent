@@ -4,6 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>nodeagent 控制台</title>
+    <script>
+      // 首帧防闪：Vue 接管之前浏览器已经会画一次背景，若不先刷上——
+      // 「高级灰」用户每次启动都会看到一帧刺眼的白。
+      //
+      // 此处只重复**两个**底色值（真值在 src/theme/index.ts），因为在此之前
+      // 没有任何模块可依赖；其余所有颜色仍由 App.vue 运行期注入的 --na-* 负责。
+      // 改调色板底色时记得同步这两行。
+      try {
+        var isGray = localStorage.getItem("nodeagent.console.theme") === "gray";
+        document.documentElement.style.background = isGray ? "#1d1f22" : "#f4f4f5";
+        document.documentElement.style.colorScheme = isGray ? "dark" : "light";
+      } catch (e) {
+        /* localStorage 不可用（隐私模式）时走默认底色即可 */
+      }
+    </script>
   </head>
 
   <body>

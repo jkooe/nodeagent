@@ -228,7 +228,7 @@ onMounted(() => {
   margin: 12px 0 0;
   padding: 12px;
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--na-sunken);
   font-family: ui-monospace, Menlo, monospace;
   font-size: 12px;
   line-height: 1.6;

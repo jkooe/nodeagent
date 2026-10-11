@@ -12,16 +12,25 @@ import {
   NSpace,
   NText,
   NTooltip,
+  NRadioGroup,
+  NRadioButton,
   type MenuOption,
 } from "naive-ui";
 import { navRoutes, type NavMeta } from "../router";
 import { useConnStore } from "../stores/conn";
 import { useAgentStore } from "../stores/agent";
+import { useThemeStore } from "../stores/theme";
+import { THEME_LIST } from "../theme";
 
 const route = useRoute();
 const router = useRouter();
 const conn = useConnStore();
 const agent = useAgentStore();
+const theme = useThemeStore();
+const themeName = computed({
+  get: () => theme.name,
+  set: (v) => theme.set(v),
+});
 
 onMounted(() => {
   conn.bind();
@@ -68,6 +77,15 @@ async function quickToggle() {
       </div>
       <n-menu :options="menuOptions" :value="activeKey" @update:value="onMenu" />
       <div class="sider-foot">
+        <div class="foot-label">主题</div>
+        <n-radio-group v-model:value="themeName" size="small" class="theme-switch">
+          <n-radio-button v-for="t in THEME_LIST" :key="t.name" :value="t.name">
+            {{ t.label }}
+          </n-radio-button>
+        </n-radio-group>
+
+        <div class="foot-sep"></div>
+
         <div class="foot-row">
           <n-text depth="3" style="font-size: 12px">本机被控端</n-text>
           <n-tag :type="agent.meta.type" size="tiny" round>{{ agent.meta.label }}</n-tag>
@@ -112,8 +130,12 @@ async function quickToggle() {
 </template>
 
 <style>
-:root {
-  color-scheme: dark;
+/* 配色只走 `--na-*` 变量（值在 src/theme/index.ts 单点定义，App.vue 运行期注入），
+   此处不留任何写死的色值 —— 否则换主题时会一半新一半旧，且不报错。
+   `color-scheme` 也由 App.vue 按主题设，这里不重复声明。 */
+html,
+body {
+  background: var(--na-bg);
 }
 body {
   margin: 0;
@@ -124,12 +146,12 @@ body {
 .brand-title {
   font-size: 18px;
   font-weight: 600;
-  color: #63e2b7;
+  color: var(--na-brand);
   letter-spacing: 0.5px;
 }
 .brand-sub {
   font-size: 12px;
-  opacity: 0.6;
+  color: var(--na-text-3);
   margin-top: 2px;
 }
 .topbar {
@@ -139,7 +161,7 @@ body {
   justify-content: space-between;
   padding: 0 16px;
 }
-/* 侧栏做成纵向弹性布局，才能把「本机服务」快捷块压到底部 */
+/* 侧栏做成纵向弹性布局，才能把底部快捷块压到底 */
 :deep(.n-layout-sider-scroll-container) {
   display: flex;
   flex-direction: column;
@@ -147,7 +169,31 @@ body {
 .sider-foot {
   margin-top: auto;
   padding: 12px 14px 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  border-top: 1px solid var(--na-border);
+}
+.foot-label {
+  font-size: 11px;
+  color: var(--na-text-3);
+  margin-bottom: 6px;
+}
+.foot-sep {
+  height: 1px;
+  background: var(--na-border);
+  margin: 12px 0;
+}
+/* 两个主题按钮各占一半宽（侧栏只有 200px，默认内边距会挤出去） */
+.theme-switch {
+  display: flex;
+  width: 100%;
+}
+.theme-switch :deep(.n-radio-button) {
+  flex: 1;
+}
+.theme-switch :deep(.n-radio-button__label) {
+  display: flex;
+  justify-content: center;
+  font-size: 12px;
+  padding: 0 2px;
 }
 .foot-row {
   display: flex;

@@ -415,9 +415,9 @@ function openRelease() {
   flex: 0 0 auto;
 }
 .log-line.stderr .txt {
-  color: #e88080;
+  color: var(--na-err);
 }
 .log-line.system .txt {
-  color: #63e2b7;
+  color: var(--na-info);
 }
 </style>

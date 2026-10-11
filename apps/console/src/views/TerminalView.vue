@@ -161,6 +161,6 @@ function reuse(c: string) {
   opacity: 0.85;
 }
 .hist:hover code {
-  color: #63e2b7;
+  color: var(--na-accent);
 }
 </style>

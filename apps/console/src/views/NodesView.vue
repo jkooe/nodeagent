@@ -195,11 +195,11 @@ const capGroups = computed(() => {
   align-items: center;
   justify-content: space-between;
   padding: 8px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.09);
+  border: 1px solid var(--na-border);
   border-radius: 8px;
 }
 .node.active {
-  border-color: #63e2b7;
+  border-color: var(--na-accent);
 }
 .node-name {
   font-size: 14px;
@@ -219,7 +219,7 @@ const capGroups = computed(() => {
   font-size: 12px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--na-sunken);
 }
 .logs {
   font-family: ui-monospace, Menlo, monospace;

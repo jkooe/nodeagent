@@ -175,7 +175,7 @@ onMounted(() => {
   margin: 12px 0 0;
   padding: 10px;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--na-sunken);
   font-size: 12px;
   max-height: 200px;
   overflow: auto;
