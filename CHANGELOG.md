@@ -97,6 +97,59 @@
   **新步骤必须逐条核对前置产物由哪一步生成、顺序是否在其后** —— 本地验证时产物早就在，会把这层依赖完全掩盖）。
 - `.github/workflows/windows-e2e.yml`：步骤名与注释同步为含 `agent.mjs` 的说明。
 
+### 新增 —— Windows 端控制台安装包（`.github/workflows/console-windows.yml`）
+
+控制台此前**只在 macOS 上出过包**（`.app` / `.dmg`），而它的主战场恰恰是
+「在 Windows 上管控其他机器」。本轮补上 Windows 构建：**双架构矩阵** ——
+`windows-latest` 出 x64 `.msi` + NSIS `-setup.exe`，`windows-11-arm` 出 arm64 NSIS `-setup.exe`。
+
+- **为什么必须双架构**：与 v2.0.2 那次事故同源 —— 包里装着错架构的 `node.exe` 时，
+  ARM Windows 上「能启动、能 listen，但 TLS 握手不完成」，而 macOS 侧 100% 复现不出。
+  控制台更甚：它内含 node 运行时，还要用这个 node **托起本机被控端**，即自己就是 TLS 服务端。
+- **为什么用原生 ARM runner 而非交叉编译**：`prepare-console.mjs` 的自检要**真执行 `node.exe`**，
+  x64 机器跑不了 arm64 二进制；交叉编译会逼着引入「跳过自检」这类**削弱验证**的开关 ——
+  而产出错架构运行时的时候，自检正是唯一能拦住它的那道闸。
+- **`cfg!(windows)` 分支第一次被编译器看到**：macOS 上的 `cargo check` **不会编译 `cfg(windows)` 代码**，
+  故 `taskkill` 收进程树、PowerShell 计划任务、`node.exe` 路径等分支此前从未产出过 Windows 产物。
+- **实测产物**：x64 `.msi` **34.2 MiB** ／ NSIS **23.2 MiB**；arm64 NSIS **19.5 MiB**（均低于 40MB 目标）。
+  `if-no-files-found: error` + `fail-fast: false`：一条架构没产出就报错，同时一条挂了不掩盖另一条的结果。
+- **尚未接入 `scripts/release.mjs`**：安装包目前只作为 CI artifact 产出，未随 Release 发布。
+
+> **首个 run 两个 job 全红，但错的不是构建，是断言。**（run `38151366534`）
+> 两个 job 的失败点完全一致，而日志显示构建链路**一路全绿**：构建机架构（arm64 runner 上
+> `process.arch = arm64`，原生属实）、随包 `node.exe` 的 PE Machine（`0x8664` / `0xaa64`）、
+> `tauri build`、产物自举（打包内 node v22.23.3 真跑起打包内 sidecar）四步全 success。
+> 死掉的是本步自己写的守卫 —— 原断言「安装包体积 > 50MB」，理由是「含 Node 运行时约 80MB」，
+> 这**把未压缩的目录形态（`.app` ≈ 92 MiB）当成了压缩安装包的体积**：
+> LZMA 下 `node.exe` 自身能压到 1/3～1/4，实测 `.msi` 34.2 MiB、NSIS 19.5～23.2 MiB，阈值必然误杀。
+>
+> 更根本的问题是：**体积阈值属于「中间逻辑自洽」式断言**。包大不等于 `node.exe` 真在里面
+> （可能打进的是别的大文件），包小也不等于没在里面（压缩率会随 Node 版本漂移）。
+> 判据必须落在**产物内容**上，不能落在**间接指标**上。
+>
+> 改为**解开安装包查内容**（`.msi` 走 `msiexec /a` 管理安装、NSIS 走 `/S /D=` 静默安装，
+> 两者都是各自格式的核心能力，不引任何外部依赖），一次钉死三件事：
+> ① `node.exe` / `sidecar.mjs` / `agent.mjs` **三样随包资源必须都在**（缺任一，真机上就是
+> 「应用能开、但托不起被控端」）；② `node.exe` 的 **PE Machine = 目标架构**（最终交付物级架构断言）；
+> ③ `node.exe` 解压后 **> 40MB**（体积在这是**正确用法**：内容已验明后的自明性检查，
+> 而不是「运行时在不在」的**替代判据**）。附带收益：**真装一遍本身就是安装器冒烟**。
+> 另给该步加 `timeout-minutes: 8`，避免静默安装万一卡住把 job 拖满 60 分钟。
+>
+> **第二个 run（`38152850819`）两 job 仍同点红，但已是另一处原因，且同样是静默失效**：
+> 日志里 `msiexec /a 失败（退出码 ）` —— `$LASTEXITCODE` 是**空的**，而整步从开始到抛错
+> 只过了 **0.8 秒**。根因是 `msiexec.exe` 与 NSIS 安装包都是 **GUI 子系统程序**，
+> PowerShell 用 `&` 调用时**既不等待其结束、也不设置 `$LASTEXITCODE`**
+> （`$null -ne 0` 判真 → 安装器还没跑完就抛错，报错读起来像「安装失败」，实为「压根没等」）；
+> arm64 那条没有 MSI、直奔 NSIS，失败形态一模一样，正是同一根因的第二个样本。
+> 修法：改 `Start-Process -Wait -PassThru` 读 `.ExitCode`；参数拼成**单个字符串**传，
+> 避免数组被自动加引号而破坏 NSIS `/D=` 的「原样、不加引号、且居末」硬要求；
+> 加 `Wait-PayloadRoot`（30 秒收敛）防安装器「自己先退出、子进程继续装」的竞态误报。
+>
+> **第三个 run（`38154282653`）双绿**，断言给出产物实证 —— x64 `.msi`/`-setup.exe` 内均解出
+> **`node.exe` 82.9 MB / PE `0x8664`**、arm64 `-setup.exe` 内解出 **`node.exe` 73.5 MB / PE `0xaa64`**，
+> 三样随包资源齐全（sidecar 232 KB、agent 1060 KB）。
+> 这一步证明的恰是体积断言永远无法区分的那件事：**19.5MB 的压缩包里真的装着 73.5MB 的 arm64 运行时**。
+
 ### 变更 —— 界面一律不使用图标
 
 - **去掉全部 emoji 图标**：路由表 `meta.icon` 字段整体移除，侧栏导航由「图标 + 标题」改为**纯文字**。

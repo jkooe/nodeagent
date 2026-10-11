@@ -347,6 +347,9 @@ Tauri 侧经 Cargo path 依赖），**不引入第二套协议实现**。
 默认页面就是「本机服务」——点按钮即可启动 / 停止 / 重启本机被控端，
 并支持检查更新、查看日志、后台常驻（托盘）、开机自启。
 
+**界面**：导航为**纯文字**（不使用图标）；配色为两套中性灰阶主题 ——
+「简约白」与「高级灰」，侧栏底部一键切换。
+
 | 页面 | 能力 |
 |---|---|
 | **本机服务**（默认） | 本机被控端启停/重启、连接本机、节点 ID 与密钥、开机自启、后台运行、异常自动重启、检查并应用更新 |
@@ -360,11 +363,28 @@ Tauri 侧经 Cargo path 依赖），**不引入第二套协议实现**。
 | 审计 | `system.audit.list` 筛选 + `system.audit.verify` 链完整性校验 + 导出 JSONL |
 
 ```bash
-pnpm -r build                       # 含 console 前端
-cd apps/console && pnpm tauri dev   # 开发态（起 Vite + Tauri 窗口）
-pnpm --filter nodeagent-console bundle   # 打包（含 sidecar + Node 运行时 + 被控端脚本）
-#   macOS 实测：.app 90.8 MiB ／ .dmg 33.78 MiB（分发件，其中 Node 运行时 86MB）
+pnpm -r build                             # 含 console 前端
+cd apps/console && pnpm tauri dev         # 开发态（起 Vite + Tauri 窗口）
+pnpm --filter nodeagent-console bundle    # 打包（含 sidecar + Node 运行时 + 被控端脚本）
+#   macOS 实测：.app 92.2 MiB ／ .dmg 33.78 MiB（分发件，其中 Node 运行时 86MB）
 ```
+
+Windows 版由 CI 产出（`.github/workflows/console-windows.yml`），**双架构各一套**：
+
+| 架构 | runner | 安装包 | 实测体积 |
+|---|---|---|---|
+| x64 | `windows-latest` | `.msi`（企业批量部署）+ `-setup.exe`（NSIS，双击安装） | 34.2 MiB / 23.2 MiB |
+| arm64 | `windows-11-arm` | `-setup.exe`（NSIS） | 19.5 MiB |
+
+> 为什么必须两套：控制台内含 Node 运行时，且要用它**托起本机被控端**（即自己就是 TLS 服务端）。
+> 若在 ARM Windows 上装到 x64 的运行时，会**能启动、能监听，但 TLS 握手不完成** ——
+> 客户端只见超时，且开发机上 100% 复现不出。CI 里为此加了三道断言：
+> 「构建机架构 ⇄ 目标架构」、「随包 `node.exe` 的 PE Machine」、
+> 以及**解开安装包查内容**（三样随包资源齐全 + 包内 `node.exe` 的 PE Machine 对得上 ——
+> 前两条查的是打包**前**的中间产物，这一条查的才是**最终交付物**；
+> 实测解出 x64 `node.exe` 82.9 MB / `0x8664`、arm64 73.5 MB / `0xaa64`）。
+
+> 控制台安装包目前**只作为 CI artifact 产出**，尚未接入 `scripts/release.mjs` 随 Release 发布。
 
 ⚠️ 平台差异：`app.*` 与 `system.service.list` **仅在被控端为 Windows 时可用**，
 非 Windows 被控端会返回 `E_UNSUPPORTED_PLATFORM`。控制台连接后会探测
