@@ -137,7 +137,11 @@ console.log(`✓ 版本号已写入 ${pkgFiles.length} 个 package.json + ${taur
 console.log('=== 构建 ===');
 sh('pnpm', ['-r', 'build'], { stdio: 'inherit' });
 console.log('=== 打包 ===');
-sh('pnpm', ['pack:win'], { stdio: 'inherit' });
+// 2026-10-11：Windows 包分架构 —— x64 包在 **ARM Windows** 上协议层不可用（真机实证：
+// 能启动/listen 但 TLS 握手不完成），故两个架构都产出。
+for (const arch of ['x64', 'arm64']) {
+  sh('node', ['scripts/pack.mjs', '--arch', arch], { stdio: 'inherit' });
+}
 try {
   sh('pnpm', ['pack:mac'], { stdio: 'inherit' });
 } catch {
@@ -145,9 +149,13 @@ try {
 }
 
 const agentPath = join(root, 'release', 'nodeagent-win-x64', 'agent.mjs');
-const zipPath = join(root, 'release', 'nodeagent-win-x64.zip');
+// agent.mjs 与架构无关（纯 JS bundle），两包内容相同；zip 各含对应架构的 node.exe
+const zipX64 = join(root, 'release', 'nodeagent-win-x64.zip');
+const zipArm64 = join(root, 'release', 'nodeagent-win-arm64.zip');
 if (!existsSync(agentPath)) fail(`找不到 agent 产物: ${agentPath}`);
-if (!existsSync(zipPath)) fail(`找不到 zip 产物: ${zipPath}`);
+for (const z of [zipX64, zipArm64]) {
+  if (!existsSync(z)) fail(`找不到 zip 产物: ${z}`);
+}
 
 // ---------- ④ 生成资产（校验和 + latest.json）----------
 const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
@@ -156,7 +164,8 @@ mkdirSync(distDir, { recursive: true });
 
 const assets = [
   { name: 'agent.mjs', path: agentPath, purpose: '自更新载荷（被控端 system.agent.update 直接使用）' },
-  { name: 'nodeagent-win-x64.zip', path: zipPath, purpose: '人工安装包（自包含 node.exe，免装 Node.js）' },
+  { name: 'nodeagent-win-x64.zip', path: zipX64, purpose: '人工安装包 · x64 Windows（自包含 node.exe）' },
+  { name: 'nodeagent-win-arm64.zip', path: zipArm64, purpose: '人工安装包 · ARM Windows（Parallels Win11 ARM 等）' },
 ];
 for (const a of assets) {
   copyFileSync(a.path, join(distDir, a.name));
@@ -188,6 +197,8 @@ const latest = {
     note: '自更新用：nodeagent update --url <url> --sha256 <sha256>',
   },
   zip: { url: `${base}/nodeagent-win-x64.zip`, sha256: assets[1].sha256, bytes: assets[1].bytes },
+  // 2026-10-11 新增（只增字段，旧控制端忽略即可）：ARM Windows 用包
+  zip_arm64: { url: `${base}/nodeagent-win-arm64.zip`, sha256: assets[2].sha256, bytes: assets[2].bytes },
 };
 writeFileSync(join(distDir, 'latest.json'), JSON.stringify(latest, null, 2) + '\n');
 
@@ -275,6 +286,7 @@ writeFileSync(
     `## 人工安装（首次）`,
     `\`\`\`powershell`,
     `Expand-Archive nodeagent-win-x64.zip C:\\nodeagent -Force`,
+    `# ARM Windows（如 Parallels 的 Win11 ARM）请改用 nodeagent-win-arm64.zip —— x64 包在其上 TLS 握手不通`,
     `# 先把 C:\\nodeagent 加入杀软信任区（主流杀软）`,
     `powershell -ExecutionPolicy Bypass -File C:\\nodeagent\\install.ps1 -NodeId win -AllowInput`,
     '```',
@@ -291,6 +303,7 @@ sh('gh', [
   notes,
   join(distDir, 'agent.mjs'),
   join(distDir, 'nodeagent-win-x64.zip'),
+  join(distDir, 'nodeagent-win-arm64.zip'),
   join(distDir, 'latest.json'),
   join(distDir, 'SHA256SUMS'),
 ]);
