@@ -6,6 +6,7 @@ import {
   buildPostBody,
 } from './input-script.js';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { PS_DPI_AWARE } from '../util/dpi.js';
 
 type Args = Record<string, unknown>;
 
@@ -213,15 +214,31 @@ public static class NAInput {
     }
 }`;
 
-/** 组装：加类型定义 + 具体操作。 */
-function psScript(body: string[]): string {
-  return [`$ErrorActionPreference = 'Stop'`, `$code = @'`, CS_CODE, `'@`, `Add-Type -TypeDefinition $code`, ...body].join(
-    '\n',
-  );
+/**
+ * 组装：加 DPI 感知 + 类型定义 + 具体操作。
+ *
+ * 导出**仅供单测断言**（`tests/unit/dpi-awareness.test.mjs` 直接检查这里下发的
+ * PowerShell 是否带上了 DPI 感知、且位于坐标调用之前）——真机 2026-10-12 的
+ * 「点不准」缺陷就是这里漏了 DPI 感知，而源码扫描式守卫抓不到。
+ */
+export function buildInputPsScript(body: string[]): string {
+  return [
+    `$ErrorActionPreference = 'Stop'`,
+    // ⚠️ 必须最先执行，且**不可删**：不设 DPI 感知时 `SetCursorPos` / `mouse_event` 的坐标
+    // 会被系统按缩放比虚拟化（200% 下 ×2），而 `screen.find`（UIA）返回的是**物理**坐标 ——
+    // 「找得到、点不准」，且不报任何错。真机 2026-10-12 实证：
+    // 请求 (100,100) 实际落到 (200,200)，请求 (552,1489) 实际落到 (1104,2019)。
+    PS_DPI_AWARE,
+    `$code = @'`,
+    CS_CODE,
+    `'@`,
+    `Add-Type -TypeDefinition $code`,
+    ...body,
+  ].join('\n');
 }
 
 async function runPs(body: string[], timeoutMs = 30_000): Promise<string> {
-  const r = await execCommand({ command: psScript(body), timeoutMs });
+  const r = await execCommand({ command: buildInputPsScript(body), timeoutMs });
   if (r.exit_code !== 0) {
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '输入注入失败', {
       detail: (r.stderr || r.stdout).slice(0, 400),
@@ -285,9 +302,11 @@ export async function mouseClick(args: Args): Promise<unknown> {
   }
   await runPs(body);
 
-  // 返回实际点击位置
+  // 返回实际点击位置。
+  // ⚠️ 读回光标位置同样要 DPI 感知，否则这里读到的是**逻辑**值（200% 下是真实值的一半），
+  // 于是「主叫方传物理坐标 → 返回被腰斩的坐标」，看起来像点错位置。真机 2026-10-12 排查。
   const pos = await execCommand({
-    command: `Add-Type -AssemblyName System.Windows.Forms; $p = [System.Windows.Forms.Cursor]::Position; "{0},{1}" -f $p.X, $p.Y`,
+    command: `${PS_DPI_AWARE}; Add-Type -AssemblyName System.Windows.Forms; $p = [System.Windows.Forms.Cursor]::Position; "{0},{1}" -f $p.X, $p.Y`,
     timeoutMs: 20_000,
   });
   const [cx, cy] = pos.stdout.trim().split(',').map(Number);

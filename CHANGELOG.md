@@ -200,6 +200,47 @@
 一旦为控制台功能去升版本号，被控端就会**谎报**一个它并未包含的版本 —— 属版本纪律所禁止。
 故版本号维持 **2.0.2**，本批改动记入本节，待真正含被控端变更时由 `pnpm release minor` 一并升号。
 
+### 修复 —— 图形能力在 200% 缩放下坐标错位（真机实证，**属被控端变更**）
+
+> ⚠️ 与上一节结论**不同**：本节改的是**被控端**（`apps/agent/src/**`）。
+> 按上一节自己立的规矩，发版时**必须**升版本号（PATCH，→ 2.0.3），
+> 否则 `agent.mjs` 会谎报一个并不包含本修复的版本。
+
+真机（Parallels 27 + Win11 ARM64，**200% 缩放**）暴露的缺陷：
+
+被控端的 PowerShell 助手进程**默认 DPI 不感知**，于是**同一个进程里并存两套坐标系**：
+
+| 调用 | 不感知时的结果 | 实际危害 |
+|---|---|---|
+| `Screen.Bounds` / `SystemInformation.VirtualScreen` | **逻辑**尺寸 1800×1010 | `screen.info` 报错尺寸；`screen.capture` 缺省 region 一并错 |
+| `CopyFromScreen` | 按**物理**像素裁剪 | `screen.capture` 缺省**只截到左上 1/4** |
+| `SetCursorPos` | 被系统 **×2** | `input.mouse.*` 喂 100,100 → 光标落到 200,200 |
+| UIA（`screen.find`） | **物理**坐标（与进程是否感知无关） | 与上面三项**口径不一致** |
+
+净效果：`screen.find` 给出的物理矩形**不能**直接喂给 `input.mouse.*`，必须人工除以 `scale`
+（上一轮就是靠这个临时绕法才点中的主题按钮 —— **能绕，但属用户侧的隐式约定，必须消灭**）。
+
+- **新增 `apps/agent/src/util/dpi.ts`**：`PS_DPI_AWARE` 常量，把 `SetProcessDPIAware()` 提到脚本首行，
+  并附完整真机实证表与「不要删」警告。
+- **注入到全部坐标相关脚本**：`capabilities/screen.ts`（`listDisplays` / `captureWindows`）、
+  `capabilities/input.ts`（`buildInputPsScript` ＋ 点击后读回光标那一次）、
+  `capabilities/window.ts`（`WIN_HELPER_PRELUDE` —— `window.list` / `window.focus` 都走它）、
+  `capabilities/record.ts`（全屏探测）。
+- **从 OCR 前奏的 `try{}` 里移除** `SetProcessDPIAware`（`win-ps/prelude-ocr.ts`）：
+  放在 `try` 里一旦抛错就被 catch 吞掉 → 助手静默退回不感知。
+- **新增 8 条守卫（`tests/unit/dpi-awareness.test.mjs`）**，关键设计是**断言「实际下发的脚本文本」
+  而非「源码里出现过常量」** —— 首版用源码扫描，注入故障实测**不会变红**（同文件别处也引用了该常量）；
+  改为断言 `buildInputPsScript()` / `buildListDisplaysScript()` / `buildCaptureScript()` / `WIN_HELPER_PRELUDE`
+  的脚本串后，二次注入故障**精准变红**。另含一条「`::SetProcessDPIAware()` 恰好出现 1 次」防重复注入
+  （正则用 `::` 区分**调用**与 P/Invoke **声明**，否则把声明也算一次 → 误报 2 次）。
+- **修复后真机复验（三项全过，零换算）**：
+
+  | 断言 | 结果 |
+  |---|---|
+  | `screen.info` | 报 **3600×2020**，与裸 `GetSystemMetrics`（感知后）一致 ✅ |
+  | `input.mouse.move(x,y)` → 读回光标（物理） | 四次抽样**精确等于** (x,y) ✅ |
+  | `screen.find` 物理矩形 → `input.mouse.click` **直接点击** | 移动后光标 = 物理中心；主题单选框 `selected` 翻转且**可逆** ✅ |
+
 ---
 
 ## [v2.0.2] —— 2026-10-11

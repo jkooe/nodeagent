@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { PS_DPI_AWARE } from '../util/dpi.js';
 
 type Args = Record<string, unknown>;
 
@@ -109,9 +110,10 @@ export async function screenRecord(args: Args): Promise<unknown> {
   let height = region?.height ?? 0;
 
   if (!region) {
+    // ⚠️ 这里必须先设 DPI 感知，`VirtualScreen` 才是**物理**尺寸（见 util/dpi.ts）。
+    // 统一走 PS_DPI_AWARE，避免各能力各写一份 P/Invoke 壳而漂移。
     const probe = await execCommand({
-      command:
-        'Add-Type -AssemblyName System.Windows.Forms; Add-Type -TypeDefinition \'using System.Runtime.InteropServices; public class NADPIR { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }\'; [void][NADPIR]::SetProcessDPIAware(); $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen; Write-Output ("{0},{1},{2},{3}" -f $vs.X, $vs.Y, $vs.Width, $vs.Height)',
+      command: `${PS_DPI_AWARE}; Add-Type -AssemblyName System.Windows.Forms; $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen; Write-Output ("{0},{1},{2},{3}" -f $vs.X, $vs.Y, $vs.Width, $vs.Height)`,
       timeoutMs: 30_000,
     });
     const nums = probe.stdout.trim().split(',').map(Number);

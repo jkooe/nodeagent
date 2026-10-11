@@ -338,3 +338,121 @@ Remove-LocalUser -Name pdverify          # 临时账户一并删除
 > 若需**保留**该环境供后续验证（重启后仍自动恢复图形会话），可暂不清理 ——
 > 但要清楚：明文密码就留在注册表里。
 
+---
+
+## 10. 200% 缩放下的坐标口径，与 VM 输入通道的真机真相（2026-10-12）
+
+全部在 **Parallels 27 + Win11 ARM64（200% 缩放）** 上实测。
+§9 讲「怎么让图形能力跑起来」，本节讲「跑起来之后坐标为什么还是错的」以及「被控端自己不动了怎么救」。
+
+### 10.1 缺陷本体：一个进程里并存两套坐标系
+
+被控端的 PowerShell 助手进程**默认 DPI 不感知**（Windows 的默认行为）：
+
+| 调用 | 不感知时的结果 | 危害 |
+|---|---|---|
+| `Screen.Bounds` / `SystemInformation.VirtualScreen` | **逻辑**尺寸 1800×1010 | `screen.info` 报错尺寸；`screen.capture` 缺省 region 一并错 |
+| `CopyFromScreen` | 按**物理**像素裁剪 | `screen.capture` 缺省**只截到左上 1/4** |
+| `SetCursorPos` | 被系统 **×2** | `input.mouse.*` 喂 100,100 → 光标落到 200,200 |
+| UIA（`screen.find`） | **物理**坐标（与进程是否感知无关） | 与上面三项**口径不一致** |
+
+净效果：`screen.find` 给出的物理矩形**不能**直接喂给 `input.mouse.*`，得人工除以 `scale`。
+修法是 `apps/agent/src/util/dpi.ts` 的 `PS_DPI_AWARE` 注入到**每个坐标脚本的最前面**。
+
+### 10.2 复验配方（改完全部坐标路径后，这三条必须跑）
+
+| 断言 | 怎么取 | 修复前 | 修复后应为 |
+|---|---|---|---|
+| 屏幕尺寸口径 | `screen.info` | `1800x1010` | **`3600x2020`**，且与**裸 Win32** `GetSystemMetrics(0/1)`（感知后）一致 |
+| 缺省整屏截图 | `screen.capture`（**不传** `region`） | 只有左上 1/4 | 整屏（按 `scale` 缩放后返回） |
+| 光标落点 | `input.mouse.move(x,y)` 后**用同样感知的助手**读回 `GetCursorPos` | 落到 (2x,2y) | **精确等于** `(x,y)` |
+| 端到端零换算 | `screen.find` 的物理矩形中心**直接**喂 `input.mouse.click` | 点不中 | 命中（可用主题单选框的 UIA `selected` 翻转验证） |
+
+> ⚠️ 读回光标时**助手也必须 DPI 感知**，否则读到的是逻辑值 —— 会得到「move 生效了但值差 2 倍」的假象。
+
+### 10.3 被控端「输入注入整体失效」——VM 环境坑，**不是产品缺陷**
+
+现象：`input.mouse.*` 与 `input.key.*` 全部无效，光标纹丝不动。
+
+先把环境位逐条排干净：
+
+| 检查 | 实测 |
+|---|---|
+| 会话 / 窗口站 / 桌面 | `session=1` / `WinSta0` / `Default` ✅ |
+| `UserInteractive` | `True` ✅ |
+| `OpenInputDesktop` | 成功 → `Default`；`SetThreadDesktop(它)` 报 `ERROR_BUSY(170)`（本就在该桌面）✅ |
+| `ClipCursor` | 整屏 `0,0,3600,2020`，无裁剪 ✅ |
+| 指点设备 | `HID-compliant mouse` + `Parallels USB Mouse Synchronization Device` 均 `Status OK` ✅ |
+| `prl_mouf` 驱动 | `STATE: 4 RUNNING` ✅ |
+| **进程来源** | 从 **node 子树** 与 **`prlctl enter`**（Parallels Tools 侧）两条**互不相干**的来源跑同一段探针，**结果完全一致** ❌ |
+
+判决性证据（**纯 Win32 探针，不含任何本产品代码**）：
+
+```text
+SetCursorPos(1500,1200) = FALSE            ← 直改 win32k 指针：硬失败
+SendInput(绝对)          = 1               ← 已插入输入队列
+SendInput(相对)          = 1               ← 已插入输入队列
+GetCursorPos             = 410,1488 → 410,1488   ← 指针纹丝不动
+GetAsyncKeyState(按键)   = 0x0000          ← 连键盘注入也不被系统认可
+```
+
+**`SendInput` 报告成功，而键盘与鼠标一视同仁地无反应** —— 不是「指针被同步设备独占」，
+而是**整条输入注入通道被吞在输入队列之后**。任何应用层代码都绕不过去。
+
+复位手段实测：
+
+| 手段 | 结果 |
+|---|---|
+| `--smart-mouse-optimize` 三档（`off` / `auto` / `on`） | ❌ 无效 |
+| `prlctl suspend` + `start`（挂起 / 恢复） | ❌ 无效 —— resume 会**完整还原 win32k 状态**，卡住的输入态当然一起被还原 |
+| **`prlctl stop --acpi` + `start`（真正冷启动 Windows）** | ✅ **立即恢复** |
+
+> 结论：VM 输入栈瞬时卡死，**只有冷启动能复位**。
+> 开工前先让宿主机把 VM 窗口真正当前台窗口交互一次（宿主机侧绝对鼠标集成会把 guest 指针从属过去；
+> 实测 `--smart-mouse-optimize` 三档都不改变这一点）。
+
+### 10.4 被控端「活着但不响应」——两条运维事实
+
+**① 计划任务以 `RunLevel Highest` 拉起时，普通权限 `taskkill` 会「拒绝访问」。**
+
+```text
+na-gui   user=pdverify  logon=Interactive  runlevel=Highest
+```
+
+→ 必须从**更高权限通道**杀：`prlctl enter "Windows 11"`（**不带** `--current-user`）
+拿到 `nt authority\system` 的 shell，`taskkill /F /PID <pid>` 才会成功。
+
+另外：旧进程仍占着 8765 时，`schtasks /run /tn na-gui` 会**报「执行成功」但新实例立即退出**
+（表现为端口仍被旧 PID 占着）→ 必须**先杀后起**。
+
+**② 客户端异常断开后，被控端会留一条 `CLOSE_WAIT` 并拒收新连接。**
+
+```text
+netstat -ano | findstr 8765
+  TCP   10.211.55.9:8765   10.211.55.2:57182   CLOSE_WAIT   9396
+```
+
+此时新连接**能完成 TCP 三次握手，但 TLS 握手永不完成**（控制端只见 `E_TIMEOUT`），
+**不会自愈**，只能重启被控端进程。触发方式：客户端在请求进行中被 `SIGTERM`/`SIGKILL`
+（即「不做优雅关闭」）。
+
+> ⚠️ **尚未定论**是产品缺陷还是环境使然 —— 本轮只观察到现象与可复现路径，未取到被控端的卡点证据。
+> 记此供后续专门排查。若成因是「`console.log` 写满无人读取的管道 → 事件循环阻塞」，
+> 那对「被控端常驻、控制端随时可能硬断开」这种使用模式是个真问题。
+
+### 10.5 两条 `prlctl` 通道的语义差异（本轮踩出来的）
+
+| 命令 | 实测行为 |
+|---|---|
+| `prlctl exec <VM> -- <cmd>` | **返回 exit=0 但完全空转**：无输出、无副作用（用「guest 反连 Mac 监听端口」判决）→ **不可用** |
+| `prlctl enter <VM>` | 默认 `nt authority\system`（会话 0，无交互桌面） |
+| `prlctl enter <VM> --current-user` | 登录用户的**真实交互** shell ✅ |
+
+另两条：
+
+- `prlctl enter` **没有执行参数**（加 `--` 报 `Unrecognized option`），它是交互式 shell，
+  命令要**经 stdin 喂**：`printf 'cmd\r\n...\r\nexit\r\n' | prlctl enter ...`
+- **`prlctl` 的参数里带逗号 / `&&` / 重定向会报 `Invalid argument`** —— 复杂逻辑一律先落成 `.cmd` / `.ps1` 再调用。
+
+> 仅供技术参考，不构成任何投资建议。
+

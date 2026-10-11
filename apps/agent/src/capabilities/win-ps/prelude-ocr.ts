@@ -7,17 +7,19 @@
  */
 
 /**
- * OCR 引擎预加载段（v14）：截图 / DPI / WinRT 类型与 Await 辅助函数。
+ * OCR 引擎预加载段（v14）：截图 / WinRT 类型与 Await 辅助函数。
  * 注意：WinRT 类型加载用 try/catch 包住 —— 个别环境缺组件时只应让 OCR 退化，
  * 不该让整个助手（连带 window.list/focus/UIA）起不来。
+ *
+ * ⚠️ DPI 感知（`SetProcessDPIAware`）**已从本段移出**，改由 WIN_HELPER_PRELUDE 最前面的
+ * `PS_DPI_AWARE` 无条件执行：放在这个 try 里会被 catch 顺带吞掉，一旦吞掉
+ * 助手就退回 DPI 不感知，`GetWindowRect` 与 UIA / 截图坐标口径不一致（真机 2026-10-12 排查）。
  */
 export const OCR_PRELUDE = `
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 try {
   Add-Type -AssemblyName System.Runtime.WindowsRuntime
-  Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class NADPI { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
-  [void][NADPI]::SetProcessDPIAware()
   $null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType=WindowsRuntime]
   $null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Foundation, ContentType=WindowsRuntime]
   $null = [Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Foundation, ContentType=WindowsRuntime]

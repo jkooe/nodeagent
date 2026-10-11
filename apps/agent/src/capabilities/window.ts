@@ -6,6 +6,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { macScreenFind, macWindowFocus, macWindowList } from './darwin.js';
 
+import { PS_DPI_AWARE } from '../util/dpi.js';
 import { WIN32_PRELUDE } from './win-ps/prelude-win32.js';
 import { LIST_BODY } from './win-ps/body-list.js';
 import { UIA_ASSEMBLY_PRELUDE } from './win-ps/prelude-uia.js';
@@ -119,7 +120,17 @@ export function warmupWindowHelper(): void {
   }, 1500).unref?.();
 }
 
-export const WIN_HELPER_PRELUDE = `${WIN32_PRELUDE}
+/**
+ * 常驻助手的预加载段。
+ *
+ * ⚠️ `PS_DPI_AWARE` **必须排在最前**，且不能放进 `OCR_PRELUDE` 的 try/catch 里 ——
+ * 那段 catch 是为了「缺 WinRT 组件时只让 OCR 退化」，但它同时也会把
+ * `SetProcessDPIAware` 一起吞掉；一旦吞掉，助手退回 DPI 不感知，
+ * `GetWindowRect`（window.list）就与 UIA / 截图的口径不一致了。
+ * DPI 感知是**坐标口径前提**，不是可退化项。
+ */
+export const WIN_HELPER_PRELUDE = `${PS_DPI_AWARE}
+${WIN32_PRELUDE}
 ${UIA_ASSEMBLY_PRELUDE}
 ${OCR_PRELUDE}
 ${IMAGE_MATCH_PRELUDE}`;

@@ -798,4 +798,69 @@ msiexec /a 失败（退出码 ）：nodeagent-console_2.0.2_x64_en-US.msi
 | 开机自启实际生效 | macOS：登出再登入 / 重启；Windows：重启后看计划任务 |
 | 黑窗是否真的没有 | **全程盯着屏幕操作一遍**（这条只能靠眼睛） |
 
+---
+
+## ARM64 真机安装冒烟与界面实点（2026-10-12）
+
+上一节那张表里的条目，本轮在 **Parallels 27 + Win11 ARM64** 上逐条做完；
+过程中还挖出并修掉一个**只在真机上才暴露**的缺陷（见本节末「真机暴露的缺陷」）。
+
+### 怎么把包送进去
+
+目标机的 SSH / 445 / 3389 / 5985 全被防火墙挡着，**只有 8765 开着**。
+于是让**产品自己去搬产品**：`fs.write`（分块 base64）传包 → `system.shell.exec` 静默安装 → `fs.read` 取回结果。
+这条路子本身也顺带验证了分块传输与 base64 往返的正确性。
+
+| 项 | 实测 |
+|---|---|
+| 传输 | **20,445,580 B，0 块损坏**（两端 sha256 一致） |
+| 静默安装 | `EXIT=0` |
+| 包内 `node.exe` | PE `aa64` / subsystem **3 (CONSOLE)** |
+| 包内 `nodeagent-console.exe` | PE `aa64` / subsystem **2 (GUI)** ← **结构上就不可能弹黑窗** |
+| 包内 `uninstall.exe` | PE `014c` / subsystem 2 |
+| 随包 Node 自报 | `v22.23.3` / `arm64`（v2.0.2 的修复确实生效） |
+| 安装位置 | `C:\Users\<user>\AppData\Local\nodeagent-console`（**按用户安装**，非 Program Files） |
+
+### 界面实点结果
+
+| 条目 | 结果 | 判据 |
+|---|---|---|
+| 启动 | ✅ `pid=9052 / session=1`，工作集 **30~32 MB**（目标 <150 MB） | 进程表 |
+| **主题切换** | ✅ 切到「高级灰」→ 选中态翻转 + 整窗深色，且**可逆** | UIA `selected` 翻转（不是看截图猜的）+ 截图 |
+| **关窗 → 托盘** | ✅ 发 `WM_CLOSE` 后窗口从 `window.list` 消失、**进程仍存活 32 MB** | 窗口列表对比 |
+| **无黑窗** | ✅ 结构性（PE subsystem=2）+ 视觉确认 | PE 头 + 截图 |
+| 输入默认禁 | ✅ `input.mouse.move` → `E_CAPABILITY_DISABLED` | 错误名 |
+| 开机自启 | ✅ 计划任务 `cn_jkooe.nodeagent-console` **不存在**，与 UI 开关=关 一致 | `schtasks` |
+| 数据目录显示 | ✅ UI 显示 `C:\Users\pdverify\.nodeagent`，与真实生效目录一致 | 配置比对 |
+| 「最近日志」 | ✅ 正确记下「端口 8765 已被占用」并给出降级提示 | 截图 |
+
+### ⚠️ 本轮新发现（**未修**）：控制台没有单实例保护
+
+复现：关窗到托盘（进程仍在）→ **再次双击启动** → **起出第二个控制台进程**（9052 + 9232 并存）。
+
+`apps/console/src-tauri/Cargo.toml` 里只有 `tauri-plugin-opener`，**没有单实例插件**。
+
+后果：两份托盘图标、两套互不知情的状态机，且**都会去抢被控端的 8765**。
+
+建议：引入 `tauri-plugin-single-instance`，第二次启动只 `show()` + `set_focus()` 已有窗口。
+
+### 真机暴露的缺陷：200% 缩放下图形能力坐标错位（**本机已修**）
+
+同一台机器上还实测到一个**只在真机暴露、单测与 CI 全绿**的缺陷：
+
+被控端的 PowerShell 助手进程**默认不 DPI 感知**，于是在 200% 缩放下同一个进程里并存两套坐标系 ——
+
+| 调用 | 不感知时的结果 |
+|---|---|
+| `Screen.Bounds` / `SystemInformation.VirtualScreen` | 报**逻辑**尺寸 1800×1010 |
+| `CopyFromScreen` | 按**物理**像素裁剪 → `screen.capture` 缺省只截到左上 1/4 |
+| `SetCursorPos` | 被系统 ×2（喂 100,100 → 光标到 200,200） |
+| UIA（`screen.find`） | 报**物理**坐标（与进程是否感知无关） |
+
+净效果：`screen.find` 给出的物理矩形**不能**直接喂给 `input.mouse.*`，
+必须人工除以 `scale` —— 上一轮就是靠这个临时绕法才点中的主题按钮。
+
+修法：新增 `apps/agent/src/util/dpi.ts`，把 `SetProcessDPIAware()` 注入到**全部坐标相关脚本的最前面**
+（5 个文件），并配 8 条单测守卫。详见证见 `CHANGELOG.md` 与 `docs/VM-VERIFICATION.md` §10。
+
 > 仅供技术参考，不构成任何投资建议。

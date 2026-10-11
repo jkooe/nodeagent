@@ -1,5 +1,6 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { PS_DPI_AWARE } from '../util/dpi.js';
 
 type Args = Record<string, unknown>;
 
@@ -25,22 +26,37 @@ const MAX_CAPTURE_BYTES = 40 * 1024 * 1024;
 
 // ---------------- screen.info ----------------
 
+/**
+ * listDisplays 下发给 PowerShell 的脚本。
+ *
+ * 导出**仅供单测断言**（检查 DPI 感知确实注入且位于坐标 API 之前）——
+ * 真机 2026-10-12 的「缺省整屏只截到左上 1/4」就是这里漏了 DPI 感知，
+ * 源码扫描式守卫抓不到（文件里别处也引用了 PS_DPI_AWARE）。
+ */
+export function buildListDisplaysScript(): string {
+  return [
+    // ⚠️ 必须最先执行：不设 DPI 感知时，`Screen.Bounds` 返回的是**逻辑**尺寸，
+    // 而 `CopyFromScreen` 又按**物理**像素裁剪 → 缺省整屏截图只截到左上 1/4
+    //（200% 缩放下 3600×2020 的桌面报成 1800×1010）。真机 2026-10-12 实证。
+    PS_DPI_AWARE,
+    'Add-Type -AssemblyName System.Windows.Forms',
+    '$s = [System.Windows.Forms.Screen]::AllScreens',
+    // 读取 DPI 缩放（HKCU AppliedDPI；读不到则按 100% 处理）。
+    // 注意：设了 DPI 感知后 Bounds 已是**物理**像素，scale 仅作参考信息保留。
+    '$dpi = (Get-ItemProperty -Path "HKCU:\\Control Panel\\Desktop\\WindowMetrics" -Name AppliedDPI -ErrorAction SilentlyContinue).AppliedDPI',
+    '$scale = if ($dpi) { [math]::Round($dpi / 96.0, 2) } else { 1.0 }',
+    '$out = @()',
+    'for ($i = 0; $i -lt $s.Count; $i++) {',
+    '  $d = $s[$i]',
+    '  $out += [pscustomobject]@{ id = $i; name = $d.DeviceName; width = $d.Bounds.Width; height = $d.Bounds.Height; is_primary = $d.Primary; scale = $scale; x = $d.Bounds.X; y = $d.Bounds.Y }',
+    '}',
+    '$out | ConvertTo-Json -Compress',
+  ].join('\n');
+}
+
 async function listDisplays(): Promise<Display[]> {
   if (IS_WINDOWS) {
-    const script = [
-      'Add-Type -AssemblyName System.Windows.Forms',
-      '$s = [System.Windows.Forms.Screen]::AllScreens',
-      // 读取 DPI 缩放（HKCU AppliedDPI；读不到则按 100% 处理）
-      '$dpi = (Get-ItemProperty -Path "HKCU:\\Control Panel\\Desktop\\WindowMetrics" -Name AppliedDPI -ErrorAction SilentlyContinue).AppliedDPI',
-      '$scale = if ($dpi) { [math]::Round($dpi / 96.0, 2) } else { 1.0 }',
-      '$out = @()',
-      'for ($i = 0; $i -lt $s.Count; $i++) {',
-      '  $d = $s[$i]',
-      '  $out += [pscustomobject]@{ id = $i; name = $d.DeviceName; width = $d.Bounds.Width; height = $d.Bounds.Height; is_primary = $d.Primary; scale = $scale; x = $d.Bounds.X; y = $d.Bounds.Y }',
-      '}',
-      '$out | ConvertTo-Json -Compress',
-    ].join('\n');
-    const r = await execCommand({ command: script, timeoutMs: 30_000 });
+    const r = await execCommand({ command: buildListDisplaysScript(), timeoutMs: 30_000 });
     if (r.exit_code !== 0) {
       throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '读取显示器信息失败', { detail: r.stderr.slice(0, 500) });
     }
@@ -122,11 +138,15 @@ export async function screenCapture(args: Args): Promise<unknown> {
   return capturePosix(opts, region);
 }
 
-async function captureWindows(
-  opts: CaptureOpts,
+/** captureWindows 下发给 PowerShell 的脚本（导出**仅供单测断言**，同 buildListDisplaysScript）。 */
+export function buildCaptureScript(
   region: { x: number; y: number; width: number; height: number },
-): Promise<CaptureResult> {
-  const script = [
+  opts: { scale: number; format: string; quality: number },
+): string {
+  return [
+    // ⚠️ 与 listDisplays 同理：region 是物理像素，进程也必须是 DPI 感知，
+    // 否则「region 语义（物理）」与「进程坐标观（逻辑）」两套口径并存。
+    PS_DPI_AWARE,
     "$ErrorActionPreference = 'Stop'",
     'Add-Type -AssemblyName System.Drawing',
     `$x = ${region.x}; $y = ${region.y}; $w = ${region.width}; $h = ${region.height}`,
@@ -157,8 +177,17 @@ async function captureWindows(
     '$ms.Dispose(); $bmp.Dispose()',
     'Write-Output ("{0}|{1}|{2}" -f [Convert]::ToBase64String($bytes), $bmpW, $bmpH)',
   ].join('\n');
+}
 
-  const r = await execCommand({ command: script, timeoutMs: 60_000, maxOutputBytes: MAX_CAPTURE_BYTES });
+async function captureWindows(
+  opts: CaptureOpts,
+  region: { x: number; y: number; width: number; height: number },
+): Promise<CaptureResult> {
+  const r = await execCommand({
+    command: buildCaptureScript(region, opts),
+    timeoutMs: 60_000,
+    maxOutputBytes: MAX_CAPTURE_BYTES,
+  });
   if (r.exit_code !== 0) {
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '截屏失败', { detail: r.stderr.slice(0, 500) });
   }
