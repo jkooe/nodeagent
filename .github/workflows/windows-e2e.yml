@@ -48,6 +48,15 @@ jobs:
 
       - name: 类型检查
         run: pnpm typecheck
+
+      # 控制台「随包分发的 Node 运行时」在 Windows 上的分支此前零覆盖
+      # （准备脚本本机只在 macOS 上跑过）。此处真跑：复制 node.exe（无 strip 分支）→
+      # 自检可执行 → 再验证它与 sidecar 能否走通一次 JSON-RPC 自举。
+      - name: 控制台 Node 运行时（Windows 分支）与自举验证
+        run: |
+          pnpm --filter nodeagent-console prepare:node
+          node apps/console/scripts/verify-bundle.mjs --runtime
+
       - name: 单元测试 — 协议纯函数 / 清单守护 / 脚本生成
         # 来自 ci/workflow-unit-tests 分支（4d73d6e）的实质贡献；该分支基于老 main，
         # 直接 merge 会回退上万行，故只取其提交内容手工并入。
