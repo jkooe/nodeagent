@@ -19,7 +19,7 @@
 | **刻意不可验** | 第三方杀软拦截（火绒等） | ❌ VM 里只有 Defender |
 | | 显示 / DPI / 多显示器 / 坐标校准 | ❌ VM 显示栈不同 |
 | | 性能指标（P95 时延等） | ❌ VM 数字不可比 |
-| **需注意** | `win-x64` 包在 ARM Windows 上走 **Prism 模拟** | ⚠️ 能跑但慢；**这本身是值得记录的兼容性结论**（见 B5） |
+| **需注意** | `win-x64` 包在 ARM Windows 上走 **Prism 模拟** | ❌ **实测结论（2026-10-11）：能启动、能 listen，但 TLS 握手不完成**（控制端只见 `E_TIMEOUT`）→ 被控端实际不可用。ARM Windows **必须**用 `nodeagent-win-arm64.zip`（见 B5） |
 
 ---
 
@@ -33,11 +33,11 @@
    └ 共享/NAT 下 VM 拿不到同网段 IP → UDP 广播发现（v4）测不了，Mac 也未必能直连
 
 ③ VM 内装 Node：优先 **ARM64 版**（避开 Prism 模拟层）
-   └ 若想验分发包，另见 B5（用项目打的 win-x64 包）
+   └ 若想验分发包，同样**必须用 `nodeagent-win-arm64.zip`** —— x64 包在 ARM 上握手不通（见 B5）
 
 ④ VM 内起被控端（二选一）
    a. 免安装：双击 run-portable.cmd        （不注册计划任务，适合快速验能力）
-   b. 正式装：解压 nodeagent-win-x64.zip → 双击 install.cmd（自提权，会建计划任务）
+   b. 正式装：解压 nodeagent-win-arm64.zip → 双击 install.cmd（自提权，会建计划任务）
 
 ⑤ Mac 端登记设备并连接
    nodeagent --node vm connect <VM的IP> --key <密钥> --insecure
@@ -133,14 +133,35 @@ node scripts/anchor-audit.mjs verify --anchors /tmp/vm-anchor.jsonl --node vm
 ```
 **判定**：`collect` 能拿到链头、云盘上传成功、`verify` 返回 `ok:true`。
 
-#### B5. `win-x64` 包在 ARM Windows 上的兼容性（额外结论）
+#### B5. 分发包在 ARM Windows 上的架构适配（✅ 已验，2026-10-11）
+
+**结论：ARM Windows 上必须用 `nodeagent-win-arm64.zip`；`win-x64` 包不可用。**
+
+同机、同密钥、同参数的对照实测：
+
+| 包 | 内含 `node.exe` | 结果 |
+|---|---|---|
+| `nodeagent-win-arm64.zip` | ARM64（PE `0xaa64`） | ✅ TLS 握手成功 → PSK 认证 → 声明 51 项能力（两端一致）→ `info`/`status`/`process.list`/`service.list`/`shell.exec`/`audit verify` 全通；`system.info.arch` 报 `arm64`（原生，非模拟层） |
+| `nodeagent-win-x64.zip` | x86-64（PE `0x8664`） | ❌ 能启动、能 listen，但 `connect` 报 `E_TIMEOUT` —— **TLS 握手不完成** |
+
+> 踩坑记录：v2.0.1 的 arm64 资产曾**误装 x64 node**（`pack.mjs` 的运行时缓存文件名不含架构 →
+> 打 arm64 时复用了 x64 的缓存），两份公开包内 `node.exe` 字节完全相同（同 sha256）。
+> 该缺陷在 macOS 上 **100% 复现不出**，只有 ARM 目标机才暴露。
+> 现 `pack.mjs` 解包后断言 PE Machine，CI 亦直接校验最终产物内 `node.exe` 的 PE 头。
+
+**复验方式**：
 
 ```bash
-# 把项目打的包解压到 VM，用**包内自带的 x64 Node**起被控端（走 Prism 模拟）
-# 期望：能起、能被连接、基础能调用
+# ① VM 内，用包内自带 node 起被控端（务必 arm64 包）
+C:\nodeagent-test\node.exe C:\nodeagent-test\agent.mjs
+#    注意：以 SYSTEM（会话 0）启动时 screen.capture 等图形能力必失败（会话 0 无交互桌面），
+#    正式安装路径不受影响 —— install.ps1 的计划任务用登录用户 + LogonType Interactive。
+
+# ② Mac 侧连入
+nodeagent connect <VM的IP> --port 8765 --key <密钥> --insecure --id vm
 ```
-**判定**：能跑 → 说明分发包对 ARM Windows 也友好（**值得写进 README 的加分结论**）；
-不能跑或异常 → 记录现象，并在文档里注明"分发包需 ARM64 版本方能原生运行"。
+
+**判定**：`connect` 成功并列出 51 项能力 = 通。若只见 `E_TIMEOUT`，先查包内 `node.exe` 是不是 ARM64。
 
 ---
 
@@ -165,7 +186,7 @@ A 基础验收（verify.mjs）
 | 架构无关项（B2/B3/B4）在 VM 验过 | `✅ 已验证（VM · Windows 11 ARM）` |
 | 输入/系统能力（A/B1）在 VM 验过 | `✅ 已验证（VM）`，**若涉及坐标/DPI 则加注「坐标类待真机复验」** |
 | 杀软交互 / 显示 / 性能 | `⏳ 待真机`（VM 不可替代，**不得**因 VM 通过就标已验） |
-| x64 包在 ARM 上跑通（B5） | `✅ 兼容性结论：win-x64 包可在 ARM Windows 运行（经 Prism）` |
+| 分发包架构适配（B5） | `✅ 已验证（VM · Windows 11 ARM）：arm64 包原生可用；win-x64 包 TLS 握手不完成、不可用` |
 
 > **一条纪律**：VM 与真机**架构不同**（真机 i7-12650H = x86_64）。任何"VM 通过"
 > 都不能自动推出"真机通过"；涉及**原生二进制、驱动、杀软、显示栈**的部分尤其如此。
@@ -181,6 +202,19 @@ A 基础验收（verify.mjs）
 | 分辨率/坐标与真机不符 | VM 显示栈不同 | 只做逻辑验证，坐标待真机 |
 | 性能数字明显偏低 | VM + 可能的 Prism 模拟 | **不要**采信 VM 的性能指标 |
 | 杀软相关错误复现不了 | VM 里只有 Defender | 需真机（或另行安装第三方杀软） |
+
+---
+
+## 7. 实测记录（VM）
+
+| 日期 | 项 | 结论 | 证据 |
+|---|---|---|---|
+| 2026-10-11 | **B5 架构适配** | ✅ arm64 包原生可用；❌ win-x64 包不可用 | 同机同参对照：arm64 握手成功 / x64 `E_TIMEOUT` |
+| 2026-10-11 | 基础能力（A 子集） | ✅ | `system.info`（`arch=arm64`、能力 51 项两端一致）/ `status` / `process.list` / `service.list` / `shell.exec`（退出码 0）/ `audit.list` / `audit verify`（链完整）均正常 |
+| 2026-10-11 | 图形能力 | ⏳ 待登录态 | 会话 0（SYSTEM）下 `screen.capture` 报 `E_EXECUTION_FAILED`；需以登录用户 Interactive 运行后复验 |
+
+> 本轮**尚未执行**：B1（v1.5 四项输入）/ B2（v23 三防护）/ B3（v26 重启清理）/ B4（审计锚点端到端）。
+> 另注：VM 的 `prlctl exec` 默认以 **SYSTEM（会话 0）** 身份执行，图形类能力须换登录用户会话方可复验。
 | x64 Node 启动慢/异常 | 走 Prism 模拟 | 换 ARM64 Node 复核 |
 
 ---
