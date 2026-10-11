@@ -7,6 +7,17 @@
 
 ## [未发布]
 
+（暂无）
+
+---
+
+## [v2.0.2] —— 2026-10-11
+
+> 一轮真机验证（Parallels 27 + Win11 ARM）抓出的**发布事故**修复批次。
+> 已公开发布的 `nodeagent-win-arm64.zip` 内装的其实是 **x64 的 `node.exe`** ——
+> 该包在 ARM Windows 上能启动、能 listen，却 **TLS 握手不完成**（控制端只见 `E_TIMEOUT`），
+> 实际不可用。本版重出资产，并把「交付物架构」直接钉进发版脚本与 CI。
+
 ### 新增
 
 - **控制台自带 Node 运行时，目标机器无需预装 Node**（`pnpm --filter nodeagent-console bundle`）
@@ -41,6 +52,12 @@
 - **CI 补「双架构包 PE 架构校验」**（`.github/workflows/windows-e2e.yml`）——
   此前 CI 只跑 `pnpm pack:win`（默认 x64）且只校验 x64 包，**arm64 打包零覆盖**，
   故该 bug 必然逃过 CI。现两条架构都打，并直接读最终 zip 内 `node.exe` 的 PE 头比对。
+- **发版脚本补「交付物架构断言」**（`scripts/lib/zip-pe-arch.mjs`）——
+  `release.mjs` 生成资产前，直接解出**最终 zip 内**的 `node.exe`、读 PE 头比对架构，
+  不符即**中止发版**。与 `pack.mjs` 的断言刻意分两层：后者是打包**流程内部**的自洽，
+  这里钉的是**交付物本身**的性质。纯内置 `zlib` 实现，不依赖 `unzip` / `Expand-Archive`
+  （Windows runner 上没有 `unzip`），另留 CLI 自检入口：
+  `node scripts/lib/zip-pe-arch.mjs <zip路径> <x64|arm64>`（已注入故障实测会红）。
 
 ### 真机实测（ARM64 Windows 虚拟机）
 

@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkZipArch } from './lib/zip-pe-arch.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -155,6 +156,33 @@ const zipArm64 = join(root, 'release', 'nodeagent-win-arm64.zip');
 if (!existsSync(agentPath)) fail(`找不到 agent 产物: ${agentPath}`);
 for (const z of [zipX64, zipArm64]) {
   if (!existsSync(z)) fail(`找不到 zip 产物: ${z}`);
+}
+
+// ---------- ③.5 交付物断言：直读**最终 zip 内**的 node.exe 架构 ----------
+// 2026-10-11 事故复盘：arm64 包里曾装进 x64 的 node.exe，而该包在 ARM Windows 上
+// **能启动、能 listen，只是 TLS 握手不完成**（控制端只见 E_TIMEOUT）—— 单测、CI、
+// macOS 侧全都抓不到，两个公开包内 node.exe 的 sha256 还完全相同。
+// pack.mjs 里已有断言，但那仍是**打包流程内部**的断言；真正该钉死的是**交付物本身**
+// 的性质。故此处解出最终 zip 里的 node.exe、读 PE 头，与架构期望比对。
+// 实现见 scripts/lib/zip-pe-arch.mjs（纯内置 zlib，不依赖 unzip / Expand-Archive）。
+console.log('=== 交付物断言（zip 内 node.exe 架构）===');
+for (const [arch, zipPath] of [
+  ['x64', zipX64],
+  ['arm64', zipArm64],
+]) {
+  let r;
+  try {
+    r = checkZipArch(zipPath, arch);
+  } catch (err) {
+    fail(`无法校验 ${zipPath}：${err.message}`);
+  }
+  if (!r.ok) {
+    fail(
+      `${zipPath} 内的 node.exe 架构不符：期望 ${arch}（${r.wantName}），实际 ${r.gotName}。\n` +
+        '  该错误包在 ARM Windows 上能启动/listen，却 TLS 握手不通 —— 严禁发布。',
+    );
+  }
+  console.log(`  ✓ nodeagent-win-${arch}.zip → node.exe = ${r.gotName}`);
 }
 
 // ---------- ④ 生成资产（校验和 + latest.json）----------
