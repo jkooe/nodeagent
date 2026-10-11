@@ -1,0 +1,182 @@
+name: Console Windows
+
+# 控制台（apps/console）的 Windows 安装包构建。
+#
+# 为什么单独一个工作流、而不塞进 windows-e2e
+# ----------------------------------------
+# windows-e2e 是「被控端在 Windows 上的行为验证」，跑一遍约 4 分钟、含安装/卸载真机冒烟；
+# 而控制台打包要装 Rust 工具链、编 Tauri（首次冷编 10 分钟级）。两者目标不同、
+# 耗时量级不同，混在一起会让「改一行前端也要等 15 分钟」。
+#
+# ⚠️ 在此之前，控制台的 Windows 侧只被验证到 prepare:node 与自举（见 windows-e2e），
+#    **从未真跑过 tauri build**。而 Rust 里那些 `cfg!(windows)` 分支
+#    （taskkill 收进程树、PowerShell 计划任务、node.exe 路径）在 macOS 上
+#    只被类型检查、从未被编译成 Windows 目标，更没有产物级验证 —— 故本工作流是它们的第一道真闸。
+#
+# 架构（为什么必须两套）
+# --------------------
+# 被控端发布包曾出过「arm64 包里装的是 x64 node.exe」的事故，后果是
+# **在 ARM Windows 上能 listen、但 TLS 握手不完成**，且 macOS 侧 100% 复现不出。
+# 控制台同理：它内含 node 运行时，且要用它**托起本机被控端**（即 TLS 服务端）。
+# 故 x64 与 arm64 必须各出一套，且都要能装到对应架构的 Windows 上。
+#
+# 这里用 GitHub 的 ARM64 Windows runner（`windows-11-arm`，公共仓库免费）
+# **原生构建**，而不是在 x64 runner 上交叉编译 —— 交叉编译需要 VS 的 ARM64 工具链，
+# 且 `prepare-console.mjs` 的自检要真执行 node.exe（x64 机器跑不了 arm64 二进制），
+# 会逼着引入「跳过自检」这类削弱验证的开关。原生构建则自检照跑、无特殊分支。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/console/**'
+      - 'apps/agent/**'
+      - 'packages/**'
+      - 'scripts/prepare-console.mjs'
+      - 'scripts/lib/bundle-agent.mjs'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/console-windows.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/console/**'
+      - '.github/workflows/console-windows.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 控制台安装包 · ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+
+    strategy:
+      # 一条架构挂了不要拖停另一条 —— 否则「arm64 失败」会掩盖「x64 到底成没成」
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            # x64 给两种安装形态：msi（企业批量部署）+ nsis（普通用户双击）
+            bundles: msi,nsis
+            pe: '0x8664'
+          - arch: arm64
+            runner: windows-11-arm
+            # arm64 只出 nsis：WiX 的 arm64 MSI 支持面较窄，不值得为它引入不确定性
+            bundles: nsis
+            pe: '0xaa64'
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v5
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 缓存 Rust 构建产物
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 只缓存 src-tauri（控制台壳），不牵动仓库根的 Rust 工作区
+          workspaces: apps/console/src-tauri
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # ⚠️ 这条断言是必需项，不是「顺手检查」。
+      # ARM runner 的镜像里确实存在 x64 模拟的组件（社区实测 python 即为 AMD64），
+      # 一旦 Node 也是模拟版，process.arch 会是 x64 → prepare-console 会把 x64 的 node.exe
+      # 打进 arm64 安装包 → **装到真机上能启动、TLS 握手不完成**，且本机 CI 全绿。
+      # 故先断言「我到底在什么架构上编」，再往下走。
+      - name: 断言构建机架构与目标一致
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arch = node -p "process.arch"
+          Write-Host "node process.arch = $arch"
+          Write-Host "runner = ${{ matrix.runner }}"
+          if ($arch -ne '${{ matrix.arch }}') {
+            throw "架构不符：期望 ${{ matrix.arch }}，实际 $arch —— 打进包的 node.exe 会是错的架构"
+          }
+
+      - name: 构建 workspace 包（含被控端）
+        # agent 的 dist 是 prepare-console 打包被控端的前置产物，顺序不能调
+        run: pnpm --filter "./packages/*" --filter "@nodeagent/agent" build
+
+      # prepare-console 的前置检查要求 sidecar.mjs 已存在；它自己也会调 esbuild 打 agent.mjs
+      - name: 构建 sidecar 并准备随包资源（node + agent.mjs）
+        working-directory: apps/console
+        run: |
+          pnpm sidecar:build
+          pnpm prepare:node
+
+      # ⚠️ 交付物级断言（与 pack.mjs 的双架构校验同源思路）：
+      # 不只看「脚本跑完了」，而是直接读最终要打进包的那个 node.exe 的 PE 头。
+      # 中间逻辑再自洽，也可能因为上游给了错架构的二进制而产出错包。
+      - name: 断言随包 node.exe 的 PE 架构
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $node = 'apps/console/src-tauri/runtime/node.exe'
+          if (-not (Test-Path $node)) { throw "缺少随包 Node 运行时：$node" }
+          $bytes = [IO.File]::ReadAllBytes((Resolve-Path $node))
+          $peOff = [BitConverter]::ToUInt32($bytes, 0x3C)
+          $machine = [BitConverter]::ToUInt16($bytes, $peOff + 4)
+          $actual = '0x{0:x4}' -f $machine
+          Write-Host "node.exe PE Machine = $actual（体积 $([math]::Round($bytes.Length/1MB,1)) MB）"
+          if ($actual -ne '${{ matrix.pe }}') {
+            throw "随包 node.exe 架构错误：期望 ${{ matrix.pe }}，实际 $actual —— 严禁发布该包"
+          }
+
+      - name: 打包安装包（${{ matrix.bundles }}）
+        working-directory: apps/console
+        # beforeBuildCommand（vite build）由 tauri 自己触发；资源靠 --config 注入，
+        # 默认 conf 里绝不出现 runtime 路径（bundle.resources 是编译期契约，声明了不存在的文件 build.rs 会直接失败）
+        run: pnpm tauri build --config src-tauri/tauri.bundle.gen.json --bundles ${{ matrix.bundles }}
+
+      - name: 验证产物自举
+        # 真 spawn 产物内的 node 去跑产物内的 sidecar，走一次 JSON-RPC
+        # （这在 macOS 上抓出过 strip 破坏签名导致 SIGKILL 的问题，Windows 侧同样值得钉住）
+        run: node apps/console/scripts/verify-bundle.mjs --runtime
+
+      - name: 断言安装包存在且体积合理
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = 'apps/console/src-tauri/target/release/bundle'
+          $found = @()
+          $found += Get-ChildItem -Path "$bundle/msi/*.msi" -ErrorAction SilentlyContinue
+          $found += Get-ChildItem -Path "$bundle/nsis/*.exe" -ErrorAction SilentlyContinue
+          if ($found.Count -eq 0) { throw "未产出任何安装包（$bundle 下为空）" }
+          # 含 Node 运行时（约 80MB），故安装包不可能是个小文件；
+          # 体积过小意味着运行时没被打进去 —— 那种包能装、但一启动就找不到 node
+          foreach ($f in $found) {
+            $mb = [math]::Round($f.Length / 1MB, 1)
+            Write-Host "$($f.Name)  $mb MB"
+            if ($mb -lt 50) { throw "$($f.Name) 仅 $mb MB —— 随包 Node 运行时疑似未打入" }
+          }
+
+      - name: 上传安装包
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodeagent-console-windows-${{ matrix.arch }}
+          path: |
+            apps/console/src-tauri/target/release/bundle/msi/*.msi
+            apps/console/src-tauri/target/release/bundle/nsis/*.exe
+          # 一条架构没产出就报错，避免「jobs 全绿但产物不全」
+          if-no-files-found: error
+          retention-days: 30
