@@ -5,6 +5,31 @@
 
 ---
 
+## [未发布]
+
+### 新增
+
+- **控制台自带 Node 运行时，目标机器无需预装 Node**（`pnpm --filter nodeagent-console bundle`）
+  —— 控制台的 sidecar 是 `.mjs`，此前只能在装了 Node 的机器上运行（`resolve_node` 回退系统 node）。
+  现由 `scripts/prepare-console.mjs` 把 Node 运行时准备为 Tauri resource 随包分发。
+  实测：`.app` **90.8 MiB**（含运行时 86MB）／`.dmg` **33.78 MiB**（分发件，仍低于 40MB 目标）。
+  作为对照，本机实测 Electron 运行时本体（`Electron Framework.framework`）为 207MB ——
+  即 Tauri + Node 的运行时开销不到 Electron 的一半。
+- **`apps/console/scripts/verify-bundle.mjs`** —— 验证「打包产物能否自举」：真 spawn 打包内的 node
+  去跑打包内的 sidecar，并走一次真实 JSON-RPC 握手。源码与单测都正常、只在产物中暴露的问题靠它拦下。
+
+### 修复 / 规避（两处实测踩出来的约束）
+
+- **macOS 上 `strip` 会使 Mach-O 代码签名失效 → 内核直接 `SIGKILL`（exit 137）**，
+  且没有任何有用报错（不是警告、不是异常，就是静默无法执行）。
+  实测对照：原样复制 ✓ ／ strip 不重签 ✗(137) ／ strip + `codesign --force --sign -` ✓。
+  故准备脚本在 strip 之后**必须** adhoc 重签（省 20% 体积值得，但这步不能少）。
+- **Node 运行时不得声明进默认 `tauri.conf.json`** —— `bundle.resources` 是**编译期契约**
+  （`tauri-build` 校验声明的文件必须存在），声明「运行期才就绪」的资源会让 `cargo check/test`
+  在 build.rs 阶段直接失败。一律走 `tauri build --config` 注入。
+
+---
+
 ## [v2.0.1] —— 2026-10-11
 
 > 一轮**真机验证**（Parallels 27 + Win11 ARM）带来的修复批次：在补齐 6 项待验证项的过程中，

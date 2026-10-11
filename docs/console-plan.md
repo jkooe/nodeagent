@@ -224,8 +224,17 @@ nodeagent/
 | 命令闭环成功率 | 成功返回 ÷ 发起 | ≥ 95% |
 | 内网调用 P95 时延 | 前端点击到结果渲染 | < 3s |
 | 应用内存占用 | Mac 版空闲常驻 RSS | < 150MB（远低于 Electron） |
-| 打包体积 | 单端安装包 | Mac `.app` < 30MB / Win 安装包 < 40MB |
+| 打包体积 | **用户实际下载的分发件** | Mac `.dmg` < 40MB（实测 **33.8MB** ✓）／Win 安装包 < 40MB（待实测） |
 | 双端编译 | `pnpm build` 一次产出两端 | 100% |
+
+> **⚠️ 口径调整（2026-10-11，待确认）**：原指标写的是「Mac `.app` < 30MB / Win 安装包 < 40MB」。
+> 那条是 **Tauri + Rust client** 时代的数字 —— 当时应用内不含 JS 运行时。
+> 改为 Node sidecar 方案后，应用必须自带 Node 运行时（sidecar 是 `.mjs`，不能假定用户装了 Node），
+> 故 `.app` 实测 **90.8 MiB**（其中 Node 运行时 86MB）。
+> **但用户下载的是 `.dmg`，实测 33.78 MiB** —— 仍低于原定 40MB。
+> 故本表口径改为「分发件体积」。作为对照：本机实测 Electron 运行时本体
+> （`Electron Framework.framework`）为 **207MB**，即 Tauri + Node 的运行时开销
+> 仍不到 Electron 的 **一半**（86MB vs 207MB）。
 
 ---
 
@@ -414,16 +423,47 @@ Rust 侧从 resource 目录解析路径后 spawn（开发期直接用系统 node
 **真跑 Node 子进程**验证 spawn / 请求-响应匹配 / 错误不崩 —— 不必等到人工开窗口才敢确认。
 `cargo test` 实测：**3/3 通过**（0.49s）。
 
-### ⚠️ 两处已知待办（本轮未做，均需真机/图形环境）
+### Node 运行时分发（2026-10-11 完成）
 
-1. **Node 运行时随包分发**：sidecar 是 `.mjs`，目标机器需有 Node。开发期用系统 node
-   （`resolve_node` 会回退到 PATH）；**分发给他人时**需把 Node 运行时作为 resource 打进包。
-   计划：写 `scripts/prepare-console.mjs` 下载对应平台 node 到 `src-tauri/resources/`，
-   并在打包时用 `tauri build --config` 注入 `bundle.resources` 的 node 项
-   （**不能写死在默认 conf 里** —— `tauri-build` 会在编译期校验文件存在性，
-   声明未下载的文件会让 `cargo check/test` 直接失败，本轮已踩并修复）。
-2. **GUI 端到端人工验证**：开窗口 → 连接被控端 → 操作界面。
-   沙箱无法运行图形应用，故本轮的验证止于 `cargo test`（真跑 sidecar）+ 单测/构建全绿。
+sidecar 是 `.mjs`（不是可执行文件，故**不满足 Tauri `externalBin` 的要求**），
+分发给他人时须把 Node 运行时一并打进包。做法沿袭被控端 `scripts/pack.mjs` 的既有路子：
+**把 Node 运行时当作 Tauri resource**。
+
+```
+scripts/prepare-console.mjs        ① 从本机 node 复制 → apps/console/src-tauri/runtime/node
+                                   ② macOS：strip -x（108MB→86MB）**并 adhoc 重签**
+                                   ③ 生成 apps/console/src-tauri/tauri.bundle.gen.json
+                                      { "bundle": { "resources": {
+                                          "../sidecar/dist/sidecar.mjs": "sidecar.mjs",
+                                          "runtime/node": "node" } } }
+pnpm --filter nodeagent-console bundle
+    = sidecar:build → prepare:node → tauri build --config tauri.bundle.gen.json → verify:bundle
+```
+
+**三处必须记住的约束**（都是实测踩出来的）：
+
+1. **绝不写进默认 `tauri.conf.json`** —— `bundle.resources` 是**编译期契约**，
+   `tauri-build` 会校验声明的每个文件必须存在；声明一个「运行期才准备好」的文件会让
+   `cargo check/test` 直接失败（2026-10-10 已踩）。故一律走 `--config` 注入。
+2. **macOS 上 strip 之后必须 adhoc 重签** —— `strip` 会使 Mach-O 代码签名失效，
+   而 macOS 内核对签名无效的可执行文件**直接 SIGKILL（exit 137）**，无任何有用报错。
+   实测对照：原样复制 ✓｜strip 不重签 ✗(137)｜strip + `codesign --force --sign -` ✓。
+3. **`resolve_node` 与 resource 映射必须对齐** —— 映射 `runtime/node → node`
+   使产物落在 `Contents/Resources/node`，正是 `src-tauri/src/sidecar.rs` 里
+   `resolve_node(resource_dir)` 查找的路径。
+
+**验证（不只看「打包成功」）**：`apps/console/scripts/verify-bundle.mjs` 真 spawn 打包内的
+node 去跑打包内的 sidecar，并走一次真实 JSON-RPC 握手 —— 源码与单测都正常、
+只在产物中暴露的问题（如上述 137）靠它拦下。已接入 CI（Linux 与 Windows 双覆盖）。
+
+**实测体积**：`.app` **90.8 MiB**（6.75 MiB → 90.8 MiB，增量即 Node 运行时 86MB）／
+`.dmg` **33.78 MiB**（分发件，仍 < 40MB 目标）。
+
+### ⚠️ 剩余一处已知待办（需图形环境）
+
+**GUI 端到端人工验证**：开窗口 → 连接被控端 → 操作界面。
+沙箱无法运行图形应用，故验证止于 `cargo test`（真跑 sidecar）+ `verify:bundle`（真跑产物）
++ 应用进程可启动（实测存活、无崩溃输出）。**界面交互仍需在图形环境点一遍。**
 
 ### 一个易踩的构建约束（本轮 CI 失败后查明）
 
