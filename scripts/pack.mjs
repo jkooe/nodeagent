@@ -25,6 +25,7 @@ import { get } from 'node:https';
 import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { bundleAgent } from './lib/bundle-agent.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -76,45 +77,13 @@ async function main() {
   execSync('pnpm -r build', { cwd: root, stdio: 'inherit' });
 
   log('\n=== ② esbuild 打包被控端 ===');
-  // 单一版本源：根 package.json 的 version + git sha + 构建时间，
-  // 经 esbuild --define 注入，避免「版本号写在多处必然不同步」。
-  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  const commit = (() => {
-    try {
-      return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root }).toString().trim();
-    } catch {
-      return 'unknown';
-    }
-  })();
-  const builtAt = new Date().toISOString();
-  log(`  版本 ${pkg.version} @ ${commit}（${builtAt}）`);
+  // 版本源（根 package.json 的 version + git sha）与 esbuild 配置都在
+  // `scripts/lib/bundle-agent.mjs` 里**单一实现** —— 控制台打包（prepare-console.mjs）
+  // 用的是同一个函数，避免两处配置各自漂移。
   mkdirSync(OUT_DIR, { recursive: true });
   const bundleOut = join(OUT_DIR, 'agent.mjs');
-  // 用 esbuild 的 **JS API** 而非 spawn node_modules/.bin/esbuild —— pnpm 的隔离布局下
-  // 那个 shim 在 Windows 上不存在（真机 CI 踩过：spawnSync ...\.bin\esbuild ENOENT），
-  // 而 JS API 只依赖 require('esbuild') 解析，跨平台一致。
-  const esbuild = await import('esbuild');
-  await esbuild.build({
-    entryPoints: [join(root, 'apps', 'agent', 'dist', 'index.js')],
-    bundle: true,
-    platform: 'node',
-    target: 'node22',
-    format: 'esm',
-    banner: {
-      js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);',
-    },
-    // 刻意**不注入构建时间**：注入后同一份代码每次打包字节都不同，
-    // 「指纹比对是否最新」就永远失真（真机踩过：明明同版本却报不一致）。
-    // 构建时间改由入口文件的 mtime 反映（见 system.ts 的 build.built_at）。
-    // 注意：define 的值按 **JS 表达式** 解析，故用 JSON.stringify 得到纯双引号；
-    // 写成单引号包裹会让引号成为值的一部分（真机踩过：版本显示成 v"1.4.0"）。
-    define: {
-      __AGENT_VERSION__: JSON.stringify(pkg.version),
-      __BUILD_COMMIT__: JSON.stringify(commit),
-    },
-    outfile: bundleOut,
-    logLevel: 'info',
-  });
+  const bundled = await bundleAgent({ outfile: bundleOut });
+  log(`  版本 ${bundled.version} @ ${bundled.commit}（${(bundled.bytes / 1024 / 1024).toFixed(1)}MB）`);
 
   log(`\n=== ③ 下载 Node.js Windows 运行时（${NODE_ARCH}）===`);
   // 缓存文件名**必须含架构**。曾用固定名 node-runtime.zip：release 先打 x64（下载并缓存），
