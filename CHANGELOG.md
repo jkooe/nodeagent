@@ -7,7 +7,93 @@
 
 ## [未发布]
 
-（暂无）
+> 主题：**控制台「去命令行化」** —— 双击应用即用，启停/重启/更新/日志/托盘常驻/开机自启全部在界面里完成。
+> 目标原文：「不再打开命令行窗口，运行应用之后，有启动、停止、重启、检查更新等功能，
+> 有日志功能，可以后台运行和开机自启等等功能」。
+
+### 新增 —— 本机被控端托管（`apps/console/src-tauri/src/agent.rs`，约 560 行）
+
+- **新增「本机服务」页（`/local`，默认首页）与「服务日志」页（`/logs`）**。
+  默认路由由 `/nodes` 改为 `/local`：打开应用先看到「本机被控端」的启停面板，
+  而不是先要求用户填一个连接地址 —— 这是「运行应用之后就有启动/停止/重启」的落点。
+- **进程生命周期管理**：`AgentManager`（`STOPPED / STARTING / RUNNING / STOPPING / CRASHED` 五态）。
+  启动、停止、重启均走界面按钮；`stop()` 在 Windows 走 `taskkill /PID <pid> /T /F`（连子进程树一起收），
+  POSIX 走 `child.kill()`，随后**轮询确认端口已释放**才算停干净。
+  **重复启动被拒绝**（不会起出两个进程），**异常退出自动重启**（上限 5 次，超限停在 `CRASHED` 并保留原因）。
+- **日志功能**：同时捕获被控端 `stdout`/`stderr` 两路，环形缓冲 4000 行。
+  每行带一个**单调递增的 `seq`** —— 这是刻意设计：环形缓冲淘汰旧行后，若用「位置下标」做游标，
+  前端的增量拉取会静默错位；独立 `AtomicU64` 发号可跨淘汰保持连续。
+  界面侧：实时事件推送、关键字过滤、三流（stdout/stderr/system）复选框、自动滚动、
+  暂停接收、重新拉取、滚到底部、导出文本、清空。
+- **界面化自更新**：`check_update` / `download` / `apply_update` 三个能力。
+  - `check_update` 读 GitHub Release 的**稳定别名** `latest.json`（而非 API），**不占用 API 配额**、不受限流影响。
+  - `download` 的 `--sha256` 是**必填**（不校验哈希等于开放远程代码执行），校验不通过**不落盘**，写后再复核一次。
+  - `apply_update` 的替换顺序：下载到 `runtime/agent.mjs.staged-<pid>` → 复用已有被控端停服 →
+    备份现有脚本 → **原子替换** → 写 `agent.seed.json` 版本 → 按需回启。
+    任一步失败都停在替换之前，不会留下半截产物。
+- **开机自启**（`autostart.rs`）：macOS 写 LaunchAgent `~/Library/LaunchAgents/cn.jkooe.nodeagent-console.plist`
+  （`RunAtLoad`；**刻意不用 `KeepAlive`**，否则会与控制台的崩溃自愈形成两层守护互相打架）；
+  Windows 用计划任务（**登录用户 + `Interactive` + `Highest`**）。
+  一个易错点：macOS 的 `bootstrap` 目标 `gui/<uid>` 里的 uid **不能硬编码 501**（那只是首个本地用户的常见值），
+  改为运行时 `id -u` 现取。
+- **后台常驻（托盘）**：托盘图标 + 右键菜单（显示主窗口 / 启动 / 停止 / 重启 / 退出）；
+  左键单击图标唤出窗口。窗口 `CloseRequested` → `prevent_close()` + `hide()`，
+  **关窗不退出**，与「后台运行」的要求一致；真正退出走托盘菜单。
+- **`--agent-only` 仅服务模式**：开机自启拉起的是**控制台自身**（GUI 子系统程序，不带控制台窗口），
+  进入该模式后不显示窗口、只把被控端托起来；而不是去直接拉起裸 `node`。
+
+### 新增 —— 消灭命令行窗口（三条措施，缺一不可）
+
+| # | 措施 | 位置 | 不加会怎样 |
+|---|---|---|---|
+| 1 | 控制台是 GUI 子系统程序，自身不弹控制台 | Tauri 默认 | 打开应用先弹黑窗 |
+| 2 | spawn `node.exe` 时加 `CREATE_NO_WINDOW`（`0x0800_0000`） | `agent.rs` 的 `creation_flags` | **每次启动被控端都闪一个黑窗** —— 正是皇上要求消灭的现象 |
+| 3 | 开机自启拉起控制台而非裸 `node` | `autostart.rs` + `--agent-only` | 开机时黑窗一闪而过 |
+
+### 新增 —— 契约守卫（`tests/unit/console-commands.test.mjs`，6 用例）
+
+把「改了名字两边不同步、但不报错」的三类**静默失效**钉死，避免「界面点了没反应、控制台无异常」：
+
+| # | 守卫 | 抓什么 |
+|---|---|---|
+| 1 | 前端每个 `invoke("x")` 都已在 Rust `generate_handler!` 注册 | 前端调了个不存在的命令 → 运行时才 `not found` |
+| 2 | Rust 注册的命令都被前端使用 | 死命令堆积（改名后残留的旧命令） |
+| 3 | `emit("na-*")` ⇄ `listen("na-*")` 双向一致 | 事件名不匹配 → **界面永远不刷新，且无任何报错** |
+| 4 | `tauri.bundle.gen.json` 资源目标名 ⇄ Rust `resolve_*` 字面量 | 映射改名 → 生产包内找不到 sidecar/node/agent |
+| 5 | sidecar 方法名 ⇄ Rust `.request("x")` | 跨语言调用错名 |
+| 6 | 新页面已注册路由 + 默认路由指向 `/local` + 懒加载的 view 文件真实存在 | 「写了页面但进不去」／循环依赖导致的路由表推导失败 |
+
+> **已注入故障实测会红**：把 `agent_start` 改成 `agent_startX`、`na-agent-state` 改成 `na-agent-statee`
+> → 当场 2 条失败（`#fail = 2`）；复原后 `#pass = 6 / #fail = 0`，文件逐字节还原。
+> 未验证过会红的守卫等于没有守卫。
+
+### 变更 —— 打包与单一实现
+
+- **被控端 esbuild 配置抽为 `scripts/lib/bundle-agent.mjs`**（`repoRoot` / `repoVersion` / `gitShortCommit` / `bundleAgent`），
+  `scripts/pack.mjs`（被控端发布包）与 `scripts/prepare-console.mjs`（控制台资源）**共用同一份**。
+  此前 `pack.mjs` 里内联了一份配置，控制台若再内联一份就是**两套真相**（改一处漏一处，只在产物里暴露）。
+  该模块刻意**不注入构建时间** —— 否则每次打包字节都不同，产物指纹比对会失真。
+- **控制台随包分发被控端脚本**：资源由 2 份（`sidecar.mjs` / `node`）增至 **3 份**（+ `agent.mjs`）。
+  带来的效果：用户装完控制台，**本机被控端已经就绪**，不需要另外手工安装一次才能点「启动」。
+- **播种防降级**：`<数据目录>/runtime/agent.seed.json` 记录版本，
+  只有「**随包版本 > 已安装版本**」才覆盖数据目录里的脚本。
+  若写成「同版本才跳过」，则用户被控端自更新到更新版本后，下次开控制台会被**静默降回旧版**。
+  版本比较按**数值逐段**（`2.0.10 > 2.0.9`），字符串比较会误判。
+- `verify-bundle.mjs` 增加 `agent.mjs` 存在性检查 + 用打包内的 node 跑 `--check agent.mjs`。
+
+### 变更 —— CI
+
+- `.github/workflows/rust.yml`：资源数断言 2 → **3**；`paths` 增加 `scripts/lib/bundle-agent.mjs` 与 `apps/agent/**`；
+  构建步骤补 `@nodeagent/agent`（`prepare:node` 现在依赖它的 dist，
+  **新步骤必须逐条核对前置产物由哪一步生成、顺序是否在其后** —— 本地验证时产物早就在，会把这层依赖完全掩盖）。
+- `.github/workflows/windows-e2e.yml`：步骤名与注释同步为含 `agent.mjs` 的说明。
+
+### 说明 —— 本轮**刻意不升版本号**
+
+本轮新增的全部是**控制台**功能，**被控端能力集合未变**（未增删任何 `system.*` / `fs.*` / `app.*` 能力）。
+而 `scripts/lib/bundle-agent.mjs` 会把**根 `package.json` 的 version 注入 `agent.mjs`**（`__AGENT_VERSION__`）：
+一旦为控制台功能去升版本号，被控端就会**谎报**一个它并未包含的版本 —— 属版本纪律所禁止。
+故版本号维持 **2.0.2**，本批改动记入本节，待真正含被控端变更时由 `pnpm release minor` 一并升号。
 
 ---
 

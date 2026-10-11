@@ -343,8 +343,14 @@ nodeagent pull "C:\big.iso" --out ./big.iso          # 下载（大文件自动�
 协议客户端由 **Node sidecar**（`apps/console/sidecar/`）承担（复用 `@nodeagent/client`，
 Tauri 侧经 Cargo path 依赖），**不引入第二套协议实现**。
 
+**打开即用、全程不碰命令行**：应用自带 Node 运行时与被控端脚本，
+默认页面就是「本机服务」——点按钮即可启动 / 停止 / 重启本机被控端，
+并支持检查更新、查看日志、后台常驻（托盘）、开机自启。
+
 | 页面 | 能力 |
 |---|---|
+| **本机服务**（默认） | 本机被控端启停/重启、连接本机、节点 ID 与密钥、开机自启、后台运行、异常自动重启、检查并应用更新 |
+| **服务日志** | 被控端 stdout/stderr 实时推送、关键字过滤、暂停接收、导出、清空 |
 | 设备管理 | 连接/断开、保存多台设备、能力清单与握手元信息、实时日志 |
 | 状态总览 | CPU / 内存 / 磁盘 / 网卡，3s 轮询 |
 | 终端 | `system.shell.exec`（可设超时）、历史回放 |
@@ -356,12 +362,17 @@ Tauri 侧经 Cargo path 依赖），**不引入第二套协议实现**。
 ```bash
 pnpm -r build                       # 含 console 前端
 cd apps/console && pnpm tauri dev   # 开发态（起 Vite + Tauri 窗口）
-cd apps/console && pnpm tauri build # 打包（macOS 实测 .app ≈ 6.8 MiB）
+pnpm --filter nodeagent-console bundle   # 打包（含 sidecar + Node 运行时 + 被控端脚本）
+#   macOS 实测：.app 90.8 MiB ／ .dmg 33.78 MiB（分发件，其中 Node 运行时 86MB）
 ```
 
 ⚠️ 平台差异：`app.*` 与 `system.service.list` **仅在被控端为 Windows 时可用**，
 非 Windows 被控端会返回 `E_UNSUPPORTED_PLATFORM`。控制台连接后会探测
 `system.info.os` 并**事前禁用**这些入口，而不是发出注定失败的请求。
+
+⚠️ 控制台**已自带** Node 运行时与被控端脚本，目标机器无需预装 Node.js，也无需先手工安装被控端；
+但**开机自启与被控端的图形能力**要求运行在**登录用户会话**中（Windows 计划任务用
+`Interactive` + 登录用户；SYSTEM 会话 0 没有交互桌面，截图/窗口类能力会失败）。
 
 ## 安全模型
 
