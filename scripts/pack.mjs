@@ -249,15 +249,23 @@ async function main() {
   //    把预共享密钥打进包里等于公开密钥。install.cmd 在文件缺失时会自动生成新密钥
   //    （生成在安装目录，只留在被控端本机），所以排除它不影响安装。
   if (process.platform === 'win32') {
-    // Windows：GitHub runner / 多数 Windows 没有 Info-ZIP，改用 PowerShell 的 Compress-Archive。
-    // 先删掉 PSK.txt（若存在）再压 —— Compress-Archive 无 -x 排除参数。
+    // Windows：GitHub runner / 多数 Windows 没有 Info-ZIP。
+    // 先删掉 PSK.txt（若存在）再压 —— 打包器无法按需排除单个文件。
     const psk = join(PKG_DIR, 'PSK.txt');
     if (existsSync(psk)) rmSync(psk, { force: true });
+    // ⚠️ 刻意不用 `Compress-Archive -Path '<dir>\*'`：它会把**目录名当前缀**写进条目
+    //    （产物变成 `<dir>/node.exe`），而 macOS 的 `cd <dir> && zip -r .` 是**裸名** `node.exe`
+    //    —— 两平台产物**结构不一致**。看着是小事，代价却不小：
+    //      ① 按条目名取文件的校验会失配（2026-10-11 真例：CI 在 Windows 上报
+    //         「zip 内未找到条目 node.exe」，而 macOS 本地全绿 → 方向恰好相反）；
+    //      ② CI 校验的产物与发布产物**不同构**，校验价值打折。
+    //    改用 .NET 的 ZipFile::CreateFromDirectory —— 它打包**目录内容**，条目同样是裸名。
     execFileSync(
       'powershell',
       [
         '-NoProfile', '-Command',
-        `Compress-Archive -Path '${PKG_DIR}\*' -DestinationPath '${zipOut}' -Force`,
+        `Add-Type -AssemblyName System.IO.Compression.FileSystem; ` +
+          `[IO.Compression.ZipFile]::CreateFromDirectory('${PKG_DIR}', '${zipOut}')`,
       ],
       { stdio: 'inherit' },
     );

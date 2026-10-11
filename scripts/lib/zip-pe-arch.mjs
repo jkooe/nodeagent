@@ -49,7 +49,13 @@ export function readZipEntry(zipPath, entryName) {
     const commentLen = buf.readUInt16LE(off + 32);
     const localOff = buf.readUInt32LE(off + 42);
     const name = buf.toString('utf8', off + 46, off + 46 + nameLen);
-    if (name === entryName) {
+    // 条目名匹配用 **basename**，而不是完整名 —— 因为两平台的打包器不一样：
+    //   macOS/Linux：`cd <dir> && zip -r <out> .`    → 条目是裸名 `node.exe`
+    //   Windows    ：`Compress-Archive -Path <dir>\*` → 条目带前缀 `<dir>/node.exe`
+    // 2026-10-11 真例：只比完整名会让「本地（macOS）全绿、CI（Windows）全红」，
+    // 且方向恰好相反 —— 而 CI 是唯一会跑 Windows 打包路径的地方。
+    const entryBase = name.replace(/\\/g, '/').split('/').pop();
+    if (entryBase === entryName) {
       const lNameLen = buf.readUInt16LE(localOff + 26);
       const lExtraLen = buf.readUInt16LE(localOff + 28);
       const start = localOff + 30 + lNameLen + lExtraLen;
