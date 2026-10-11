@@ -202,6 +202,9 @@ A 基础验收（verify.mjs）
 | 分辨率/坐标与真机不符 | VM 显示栈不同 | 只做逻辑验证，坐标待真机 |
 | 性能数字明显偏低 | VM + 可能的 Prism 模拟 | **不要**采信 VM 的性能指标 |
 | 杀软相关错误复现不了 | VM 里只有 Defender | 需真机（或另行安装第三方杀软） |
+| **x64 Node 在 ARM Windows 上"启动慢/协议异常"** | 走 **Prism 模拟层**，TLS 握手下行为异常（能 listen，握手不完成） | 换 **ARM64 Node**（用 `nodeagent-win-arm64.zip`） |
+| **`screen.capture` 报 `E_EXECUTION_FAILED`** | 被控端跑在 **SYSTEM（会话 0）**，会话 0 **无交互桌面** | 以**登录用户 + `LogonType Interactive`** 启动（见 §8 配方）；**非产品缺陷** |
+| **autologon 对微软账户（MSA）无效** | MSA 凭据由 **CloudAP** 处理，注册表 `DefaultPassword`（Winlogon→LSA）那条路对它不生效 | 建**本地账户**做 autologon（`LogonUser` 对 MSA 恒返回 `1326`） |
 
 ---
 
@@ -211,15 +214,15 @@ A 基础验收（verify.mjs）
 |---|---|---|---|
 | 2026-10-11 | **B5 架构适配** | ✅ arm64 包原生可用；❌ win-x64 包不可用 | 同机同参对照：arm64 握手成功 / x64 `E_TIMEOUT` |
 | 2026-10-11 | 基础能力（A 子集） | ✅ | `system.info`（`arch=arm64`、能力 51 项两端一致）/ `status` / `process.list` / `service.list` / `shell.exec`（退出码 0）/ `audit.list` / `audit verify`（链完整）均正常 |
-| 2026-10-11 | 图形能力 | ⏳ 待登录态 | 会话 0（SYSTEM）下 `screen.capture` 报 `E_EXECUTION_FAILED`；需以登录用户 Interactive 运行后复验 |
+| 2026-10-11 | **图形能力** | ✅ **登录态下全通** | 以登录用户 + `LogonType Interactive` 启动后：`screen.capture` 返回**真实桌面** 1800×1010（含中文，渲染正常）／`window.list` 返回窗口列表（前台窗口 PID 与实测一致）／`screen` 枚举显示器／`audit verify` 链完整。**证实会话 0 的失败是身份问题，非产品缺陷** |
 
 > 本轮**尚未执行**：B1（v1.5 四项输入）/ B2（v23 三防护）/ B3（v26 重启清理）/ B4（审计锚点端到端）。
 > 另注：VM 的 `prlctl exec` 默认以 **SYSTEM（会话 0）** 身份执行，图形类能力须换登录用户会话方可复验。
-| x64 Node 启动慢/异常 | 走 Prism 模拟 | 换 ARM64 Node 复核 |
+> **图形能力复验配方（本轮实证可通过）**：见 §8 末节。
 
 ---
 
-## 7. 实际验证结果（2026-10-11，Parallels 27 + Win11 ARM）
+## 8. 实际验证结果（2026-10-11，Parallels 27 + Win11 ARM）
 
 > 本节是**实测记录**，不是计划。环境：Parallels 共享网络，VM `10.211.55.9`，
 > Mac 侧 `bridge100=10.211.55.2`；被控端 `-NodeId win-arm -AllowInput`。
@@ -263,3 +266,75 @@ ARM Windows（含 Parallels Win11 ARM）请用 **arm64 包**；用 x64 包会卡
 | 计划任务启动后端口不通 | **node.exe 被手工进程占用**（覆盖失败）+ 8765 被占（任务起来即冲突退出） | 先 `Get-Process node \| Stop-Process -Force` 再解压/启动 |
 | 自测时 `socket hang up` | **URL 写成 `ws://` 而服务端是 `wss`**（`tls:true`） | 用 `wss://` |
 | 测 `max_connections` 把自己锁在外面 | 测试值太小 + 被拒连接会被计入握手失败 → 恶性循环 | ① 测试时留余量 ② **给自己加 `auth_ban.whitelist`** |
+
+---
+
+## 9. 图形能力复验配方（2026-10-11 实证）
+
+图形类能力（`screen.capture` / `window.list` / `input.*` / `screen.find`）在 VM 里失败的**唯一原因**
+是被控端跑在 **SYSTEM（会话 0）**——会话 0 没有交互桌面。要让它们可用，须让被控端跑在
+**已登录用户的会话**里。完整配方（本轮实测可复现）：
+
+### ① 建立登录会话（关键坑：微软账户不行）
+
+VM 无人登录时停在 LogonUI。可脚本化的路径只有 **autologon**，但：
+
+> **微软账户（MSA）不支持传统 autologon。** MSA 凭据由 **CloudAP** 凭据提供程序处理，
+> 而 autologon 走的是 Winlogon→LSA + 注册表 `DefaultPassword` 那条**老路**。
+> 实测：对 MSA 账户调 `LogonUser` 四种域形式**全部返回 `1326`（用户名或密码错误）**，
+> 且 Winlogon 日志里**连一次登录尝试都不记录**（账户解析阶段就被跳过）——
+> 极易误判为"密码打错了"。
+
+**配方**：新建一个**本地账户**再 autologon：
+```powershell
+$pw = ConvertTo-SecureString '<password>' -AsPlainText -Force
+New-LocalUser -Name pdverify -Password $pw -PasswordNeverExpires -AccountNeverExpires
+Add-LocalGroupMember -Group Administrators -Member pdverify
+$k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+Set-ItemProperty $k AutoAdminLogon   '1'
+Set-ItemProperty $k DefaultUserName  'pdverify'
+Set-ItemProperty $k DefaultDomainName $env:COMPUTERNAME
+Set-ItemProperty $k DefaultPassword  '<password>'    # 明文，验完务必清理
+Restart-Computer -Force
+```
+
+### ② 以登录用户身份启动被控端（这一步才是图形能力的关键）
+
+```powershell
+$act = New-ScheduledTaskAction -Execute 'C:\nodeagent-test\node.exe' -Argument 'C:\nodeagent-test\agent.mjs'
+$pri = New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME + '\pdverify') -LogonType Interactive -RunLevel Highest
+Register-ScheduledTask -TaskName 'na-gui' -Action $act -Principal $pri -Force
+Start-ScheduledTask -TaskName 'na-gui'
+```
+
+`LogonType Interactive` = 「仅在用户登录时运行」→ 任务落在**该用户的交互会话**里。
+
+### ③ 核对（三件事缺一不可）
+
+| 检查 | 期望 |
+|---|---|
+| `Get-Process node \| Select Id,SessionId` | **SessionId = 1**（不是 0） |
+| `Get-Process explorer \| Select SessionId` | 1（桌面已就绪） |
+| `Get-LocalUser pdverify \| Select LastLogon` | 有值（确实登录过） |
+
+### ④ 证书指纹会变（这是钉住机制在正常工作）
+
+换了数据目录（新用户 → 新 `.nodeagent/`）→ agent **重新生成自签证书** →
+客户端报 `E_CERT_MISMATCH`。用 `nodeagent connect <ip> --forget-cert --insecure` 重钉即可。
+**注意**：这不代表被中间人，而是"换目录=换身份"的正常结果。
+
+### ⑤ 验证完的清理（安全）
+
+autologon 会把密码**明文**写进 `HKLM\...\Winlogon\DefaultPassword`：
+
+```powershell
+$k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+Remove-ItemProperty $k DefaultPassword -ErrorAction SilentlyContinue
+Set-ItemProperty   $k AutoAdminLogon '0'
+Unregister-ScheduledTask -TaskName 'na-gui' -Confirm:$false
+Remove-LocalUser -Name pdverify          # 临时账户一并删除
+```
+
+> 若需**保留**该环境供后续验证（重启后仍自动恢复图形会话），可暂不清理 ——
+> 但要清楚：明文密码就留在注册表里。
+
