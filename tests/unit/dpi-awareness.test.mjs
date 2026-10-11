@@ -34,6 +34,25 @@ import { PS_DPI_AWARE } from '../../apps/agent/dist/util/dpi.js';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (p) => readFileSync(join(ROOT, p), 'utf8');
 
+/**
+ * 把任意平台的路径归一到 posix 形态。
+ *
+ * ⚠️ 必须显式归一：`path.relative()` 在 Windows 返回 `apps\agent\…`，
+ * 而在 macOS/Linux 返回 `apps/agent/…`。任何用 `/` 硬编码的 `includes()` 判断
+ * 在 Windows 上恒为 false —— 本地永远绿，CI 才红（2026-10-12 真例）。
+ */
+export const toPosix = (p) => p.replaceAll('\\', '/');
+
+/**
+ * `capabilities/win-ps/` 下的片段文件是否应被兜底扫描排除。
+ *
+ * 这些片段（`prelude-*` / `body-*`）不自带 DPI 感知，而是由 `WIN_HELPER_PRELUDE`
+ * 在拼接时于**最前面**统一注入 —— 其序位已由「助手前置段：DPI 感知必须最先执行」断言。
+ * 因此排除它们是正确的，**但判断本身不得依赖平台分隔符**（函数内自行归一）。
+ */
+export const isWinPsFragment = (relPath, name) =>
+  toPosix(relPath).includes('capabilities/win-ps/') && /^(prelude|body)-/.test(name);
+
 /** 断言：脚本里注入了 DPI 感知，且**早于**第一个依赖它的调用。 */
 function assertDpiInjectedFirst(script, { before, label }) {
   assert.ok(script.includes(PS_DPI_AWARE), `${label}：未注入 PS_DPI_AWARE`);
@@ -129,9 +148,9 @@ test('兜底：capabilities 下命中坐标信号的新文件必须引用 PS_DPI
         continue;
       }
       if (!name.endsWith('.ts') || name.endsWith('.d.ts')) continue;
-      const rel = relative(ROOT, full);
+      const rel = toPosix(relative(ROOT, full));
       // 片段文件由 WIN_HELPER_PRELUDE 统一提供 DPI 感知（上面已断言其序位）
-      if (rel.includes('capabilities/win-ps/') && /prelude-|body-/.test(name)) continue;
+      if (isWinPsFragment(rel, name)) continue;
       const src = readFileSync(full, 'utf8');
       const hit = COORD_SIGNALS.find((s) => src.includes(s));
       if (hit && !src.includes('PS_DPI_AWARE')) offenders.push(`${rel}（命中 "${hit}"）`);
@@ -144,5 +163,36 @@ test('兜底：capabilities 下命中坐标信号的新文件必须引用 PS_DPI
     [],
     '以下文件在用屏幕坐标却没引用 PS_DPI_AWARE —— 请 import 并在坐标调用前执行：\n' +
       offenders.map((o) => `  - ${o}`).join('\n'),
+  );
+});
+
+/**
+ * 跨平台回归：排除逻辑必须与路径分隔符无关。
+ *
+ * 首版写的是 `rel.includes('capabilities/win-ps/')` —— 在 Windows 上 `rel` 形如
+ * `apps\agent\…`，该判断**恒为 false** → 片段文件被误报成违规，于是
+ * **本地 macOS 全绿、CI 才红**（2026-10-12 真例：`prelude-image.ts` 命中
+ * `CopyFromScreen` 被点名）。本测试直接喂 Windows 形态路径，把这类差异
+ * 钉进「本地可验」的范围，不再依赖真的跑在 Windows 上才发现。
+ */
+test('兜底守卫：片段文件排除逻辑必须与路径分隔符无关', () => {
+  const win = 'apps\\agent\\src\\capabilities\\win-ps\\prelude-image.ts';
+  const posix = 'apps/agent/src/capabilities/win-ps/prelude-image.ts';
+
+  assert.equal(toPosix(win), posix, 'toPosix 必须把反斜杠归一为斜杠');
+  assert.equal(isWinPsFragment(win, 'prelude-image.ts'), true, 'Windows 反斜杠路径必须被识别为片段');
+  assert.equal(isWinPsFragment(posix, 'prelude-image.ts'), true, 'posix 路径必须被识别为片段');
+  assert.equal(isWinPsFragment('apps\\agent\\src\\capabilities\\win-ps\\body-list.ts', 'body-list.ts'), true);
+
+  // 反向：非片段、或不在 win-ps 目录下的一律**不得**被排除（否则兜底形同虚设）
+  assert.equal(
+    isWinPsFragment('apps\\agent\\src\\capabilities\\screen.ts', 'screen.ts'),
+    false,
+    'capabilities 顶层文件不得被排除',
+  );
+  assert.equal(
+    isWinPsFragment('apps\\agent\\src\\capabilities\\win-ps\\helper.ts', 'helper.ts'),
+    false,
+    'win-ps 下的非片段文件（无 prelude-/body- 前缀）不得被排除',
   );
 });
