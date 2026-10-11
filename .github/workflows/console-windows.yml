@@ -153,22 +153,139 @@ jobs:
         # （这在 macOS 上抓出过 strip 破坏签名导致 SIGKILL 的问题，Windows 侧同样值得钉住）
         run: node apps/console/scripts/verify-bundle.mjs --runtime
 
-      - name: 断言安装包存在且体积合理
+      # ⚠️ 断言的是**最终交付物**，不是中间产物。
+      #
+      # 这一版是本步的第二次实现。首版写成「安装包体积 > 50MB」，理由是
+      # 「含 Node 运行时（约 80MB），故不可能是个小文件」—— 这个推理把
+      # **未压缩的目录形态**（.app ≈ 92MB）当成了**压缩安装包的体积**。
+      # 2026-10-11 首个 run 两个 job 双双死在这一行：实测 msi 34.2MB、
+      # nsis 19.5～23.2MB（LZMA 下 node.exe 自身就能压到 1/3～1/4），阈值必然误杀。
+      #
+      # 更根本的问题是：**体积阈值属于「中间逻辑自洽」式断言** —— 包大
+      # 不等于 node.exe 真在里面，包小也不等于没在里面（压缩率会随版本漂）。
+      # 故改为**解开包、查内容**，一次钉死三件事：
+      #   ① 三个随包资源（node.exe / sidecar.mjs / agent.mjs）必须都在 ——
+      #      缺任一，装到真机上就是「应用能开、但托不起被控端」；
+      #   ② node.exe 的 PE Machine 必须等于目标架构 —— 最终产物的架构断言，
+      #      直接对治「arm64 包里装的是 x64 node.exe」那类只在真机暴露的事故；
+      #   ③ node.exe 解压后体积必须 > 40MB —— 挡住「塞了个占位文件」。
+      # 附带收益：真装一遍本身就是安装器冒烟（比只读目录更强）。
+      - name: 断言安装包内容（随包 node.exe 齐全且架构正确）
         shell: pwsh
+        # 静默安装理论上会自行结束；给个上限，免得万一卡住把 job 拖满 60 分钟
+        timeout-minutes: 8
         run: |
           $ErrorActionPreference = 'Stop'
+          $expect = '${{ matrix.pe }}'
           $bundle = 'apps/console/src-tauri/target/release/bundle'
-          $found = @()
-          $found += Get-ChildItem -Path "$bundle/msi/*.msi" -ErrorAction SilentlyContinue
-          $found += Get-ChildItem -Path "$bundle/nsis/*.exe" -ErrorAction SilentlyContinue
-          if ($found.Count -eq 0) { throw "未产出任何安装包（$bundle 下为空）" }
-          # 含 Node 运行时（约 80MB），故安装包不可能是个小文件；
-          # 体积过小意味着运行时没被打进去 —— 那种包能装、但一启动就找不到 node
-          foreach ($f in $found) {
-            $mb = [math]::Round($f.Length / 1MB, 1)
-            Write-Host "$($f.Name)  $mb MB"
-            if ($mb -lt 50) { throw "$($f.Name) 仅 $mb MB —— 随包 Node 运行时疑似未打入" }
+
+          function Get-PeMachine([string]$path) {
+            $fs = [System.IO.File]::OpenRead($path)
+            try {
+              $br = [System.IO.BinaryReader]::new($fs)
+              $fs.Position = 0x3C
+              $peOff = $br.ReadInt32()
+              $fs.Position = $peOff
+              if ($br.ReadUInt32() -ne 0x00004550) { throw "不是 PE 文件：$path" }
+              return '0x{0:x4}' -f $br.ReadUInt16()
+            } finally { $fs.Dispose() }
           }
+
+          # 在候选目录里找出真正装了 node.exe 的那个（安装位置随安装形态而异）
+          function Find-PayloadRoot([string[]]$candidates) {
+            foreach ($c in $candidates) {
+              if (-not (Test-Path $c)) { continue }
+              $hit = Get-ChildItem -Path $c -Recurse -Filter 'node.exe' -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($hit) { return $c }
+            }
+            return $null
+          }
+
+          # 解开后的目录里必须三样齐全，且 node.exe 架构要对
+          function Assert-Payload([string]$root, [string]$label) {
+            $node = Get-ChildItem -Path $root -Recurse -Filter 'node.exe' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            $side = Get-ChildItem -Path $root -Recurse -Filter 'sidecar.mjs' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            $agent = Get-ChildItem -Path $root -Recurse -Filter 'agent.mjs' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            $listing = (Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object -First 40 -ExpandProperty FullName) -join "`n"
+            if (-not $side) { throw "$label 内未找到 sidecar.mjs`n实际内容：`n$listing" }
+            if (-not $agent) {
+              throw "$label 内未找到 agent.mjs —— 被控端未随包，装上后启动不了本机被控端`n实际内容：`n$listing"
+            }
+            if (-not $node) {
+              throw "$label 内未找到 node.exe —— 随包 Node 运行时未打入，装上后一启动就找不到 node`n实际内容：`n$listing"
+            }
+            $mb = [math]::Round($node.Length / 1MB, 1)
+            $machine = Get-PeMachine $node.FullName
+            Write-Host "  node.exe     $mb MB   PE Machine=$machine"
+            Write-Host "  sidecar.mjs  $([math]::Round($side.Length / 1KB)) KB"
+            Write-Host "  agent.mjs    $([math]::Round($agent.Length / 1KB)) KB"
+            if ($mb -lt 40) { throw "$label 内 node.exe 仅 $mb MB —— 体积异常，疑似占位文件" }
+            if ($machine -ne $expect) {
+              throw "$label 内 node.exe 架构错误：期望 $expect，实际 $machine —— 严禁发布该包"
+            }
+          }
+
+          $msis = @(Get-ChildItem -Path "$bundle/msi/*.msi" -ErrorAction SilentlyContinue)
+          $nsis = @(Get-ChildItem -Path "$bundle/nsis/*.exe" -ErrorAction SilentlyContinue)
+          if (($msis.Count + $nsis.Count) -eq 0) { throw "未产出任何安装包（$bundle 下为空）" }
+
+          $checked = 0
+
+          foreach ($m in $msis) {
+            Write-Host "── MSI：$($m.Name)  $([math]::Round($m.Length / 1MB, 1)) MB"
+            # 管理安装（/a）＝ 只解包不注册，正合此处用途
+            $dest = Join-Path $PWD 'pkg-extract/msi'
+            Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            $log = Join-Path $PWD 'msi-extract.log'
+            & msiexec.exe /a "$($m.FullName)" /qn "TARGETDIR=$dest" /l*v "$log"
+            # 3010 = 成功但需重启，不是失败
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+              $tail = (Get-Content $log -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
+              throw "msiexec /a 失败（退出码 $LASTEXITCODE）：$($m.Name)`n$tail"
+            }
+            $root = Find-PayloadRoot @($dest)
+            if (-not $root) { throw "MSI 管理安装后未在 $dest 下找到 node.exe" }
+            Assert-Payload $root $m.Name
+            $checked++
+          }
+
+          foreach ($n in $nsis) {
+            Write-Host "── NSIS：$($n.Name)  $([math]::Round($n.Length / 1MB, 1)) MB"
+            # /S 静默、/D 指定目录：两者都由 NSIS **运行时自身**在 .onInit 之前解析
+            # （核心参数，不依赖 Tauri 模板），故对任何 NSIS 安装包都成立。
+            # /D= 必须是最后一个参数且**不加引号**，故这里用仓库目录下的相对路径
+            # （不含空格），而不是通常带空格的用户目录。
+            $dest = Join-Path $PWD 'pkg-extract/nsis'
+            Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
+            New-Item -ItemType Directory -Force -Path $dest | Out-Null
+            & $n.FullName /S "/D=$dest"
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+              throw "NSIS 静默安装失败（退出码 $LASTEXITCODE）：$($n.Name)"
+            }
+            # /D= 理论上一律生效，但若模板在 .onInit 里改写了 $INSTDIR 就未必；
+            # 故把默认安装位置一并列为候选，避免「装成功了却因为找不到目录而误报」。
+            $root = Find-PayloadRoot @(
+              $dest,
+              (Join-Path $env:LOCALAPPDATA 'nodeagent-console'),
+              (Join-Path $env:LOCALAPPDATA 'Programs/nodeagent-console'),
+              (Join-Path $env:ProgramFiles 'nodeagent-console')
+            )
+            if (-not $root) {
+              throw "NSIS 静默安装后未找到随包 node.exe —— 已查：$dest 与默认安装位置"
+            }
+            Write-Host "  安装位置：$root"
+            Assert-Payload $root $n.Name
+            $checked++
+          }
+
+          Write-Host ""
+          Write-Host "✓ 已核对 $checked 个安装包：node.exe / sidecar.mjs / agent.mjs 齐全，node.exe 架构 = $expect"
 
       - name: 上传安装包
         uses: actions/upload-artifact@v4
