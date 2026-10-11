@@ -146,7 +146,7 @@ onMounted(() => {
 
 <template>
   <div v-if="!conn.connected">
-    <n-empty description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
+    <n-empty :show-icon="false" description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
   </div>
 
   <div v-else class="wrap">
@@ -172,7 +172,7 @@ onMounted(() => {
     </n-card>
 
     <n-card size="small" style="margin-top: 16px">
-      <n-empty v-if="!entries.length" description="目录为空或未加载" size="small" />
+      <n-empty :show-icon="false" v-if="!entries.length" description="目录为空或未加载" size="small" />
       <n-data-table
         v-else
         :columns="cols"

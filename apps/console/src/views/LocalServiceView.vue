@@ -110,7 +110,7 @@ function openRelease() {
 <template>
   <n-spin :show="busy && !agent.status">
     <div class="wrap">
-      <n-alert v-if="agent.error" type="error" style="margin-bottom: 14px" :show-icon="true">
+      <n-alert v-if="agent.error" type="error" style="margin-bottom: 14px">
         {{ agent.error }}
       </n-alert>
 
@@ -158,7 +158,7 @@ function openRelease() {
               <n-button :disabled="!cfg" quaternary @click="doConnectLocal">连接本机</n-button>
             </n-space>
 
-            <n-alert v-if="proc?.last_exit" type="default" :show-icon="false" style="margin-bottom: 12px">
+            <n-alert v-if="proc?.last_exit" type="default" style="margin-bottom: 12px">
               上次退出：{{ proc.last_exit }}
             </n-alert>
 
@@ -293,7 +293,7 @@ function openRelease() {
 
             <n-space style="margin-top: 12px">
               <n-button size="small" :loading="busy" @click="doCheckUpdate">检查更新</n-button>
-              <n-popconfirm @positive-click="doApplyUpdate">
+              <n-popconfirm :show-icon="false" @positive-click="doApplyUpdate">
                 <template #trigger>
                   <n-button
                     size="small"

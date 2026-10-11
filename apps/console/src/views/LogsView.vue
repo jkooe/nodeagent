@@ -105,7 +105,7 @@ function streamType(s: string) {
         <n-button size="small" @click="logs.load()">重新拉取</n-button>
         <n-button size="small" @click="scrollToBottom">滚到底部</n-button>
         <n-button size="small" @click="exportLogs">导出</n-button>
-        <n-popconfirm @positive-click="clear">
+        <n-popconfirm :show-icon="false" @positive-click="clear">
           <template #trigger>
             <n-button size="small" type="error" quaternary>清空</n-button>
           </template>

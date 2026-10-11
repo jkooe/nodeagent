@@ -69,7 +69,7 @@ onUnmounted(stop);
 
 <template>
   <div v-if="!conn.connected">
-    <n-empty description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
+    <n-empty :show-icon="false" description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
   </div>
 
   <div v-else class="wrap">
@@ -142,7 +142,7 @@ onUnmounted(stop);
               />
             </div>
           </div>
-          <n-empty v-else description="无磁盘数据" size="small" />
+          <n-empty :show-icon="false" v-else description="无磁盘数据" size="small" />
         </n-card>
       </n-grid-item>
 
@@ -159,7 +159,7 @@ onUnmounted(stop);
               </b>
             </div>
           </div>
-          <n-empty v-else description="无网络数据" size="small" />
+          <n-empty :show-icon="false" v-else description="无网络数据" size="small" />
         </n-card>
       </n-grid-item>
     </n-grid>

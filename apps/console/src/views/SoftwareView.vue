@@ -111,20 +111,20 @@ onMounted(() => {
 
 <template>
   <div v-if="!conn.connected">
-    <n-empty description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
+    <n-empty :show-icon="false" description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
   </div>
 
   <div v-else class="wrap">
-    <n-alert v-if="!available" type="warning" :show-icon="true" style="margin-bottom: 14px">
+    <n-alert v-if="!available" type="warning" style="margin-bottom: 14px">
       软件能力（<code>app.list</code> / <code>app.install</code>）依赖被控端 <code>winget</code>，
       <b>仅在被控端为 Windows 时可用</b>；当前被控端为 <b>{{ conn.nodeOs ?? "未知" }}</b>，
       本页已禁用。
     </n-alert>
-    <n-alert v-else type="info" :show-icon="true" style="margin-bottom: 14px">
+    <n-alert v-else type="info" style="margin-bottom: 14px">
       软件安装依赖被控端 <code>winget</code>。安装可能耗时数分钟，已把调用超时放大到 10 分钟。
     </n-alert>
 
-    <n-alert v-if="error" type="error" :show-icon="true" style="margin-bottom: 14px">
+    <n-alert v-if="error" type="error" style="margin-bottom: 14px">
       {{ error }}
     </n-alert>
 
@@ -157,7 +157,7 @@ onMounted(() => {
           <n-text depth="3" style="font-size: 12px">{{ filtered.length }}</n-text>
         </n-space>
       </template>
-      <n-empty
+      <n-empty :show-icon="false"
         v-if="!apps.length && !loading"
         :description="available ? '暂无数据（点刷新）' : '当前被控端非 Windows，不支持'"
         size="small"

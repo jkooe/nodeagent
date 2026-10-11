@@ -124,7 +124,7 @@ onMounted(() => {
 
 <template>
   <div v-if="!conn.connected">
-    <n-empty description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
+    <n-empty :show-icon="false" description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
   </div>
 
   <div v-else class="wrap">
@@ -154,7 +154,6 @@ onMounted(() => {
       <n-alert
         v-if="verify"
         :type="verify.ok ? 'success' : 'error'"
-        :show-icon="true"
         style="margin-bottom: 12px"
       >
         完整性校验：{{ verify.ok ? "通过" : "发现问题" }} · 已校验 {{ verify.checked }} 条
@@ -165,7 +164,7 @@ onMounted(() => {
         </template>
       </n-alert>
 
-      <n-empty v-if="!entries.length" description="暂无审计记录" size="small" />
+      <n-empty :show-icon="false" v-if="!entries.length" description="暂无审计记录" size="small" />
       <n-data-table v-else :columns="cols" :data="entries" :bordered="false" size="small" :max-height="560" />
     </n-card>
   </div>

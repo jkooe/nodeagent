@@ -128,11 +128,11 @@ onMounted(() => {
 
 <template>
   <div v-if="!conn.connected">
-    <n-empty description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
+    <n-empty :show-icon="false" description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
   </div>
 
   <n-card v-else size="small">
-    <n-alert v-if="listError" type="error" :show-icon="true" style="margin-bottom: 12px">
+    <n-alert v-if="listError" type="error" style="margin-bottom: 12px">
       {{ listError }}
     </n-alert>
 
@@ -151,7 +151,7 @@ onMounted(() => {
           </n-button>
           <n-text depth="3" style="font-size: 12px">{{ filteredProcs.length }} / {{ procs.length }}</n-text>
         </n-space>
-        <n-empty v-if="!filteredProcs.length" description="暂无进程数据" size="small" />
+        <n-empty :show-icon="false" v-if="!filteredProcs.length" description="暂无进程数据" size="small" />
         <n-data-table
           v-else
           :columns="procCols"
@@ -163,7 +163,7 @@ onMounted(() => {
       </n-tab-pane>
 
       <n-tab-pane name="svc" tab="服务">
-        <n-alert v-if="!servicesAvailable" type="warning" :show-icon="true">
+        <n-alert v-if="!servicesAvailable" type="warning">
           `system.service.list` 仅在被控端为 <b>Windows</b> 时可用；当前被控端为
           <b>{{ conn.nodeOs ?? "未知" }}</b>。
         </n-alert>
@@ -173,7 +173,7 @@ onMounted(() => {
             <n-button size="small" :loading="loading" @click="loadServices">刷新</n-button>
             <n-text depth="3" style="font-size: 12px">{{ services.length }} 项</n-text>
           </n-space>
-          <n-empty v-if="!services.length" description="暂无服务数据" size="small" />
+          <n-empty :show-icon="false" v-if="!services.length" description="暂无服务数据" size="small" />
           <n-data-table
             v-else
             :columns="svcCols"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 import {
   NLayout,
@@ -14,7 +14,7 @@ import {
   NTooltip,
   type MenuOption,
 } from "naive-ui";
-import { navRoutes } from "../router";
+import { navRoutes, type NavMeta } from "../router";
 import { useConnStore } from "../stores/conn";
 import { useAgentStore } from "../stores/agent";
 
@@ -28,9 +28,10 @@ onMounted(() => {
   agent.bind();
 });
 
+// 纯文字导航：应用内不使用图标（emoji 图标在部分渲染器里会退化成豆腐块）。
 const menuOptions: MenuOption[] = navRoutes.map((r) => ({
   key: r.name as string,
-  label: () => h("span", `${(r.meta as { icon: string }).icon}  ${(r.meta as { title: string }).title}`),
+  label: (r.meta as NavMeta).title,
 }));
 
 const activeKey = computed(() => (route.name as string) ?? "local");

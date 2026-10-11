@@ -93,7 +93,7 @@ const capGroups = computed(() => {
             指纹 {{ (conn.info.peer_cert_fp ?? "-").slice(0, 16) }}…
           </n-text>
         </div>
-        <n-empty v-else description="尚未连接" size="small" />
+        <n-empty :show-icon="false" v-else description="尚未连接" size="small" />
       </n-space>
     </n-card>
 
@@ -114,7 +114,7 @@ const capGroups = computed(() => {
           </div>
           <n-space>
             <n-button size="tiny" type="primary" @click="connectTo(n.id)">连接</n-button>
-            <n-popconfirm @positive-click="nodeStore.remove(n.id)">
+            <n-popconfirm :show-icon="false" @positive-click="nodeStore.remove(n.id)">
               <template #trigger>
                 <n-button size="tiny" quaternary>删除</n-button>
               </template>
@@ -123,7 +123,7 @@ const capGroups = computed(() => {
           </n-space>
         </div>
       </div>
-      <n-empty v-else description="暂无保存的设备" size="small" />
+      <n-empty :show-icon="false" v-else description="暂无保存的设备" size="small" />
 
       <div class="add-row">
         <n-input v-model:value="newName" placeholder="名称" size="small" style="flex: 1" />
@@ -149,7 +149,7 @@ const capGroups = computed(() => {
           </div>
         </n-collapse-item>
       </n-collapse>
-      <n-empty v-else description="连接后展示" size="small" />
+      <n-empty :show-icon="false" v-else description="连接后展示" size="small" />
     </n-card>
 
     <n-card title="日志" size="small">

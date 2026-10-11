@@ -85,13 +85,13 @@ function reuse(c: string) {
 
 <template>
   <div v-if="!conn.connected">
-    <n-empty description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
+    <n-empty :show-icon="false" description="请先在「设备管理」页连接被控端" style="margin-top: 80px" />
   </div>
 
   <div v-else class="wrap">
     <n-card size="small" title="命令执行（system.shell.exec）">
       <template #header-extra>
-        <n-text depth="3" style="font-size: 12px">⚠ 高权限操作，请谨慎</n-text>
+        <n-text depth="3" style="font-size: 12px">高权限操作，请谨慎</n-text>
       </template>
       <n-input
         v-model:value="cmd"
