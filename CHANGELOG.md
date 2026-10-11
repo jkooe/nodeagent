@@ -53,7 +53,7 @@
 | 2 | spawn `node.exe` 时加 `CREATE_NO_WINDOW`（`0x0800_0000`） | `agent.rs` 的 `creation_flags` | **每次启动被控端都闪一个黑窗** —— 正是皇上要求消灭的现象 |
 | 3 | 开机自启拉起控制台而非裸 `node` | `autostart.rs` + `--agent-only` | 开机时黑窗一闪而过 |
 
-### 新增 —— 契约守卫（`tests/unit/console-commands.test.mjs`，6 用例）
+### 新增 —— 契约守卫（`tests/unit/console-commands.test.mjs`，8 用例）
 
 把「改了名字两边不同步、但不报错」的三类**静默失效**钉死，避免「界面点了没反应、控制台无异常」：
 
@@ -65,10 +65,16 @@
 | 4 | `tauri.bundle.gen.json` 资源目标名 ⇄ Rust `resolve_*` 字面量 | 映射改名 → 生产包内找不到 sidecar/node/agent |
 | 5 | sidecar 方法名 ⇄ Rust `.request("x")` | 跨语言调用错名 |
 | 6 | 新页面已注册路由 + 默认路由指向 `/local` + 懒加载的 view 文件真实存在 | 「写了页面但进不去」／循环依赖导致的路由表推导失败 |
+| 7 | 自定义样式用到的 `var(--na-*)` 都由 `cssVars()` 定义 | 拼错变量名**不报错**，颜色只是静默落回继承值 —— 类型检查、构建、运行全都不吭声 |
+| 8 | `index.html` 的首帧兜底色 ⇄ 调色板的 `bg` | 首帧底色是全应用**唯一允许的色值重复处**；允许重复就必须有守卫 |
 
-> **已注入故障实测会红**：把 `agent_start` 改成 `agent_startX`、`na-agent-state` 改成 `na-agent-statee`
-> → 当场 2 条失败（`#fail = 2`）；复原后 `#pass = 6 / #fail = 0`，文件逐字节还原。
-> 未验证过会红的守卫等于没有守卫。
+> **已注入故障实测会红**：① 把 `agent_start` 改成 `agent_startX`、`na-agent-state` 改成 `na-agent-statee`
+> → 当场 2 条失败；② 把某处 `var(--na-sunken)` 拼成 `var(--na-sunkenTypo)`（含大写）与 `var(--na-sunkenx)`
+> → 第 7 条均失败；③ 把 `index.html` 的 `#f4f4f5` 改回 `#ffffff` → 第 8 条失败。
+> 全部复原后 `#pass = 8 / #fail = 0`，文件逐字节还原。未验证过会红的守卫等于没有守卫。
+>
+> 第 7 条的正则刻意放宽到 `[^)\s,;]+` 而非 `[a-z0-9-]+` —— 后者遇到含大写的拼错会在中途停下导致
+> **整个模式不匹配**，于是「写错的变量名」反而逃过检查。这是注入故障时才发现的守卫自身漏报。
 
 ### 变更 —— 打包与单一实现
 

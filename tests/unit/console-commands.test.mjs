@@ -158,3 +158,75 @@ test('新页面已在路由表中注册', () => {
     assert.ok(views.includes(`${m[1]}.vue`), `路由引用了不存在的视图：${m[1]}.vue`);
   }
 });
+
+test('自定义样式用到的 --na-* 变量都由调色板定义', () => {
+  const themeTsPath = join(CONSOLE, 'src', 'theme', 'index.ts');
+  const themeTs = readFileSync(themeTsPath, 'utf8');
+
+  // `cssVars()` 返回的键就是可用变量全集
+  const defined = new Set(
+    [...themeTs.matchAll(/"(--na-[^"]+)"\s*:/g)].map((m) => m[1]),
+  );
+  assert.ok(
+    defined.size >= 10,
+    `调色板变量只解析到 ${defined.size} 个 —— 守卫自身失效，先查正则`,
+  );
+
+  // 扫全 src 的使用点（定义文件自身豁免）
+  //
+  // 字符集刻意放宽到 `[^)\s,;]+` 而不是 `[a-z0-9-]+`：后者遇到
+  // `var(--na-sunkenTypo)` 这种含大写的拼错，会在 `T` 处停下导致整个模式**不匹配**，
+  // 于是「写错的变量名」反而逃过检查 —— 守卫静默漏报，比没有守卫更危险。
+  const used = new Map(); // 变量 → 首个出现位置
+  const walk = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === 'node_modules') continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(p);
+      } else if (/\.(vue|ts|css)$/.test(e.name) && p !== themeTsPath) {
+        const src = readFileSync(p, 'utf8');
+        for (const m of src.matchAll(/var\(\s*(--na-[^)\s,;]+)\s*\)/g)) {
+          if (!used.has(m[1])) used.set(m[1], p);
+        }
+      }
+    }
+  };
+  walk(join(CONSOLE, 'src'));
+
+  assert.ok(used.size > 0, '未扫到任何 --na-* 使用点 —— 守卫自身失效');
+
+  // 关键：`var(--na-typo)` 这种拼错的变量**不会报错**，颜色只是静默落回继承值，
+  // 类型检查、构建、运行都不吭声。只能靠这条断言。
+  for (const [v, where] of used) {
+    assert.ok(
+      defined.has(v),
+      `${v}（${where}）被使用但 cssVars() 未定义 —— 颜色会静默落回继承值`,
+    );
+  }
+});
+
+test('index.html 的首帧兜底色与调色板一致', () => {
+  const themeTs = readFileSync(join(CONSOLE, 'src', 'theme', 'index.ts'), 'utf8');
+  const blockOf = (name) => {
+    const i = themeTs.indexOf(`const ${name}: Palette = {`);
+    assert.ok(i > 0, `未找到 ${name} 调色板`);
+    return themeTs.slice(i, themeTs.indexOf('\n};', i));
+  };
+  const bgOf = (name) => {
+    const m = /bg:\s*"(#[0-9a-fA-F]{6})"/.exec(blockOf(name));
+    assert.ok(m, `未从 ${name} 调色板解析出 bg`);
+    return m[1];
+  };
+
+  // index.html 在 Vue 接管前先刷底色，是**唯一**允许的色值重复处（见文件内注释）。
+  // 允许重复就必须有守卫：改调色板忘了改它 → 深色用户每次启动闪一帧白。
+  const html = readFileSync(join(CONSOLE, 'index.html'), 'utf8');
+  for (const name of ['WHITE', 'GRAY']) {
+    const bg = bgOf(name);
+    assert.ok(
+      html.includes(bg),
+      `index.html 的首帧兜底色缺少 ${name}.bg = ${bg} —— 换主题时会闪一帧错色`,
+    );
+  }
+});

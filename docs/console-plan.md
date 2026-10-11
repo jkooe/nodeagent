@@ -559,7 +559,7 @@ node 去跑打包内的 sidecar，并走一次真实 JSON-RPC 握手 —— 源�
 ### 契约守卫：钉住三类「不报错的失效」
 
 界面点按钮没反应、日志不刷新，往往**没有任何异常** —— 因为失效发生在「两边名字不一致」这种
-编译器和类型系统都看不见的地方。新增 `tests/unit/console-commands.test.mjs`（6 用例）覆盖：
+编译器和类型系统都看不见的地方。新增 `tests/unit/console-commands.test.mjs`（8 用例）覆盖：
 
 | 守卫 | 若缺失会怎样 |
 |---|---|
@@ -568,9 +568,17 @@ node 去跑打包内的 sidecar，并走一次真实 JSON-RPC 握手 —— 源�
 | `tauri.bundle.gen.json` 资源名 ⇄ Rust `resolve_*` 字面量 | 生产包内找不到 sidecar / node / agent |
 | sidecar 方法名 ⇄ Rust `.request("x")` | 跨语言调用错名 |
 | 路由表 ⇄ 实际 view 文件 + 默认路由 | 写了页面进不去；循环依赖导致路由推导成 `any` |
+| `var(--na-*)` 使用点 ⇄ `cssVars()` 定义 | 拼错变量名**不报错**，颜色静默落回继承值 |
+| `index.html` 首帧兜底色 ⇄ 调色板 `bg` | 首帧兜底是全应用唯一允许的色值重复处，允许重复就必须有守卫 |
 
-> 该测试**已注入故障实测会红**（改 `agent_start` → `agent_startX`、`na-agent-state` → `na-agent-statee`
-> 当场 2 条失败），非空转守卫。
+> 该测试**已注入故障实测会红**：① 改 `agent_start` → `agent_startX`、`na-agent-state` → `na-agent-statee`
+> 当场 2 条失败；② 把 `var(--na-sunken)` 拼成 `var(--na-sunkenTypo)`（含大写）与 `var(--na-sunkenx)`，
+> 变量闭合那条均失败；③ 把 `index.html` 的 `#f4f4f5` 改回 `#ffffff`，首帧底色那条失败。
+> 全部复原后 `#pass = 8 / #fail = 0`，文件逐字节还原。
+>
+> 第 ② 条暴露过一次**守卫自身漏报**：正则原写 `[a-z0-9-]+`，遇到含大写的拼错会在中途停下导致
+> 整个模式不匹配 —— 于是「写错的变量名」反而逃过检查。放宽到 `[^)\s,;]+` 后才真正生效。
+> 教训：**注入故障不只是验证守卫有没有，还要验证它是否覆盖了目标形态**。
 
 ## 界面观感约定（2026-10-11）
 
@@ -630,8 +638,8 @@ node 去跑打包内的 sidecar，并走一次真实 JSON-RPC 握手 —— 源�
 | `cargo test --lib` | ✅ **10/10**（含真起 node 子进程：启动/日志/停止/崩溃自愈/重复启动拒绝） |
 | `cargo clippy --all-targets -- -D warnings` | ✅ 0 警告 |
 | `npx vue-tsc --noEmit` | ✅ 通过 |
-| `node tests/unit/console-commands.test.mjs` | ✅ 6/6（注入故障验证会红） |
-| `pnpm test:unit` | ✅ **280/280**（274 → 280） |
+| `node tests/unit/console-commands.test.mjs` | ✅ 8/8（三条注入故障均验证会红） |
+| `pnpm test:unit` | ✅ **282/282**（274 → 282） |
 | `node scripts/prepare-console.mjs` | ✅ agent.mjs 1059 KB ＋ Node 运行时 86.3 MB ＝ 87.6 MB |
 | `node apps/console/scripts/verify-bundle.mjs --runtime` | ✅ 打包内 node 真跑起打包内 sidecar（`agent.mjs` 语法解析通过） |
 
