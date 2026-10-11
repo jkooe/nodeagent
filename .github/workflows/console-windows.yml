@@ -202,6 +202,17 @@ jobs:
             return $null
           }
 
+          # 安装器可能「自己先退出、再由子进程继续装」，故给它一段收敛时间
+          function Wait-PayloadRoot([string[]]$candidates, [int]$seconds = 30) {
+            $deadline = (Get-Date).AddSeconds($seconds)
+            do {
+              $r = Find-PayloadRoot $candidates
+              if ($r) { return $r }
+              Start-Sleep -Seconds 1
+            } while ((Get-Date) -lt $deadline)
+            return $null
+          }
+
           # 解开后的目录里必须三样齐全，且 node.exe 架构要对
           function Assert-Payload([string]$root, [string]$label) {
             $node = Get-ChildItem -Path $root -Recurse -Filter 'node.exe' -ErrorAction SilentlyContinue |
@@ -243,13 +254,19 @@ jobs:
             Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path $dest | Out-Null
             $log = Join-Path $PWD 'msi-extract.log'
-            & msiexec.exe /a "$($m.FullName)" /qn "TARGETDIR=$dest" /l*v "$log"
+            # ⚠️ 必须用 Start-Process -Wait -PassThru 取退出码，**不能**用 `& msiexec.exe`：
+            # msiexec 是 GUI 子系统程序，脚本里 `&` 调它**既不等待、也不设 `$LASTEXITCODE`**
+            # （实测：整个步骤 0.8 秒就跑到下一行，`$LASTEXITCODE` 为空 → `$null -ne 0` 判真 → 当场抛错）。
+            # 参数拼成**单个字符串**传递，避免 -ArgumentList 数组被 PowerShell 自动加引号而破坏 /D= 语义。
+            $argLine = "/a `"$($m.FullName)`" /qn TARGETDIR=`"$dest`" /l*v `"$log`""
+            $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argLine -Wait -PassThru
+            Write-Host "  msiexec 退出码 = $($p.ExitCode)"
             # 3010 = 成功但需重启，不是失败
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
+            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
               $tail = (Get-Content $log -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
-              throw "msiexec /a 失败（退出码 $LASTEXITCODE）：$($m.Name)`n$tail"
+              throw "msiexec /a 失败（退出码 $($p.ExitCode)）：$($m.Name)`n$tail"
             }
-            $root = Find-PayloadRoot @($dest)
+            $root = Wait-PayloadRoot @($dest)
             if (-not $root) { throw "MSI 管理安装后未在 $dest 下找到 node.exe" }
             Assert-Payload $root $m.Name
             $checked++
@@ -264,13 +281,16 @@ jobs:
             $dest = Join-Path $PWD 'pkg-extract/nsis'
             Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Force -Path $dest | Out-Null
-            & $n.FullName /S "/D=$dest"
-            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 3010) {
-              throw "NSIS 静默安装失败（退出码 $LASTEXITCODE）：$($n.Name)"
+            # 同 MSI：安装器也是 GUI 子系统程序，必须 Start-Process -Wait 才拿得到退出码。
+            # 单个字符串传参 → `/D=` 保持原样不加引号（NSIS 的硬要求）。
+            $p = Start-Process -FilePath $n.FullName -ArgumentList "/S /D=$dest" -Wait -PassThru
+            Write-Host "  安装器退出码 = $($p.ExitCode)"
+            if ($p.ExitCode -ne 0 -and $p.ExitCode -ne 3010) {
+              throw "NSIS 静默安装失败（退出码 $($p.ExitCode)）：$($n.Name)"
             }
             # /D= 理论上一律生效，但若模板在 .onInit 里改写了 $INSTDIR 就未必；
             # 故把默认安装位置一并列为候选，避免「装成功了却因为找不到目录而误报」。
-            $root = Find-PayloadRoot @(
+            $root = Wait-PayloadRoot @(
               $dest,
               (Join-Path $env:LOCALAPPDATA 'nodeagent-console'),
               (Join-Path $env:LOCALAPPDATA 'Programs/nodeagent-console'),
