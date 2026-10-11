@@ -28,6 +28,31 @@
   （`tauri-build` 校验声明的文件必须存在），声明「运行期才就绪」的资源会让 `cargo check/test`
   在 build.rs 阶段直接失败。一律走 `tauri build --config` 注入。
 
+### 修复 —— 被控端打包（ARM64）
+
+- **`nodeagent-win-arm64.zip` 里装的其实是 x64 的 `node.exe`**。
+  `pack.mjs` 下载 Node 运行时的缓存文件名是固定的 `node-runtime.zip`（**不含架构**）：
+  `release.mjs` 先打 x64 时把它缓存下来，随后打 arm64 时误判「已缓存」直接复用
+  → **两份公开包内的 `node.exe` 字节完全相同**（sha256 同为 `fdddbf45…`，PE Machine = `0x8664`）。
+  后果极隐蔽：该包在 ARM Windows 上**能启动、能 listen**，但 **TLS 握手不完成**
+  （控制端只见 `E_TIMEOUT`）—— 被控端实际不可用，而 macOS 侧 100% 复现不出来。
+  修法：① 缓存文件名带上架构（`node-runtime-<arch>.zip`）；
+  ② 解包后**断言 `node.exe` 的 PE Machine 与 `--arch` 一致**（缓存串包 / 手工塞错文件当场红）。
+- **CI 补「双架构包 PE 架构校验」**（`.github/workflows/windows-e2e.yml`）——
+  此前 CI 只跑 `pnpm pack:win`（默认 x64）且只校验 x64 包，**arm64 打包零覆盖**，
+  故该 bug 必然逃过 CI。现两条架构都打，并直接读最终 zip 内 `node.exe` 的 PE 头比对。
+
+### 真机实测（ARM64 Windows 虚拟机）
+
+- **arm64 包**：TLS 握手成功 → PSK 认证 → 声明 51 项能力（两端一致）→
+  `system.info` / `status` / `process.list` / `service.list` / `shell.exec` /
+  `audit verify` 全部正常，`arch` 报告为 `arm64`（原生，非模拟层）。
+- **x64 包（对照，同机同参）**：`connect` 报 `E_TIMEOUT` —— **复现**了「能 listen 但握手不完成」。
+  → 证实「按架构出包」不是理论洁癖，而是 ARM Windows 上的硬需求。
+- 已知边界：被控端若以 **SYSTEM（会话 0）** 手动启动，`screen.capture` 等图形能力会失败
+  （会话 0 无交互桌面）。正式安装路径不受影响 —— `install.ps1` 的计划任务 principal
+  用的是登录用户 + `LogonType Interactive`，注释已明写「图形能力可用」。
+
 ---
 
 ## [v2.0.1] —— 2026-10-11

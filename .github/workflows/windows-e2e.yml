@@ -153,6 +153,38 @@ jobs:
             }
             Write-Host "OK - package complete; .ps1 has BOM / .cmd has none; no key shipped"
           } finally { $z.Dispose() }
+      - name: 冒烟 — 双架构包（node.exe PE 架构校验）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # 真机教训（Parallels 27 + Win11 ARM）：曾出现 arm64 包里装的其实是 x64 的 node.exe
+          # —— 两份包的 node.exe 字节完全相同。x64 node 在 ARM Windows 上**能 listen，
+          # 但 TLS 握手不完成**（客户端只见超时）→ 被控端实际不可用，且 macOS 侧 100% 测不出。
+          # 根因是 pack.mjs 的运行时缓存文件名不含架构。这里直接验**最终产物**的 PE 架构，
+          # 比只验脚本内部逻辑更靠近交付物（缓存串包 / 手工塞错文件都会被这一步拦下）。
+          foreach ($arch in @('x64','arm64')) {
+            node scripts/pack.mjs --arch $arch
+          }
+          $want = @{ 'x64' = [uint16]0x8664; 'arm64' = [uint16]0xaa64 }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          foreach ($arch in @('x64','arm64')) {
+            $zip = "release/nodeagent-win-$arch.zip"
+            if (-not (Test-Path $zip)) { throw "zip not produced: $zip" }
+            $z = [IO.Compression.ZipFile]::OpenRead((Resolve-Path $zip))
+            try {
+              $e = $z.Entries | Where-Object { $_.Name -eq 'node.exe' }
+              if (-not $e) { throw "missing node.exe in $zip" }
+              $s = $e.Open(); $buf = New-Object byte[] 4096
+              [void]$s.Read($buf, 0, 4096); $s.Close()
+              # PE 头：0x3c 处为 PE 签名偏移，+4 为 Machine 字段
+              $peOff = [BitConverter]::ToUInt32($buf, 0x3c)
+              $machine = [BitConverter]::ToUInt16($buf, [int]$peOff + 4)
+              if ($machine -ne $want[$arch]) {
+                throw "node.exe arch mismatch in $zip : want 0x$('{0:x}' -f $want[$arch]) got 0x$('{0:x}' -f $machine)"
+              }
+              Write-Host "OK - $arch -> node.exe PE machine 0x$('{0:x}' -f $machine)"
+            } finally { $z.Dispose() }
+          }
       - name: 冒烟 — 被控端监听
         shell: pwsh
         run: |

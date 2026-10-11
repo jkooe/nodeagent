@@ -116,8 +116,11 @@ async function main() {
     logLevel: 'info',
   });
 
-  log('\n=== ③ 下载 Node.js Windows 运行时 ===');
-  const tmpZip = join(OUT_DIR, 'node-runtime.zip');
+  log(`\n=== ③ 下载 Node.js Windows 运行时（${NODE_ARCH}）===`);
+  // 缓存文件名**必须含架构**。曾用固定名 node-runtime.zip：release 先打 x64（下载并缓存），
+  // 再打 arm64 时误判「已缓存」→ 跳过下载 → 把 x64 的 node.exe 装进了 arm64 包。
+  // （真例：v2.0.1 的 nodeagent-win-arm64.zip 内 node.exe 实为 x86-64。）
+  const tmpZip = join(OUT_DIR, `node-runtime-${NODE_ARCH}.zip`);
   if (existsSync(tmpZip)) {
     log('  已缓存，跳过下载');
   } else {
@@ -128,6 +131,23 @@ async function main() {
   rmSync(PKG_DIR, { recursive: true, force: true });
   mkdirSync(PKG_DIR, { recursive: true });
   execSync(`unzip -o -j "${tmpZip}" "*/node.exe" -d "${PKG_DIR}"`, { stdio: 'inherit' });
+
+  // 防呆 C：产物 node.exe 的 PE 架构必须与 --arch 一致。
+  // 这是**根治性守卫**：缓存串包、镜像发错、手工塞错文件，都会在此当场红，
+  // 而不是拖到「被控端在 ARM Windows 上 TLS 握手不完成」才由真机暴露。
+  // PE 头：偏移 0x3c 处是 PE 签名偏移，+4 是 Machine 字段（0x8664=x86-64，0xaa64=ARM64）。
+  const PE_MACHINE = { x64: 0x8664, arm64: 0xaa64 };
+  const PE_NAME = { 0x8664: 'x86-64', 0xaa64: 'ARM64', 0x14c: 'i386' };
+  const nodeExe = join(PKG_DIR, 'node.exe');
+  {
+    const head = readFileSync(nodeExe).subarray(0, 4096);
+    const machine = head.readUInt16LE(head.readUInt32LE(0x3c) + 4);
+    if (machine !== PE_MACHINE[NODE_ARCH]) {
+      fail(`node.exe 架构不符：--arch=${NODE_ARCH}，实际 ${PE_NAME[machine] ?? `0x${machine.toString(16)}`}。` +
+        `多半是缓存串包 —— 删掉 ${OUT_DIR}/node-runtime-*.zip 后重试。`);
+    }
+    log(`  node.exe 架构校验通过（${NODE_ARCH} / ${PE_NAME[machine]}）`);
+  }
   copyFileSync(bundleOut, join(PKG_DIR, 'agent.mjs'));
   copyFileSync(join(root, 'scripts', 'install.ps1'), join(PKG_DIR, 'install.ps1'));
   copyFileSync(join(root, 'scripts', 'control.ps1'), join(PKG_DIR, 'control.ps1'));
