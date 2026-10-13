@@ -88,6 +88,11 @@ export const useAgentStore = defineStore("agent", () => {
     await listen<string>("na-agent-state", () => {
       void refresh();
     });
+    // v2.0.3 单实例：用户再次双击图标时，由**已存在实例**接管（把窗口唤出来）。
+    // 顺手刷新一次 —— 触发它的场景往往正是「点了没反应，想看看怎么回事」。
+    await listen<{ argv?: string[] }>("na-second-instance", () => {
+      void refresh();
+    });
     await refresh();
     void loadSystemInfo();
   }

@@ -26,6 +26,9 @@
 //! - 默认：显示主窗口
 //! - `--agent-only`：**不显示窗口**，直接进托盘并托管本机被控端（开机自启用它，
 //!   这样登录自启也不会有任何窗口弹出来）
+//!
+//! ## 单实例（v2.0.3）
+//! 见下方「单实例」一节 —— 真机缺陷：无保护时同机会跑起两个被控端。
 
 mod agent;
 mod autostart;
@@ -603,11 +606,51 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// 单实例
+// ---------------------------------------------------------------------------
+//
+// ## 为什么必须有（真机缺陷，2026-10-13）
+// 控制台此前**完全没有单实例保护**。开机自启会拉起一个 `--agent-only` 实例（无窗口、驻托盘），
+// 用户再手动双击图标 → **第二个进程**。而「本机被控端」是**进程内状态**
+// （`AgentManager` 各持自己的 `child: Option<Child>` / `pid`），两个进程互相看不见 →
+// 同一台机器上跑起**两个被控端**，抢同一个 8765 端口。
+//
+// 后果按先后顺序分两种，正是用户报的两个症状：
+// - **A（两个被控端）**：两边都抢到了不同时机 → 同机并存两个被控端进程；
+// - **B（后开的起不来）**：先占住端口的那一侧赢了，后启动的一侧在 `AgentManager::start`
+//   的端口检查处失败，界面表现为「应用端无法启动」（本机服务起不来）。
+//
+// ## 为什么不能简单「已有实例就退出」
+// 自启实例是**无窗口**的（`--agent-only`）。若第二次启动只是静默退出，用户双击图标会
+// **什么都不发生** —— 比缺陷本身更难排查。正确语义是：
+//   第二次启动 → 把「用户想看到界面」这个意图**交给已有实例**（让它显示并聚焦窗口）→ 新进程再退出。
+//
+// `tauri-plugin-single-instance` 正好是这个语义：回调在**已有实例**里执行，新进程由插件负责收尾退出。
+// 它必须注册为**第一个**插件，才能在其他插件与本项目的 `setup`（会拉起被控端）之前完成抢占判定。
+
+/// 第二次启动时执行（在**已有实例**的进程里）。
+fn on_second_instance(app: &AppHandle, argv: Vec<String>) {
+    // 第二次启动若自己就带 `--agent-only`（例如自启被重复触发），**不要弹窗** ——
+    // 那正是「仅服务模式」要避免的行为。只提示已有实例，不做别的。
+    if argv.iter().any(|a| a == autostart::AGENT_ONLY_FLAG) {
+        return;
+    }
+    // 已有实例可能是「自启的隐藏实例」或「窗口已关到托盘」→ 两种都要能唤出来。
+    show_main(app);
+    // 顺带通知前端刷一次状态（第二次启动往往发生在「用户发现没反应、想确认一下」的时刻）。
+    // 前端没监听也无害。
+    let _ = app.emit("na-second-instance", json!({ "argv": argv }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let agent_only = std::env::args().any(|a| a == autostart::AGENT_ONLY_FLAG);
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            on_second_instance(app, argv);
+        }))
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let handle = app.handle().clone();

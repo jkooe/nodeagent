@@ -394,12 +394,25 @@ impl AgentManager {
 
         // 端口占用检查：既有的（非本控制台托管的）实例在跑时，给出可执行的说明，
         // 而不是让用户看到一个 `EADDRINUSE` 堆栈。
+        //
+        // ⚠️ 这里是症状 B（「应用端无法启动」）的**现场**：真机上曾有陈旧计划任务拉起的
+        //    被控端占着 8765，控制台自己的被控端起不来。端口检查本身是对的，
+        //    但只给一句「已被占用」用户无从下手 —— 故补上「怎么找出占用者」。
         let cfg = read_agent_config(data_dir);
         let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(8765) as u16;
         if port_in_use(port) {
+            let hint = if cfg!(windows) {
+                format!(
+                    "netstat -ano | findstr :{port}  找到 PID，再 tasklist /FI \"PID eq <PID>\" 看是谁"
+                )
+            } else {
+                format!("lsof -nP -iTCP:{port} -sTCP:LISTEN")
+            };
             return Err(format!(
-                "端口 {port} 已被占用 —— 可能已有一个被控端在运行（手工安装的或另一个实例）。\
-                 请先停止它，或修改 {} 里的 port。",
+                "端口 {port} 已被占用 —— 已有另一个被控端在监听（手工安装的、计划任务拉起的，\
+                 或另一个控制台实例）。\n\
+                 排查占用者：{hint}\n\
+                 处理：先停掉它；或把 {} 里的 port 改成别的端口后重启本机服务。",
                 data_dir.join("agent.json").display()
             ));
         }
@@ -728,6 +741,37 @@ mod tests {
         assert!(err.is_err(), "已在运行时再次启动应被拒绝");
         assert!(err.unwrap_err().contains("已在运行"), "错误信息应说明原因");
         m.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn 端口被外部占用时应给出可执行的错误说明() {
+        let dir = tmp_dir("port-busy");
+        let script = fake_agent(&dir);
+        // 占住一个空闲端口，扮演「手工安装的 / 计划任务拉起的另一个被控端」
+        // （真机症状 B：陈旧计划任务 na-gui 占着 8765，控制台自己的被控端起不来）
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("应能绑一个空闲端口");
+        let port = listener.local_addr().unwrap().port();
+        std::fs::write(
+            dir.join("agent.json"),
+            format!("{{\"node_id\":\"t\",\"port\":{port},\"key\":\"k\",\"tls\":true}}"),
+        )
+        .unwrap();
+
+        let m = AgentManager::new(Arc::new(|_| {}));
+        let err = m
+            .start(&node_bin(), &script, &dir, false)
+            .await
+            .expect_err("端口被占时应拒绝启动");
+        assert!(err.contains("已被占用"), "应说明端口被占用，实际：{err}");
+        assert!(err.contains(&port.to_string()), "错误里应带上具体端口号，实际：{err}");
+        // 关键：必须给出「怎么找出占用者」的可执行线索，否则用户无从下手
+        assert!(
+            err.contains("lsof") || err.contains("netstat"),
+            "应给出排查占用者的命令，实际：{err}"
+        );
+        // 端口检查失败不该改动状态、更不该留下进程
+        assert_eq!(m.snapshot().await["state"], json!(state::STOPPED));
+        drop(listener);
     }
 
     #[tokio::test]
