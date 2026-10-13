@@ -362,11 +362,17 @@ fn autostart_set(enabled: bool) -> Result<Value, String> {
 #[tauri::command]
 async fn check_update(app: AppHandle, state: State<'_, AppState>) -> Result<Value, String> {
     let sc = ensure_sidecar(&app, &state).await?;
+    // 超时**成对**下发：内层（sidecar 出网）必须小于外层（RPC），
+    // 否则用户只会看到「check_update 超时」这种丢掉真实原因的假失败。
+    // 见 sidecar.rs 的 UPDATE_CHECK_TIMEOUT_MS / UPDATE_CHECK_RPC_TIMEOUT_SECS。
     let mut snap = sc
         .request(
             "check_update",
-            json!({ "console_version": state.app_version }),
-            45,
+            json!({
+                "console_version": state.app_version,
+                "timeout_ms": sidecar::UPDATE_CHECK_TIMEOUT_MS,
+            }),
+            sidecar::UPDATE_CHECK_RPC_TIMEOUT_SECS,
         )
         .await?;
 
@@ -410,8 +416,9 @@ async fn apply_update(
                 "url": url,
                 "sha256": sha256,
                 "dest": staged.to_string_lossy(),
+                "timeout_ms": sidecar::UPDATE_DOWNLOAD_TIMEOUT_MS,
             }),
-            320,
+            sidecar::UPDATE_DOWNLOAD_RPC_TIMEOUT_SECS,
         )
         .await?;
 

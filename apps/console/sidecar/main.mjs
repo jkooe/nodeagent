@@ -13,8 +13,11 @@
  *   {"jsonrpc":"2.0","id":2,"method":"disconnect"}
  *   {"jsonrpc":"2.0","id":3,"method":"invoke","params":{capability,args,timeout_ms}}
  *   {"jsonrpc":"2.0","id":4,"method":"state"}
- *   {"jsonrpc":"2.0","id":5,"method":"check_update","params":{console_version,url?}}
- *   {"jsonrpc":"2.0","id":6,"method":"download","params":{url,sha256,dest}}
+ *   {"jsonrpc":"2.0","id":5,"method":"check_update","params":{console_version,url?,timeout_ms?}}
+ *   {"jsonrpc":"2.0","id":6,"method":"download","params":{url,sha256,dest,timeout_ms?}}
+ *   ⚠️ `timeout_ms` 由 Rust 侧下发，**必须小于**它在 `sidecar.rs::request` 上的 RPC 超时，
+ *      否则永远看到的是「RPC 超时」这种假失败（拿不到真正的原因）。两侧口径在
+ *      apps/console/src-tauri/src/lib.rs 的 `UPDATE_CHECK_TIMEOUT_MS` / `UPDATE_RPC_TIMEOUT_SECS` 里成对定义。
  * 响应（本进程 → Rust）：{"jsonrpc":"2.0","id":N,"result":{...}} 或 {"...","error":{code,message,data}}
  * 通知（无 id，本进程主动推）：
  *   {"jsonrpc":"2.0","method":"event","params":{"kind":"state","state":"connected"}}
@@ -31,6 +34,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { NodeAgentClient } from '@nodeagent/client';
+import { httpGet, resolveProxy } from './proxy.mjs';
 
 /** @type {NodeAgentClient | null} */
 let client = null;
@@ -92,6 +96,72 @@ function cmpVersion(a, b) {
     if (d !== 0) return d > 0 ? 1 : -1;
   }
   return 0;
+}
+
+/**
+ * 出网超时（毫秒）的裁剪。参数由 Rust 侧下发，**默认值只作兜底** —— 真实口径以
+ * `lib.rs` 的 `UPDATE_CHECK_TIMEOUT_MS` / `UPDATE_DOWNLOAD_TIMEOUT_MS` 为准。
+ */
+function clampTimeoutMs(raw, dflt, min = 5_000, max = 1_800_000) {
+  const n = typeof raw === 'number' && Number.isFinite(raw) ? Math.floor(raw) : dflt;
+  return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * 决议代理是否可用；**任何异常都退化成「直连」**。
+ *
+ * 代理只是为了「本来连不上时能连上」，它本身绝不该成为新的失败点：
+ * 探测系统代理要跑 `reg`/`scutil`，被安全软件拦、被超时都是可能的，
+ * 那种情况下退回直连（与改动前行为一致）比让「检查更新」直接报错要好。
+ */
+async function resolveProxyOrDirect(targetUrl) {
+  try {
+    return await resolveProxy({ targetUrl });
+  } catch (err) {
+    return { proxy: null, source: null, notes: [`代理探测异常（${err instanceof Error ? err.message : String(err)}），按直连处理`] };
+  }
+}
+
+/** 组一条可操作的失败线索：走了哪条路、代理从哪来、为什么不走代理。 */
+function outboundHint({ proxy, source, notes, timeoutMs }) {
+  return {
+    via: proxy ? `经代理 ${proxy.href}` : '直连',
+    proxy: proxy ? proxy.href : null,
+    proxy_source: source,
+    timeout_ms: timeoutMs,
+    notes,
+    hint: proxy
+      ? '代理已生效但仍失败：请确认代理本身能访问 GitHub（浏览器里试同一个地址）'
+      : '未使用代理。若本机需要代理才能访问 GitHub，请在系统里开启「系统代理」，或设置环境变量 HTTPS_PROXY=http://127.0.0.1:<端口> 后重启控制台',
+  };
+}
+
+/**
+ * 是否为「主动中止」类错误 —— **只认真正的 abort**。
+ *
+ * ⚠️ 别把 `ECONNRESET` 之类也塞进来（第一版就这么写的，真机上立刻现形）：
+ * 那次耗时 82.9s、预算 120s，连接是被对端**中途重置**的，却被报成
+ * 「请求超时（120000ms 内未完成）」—— 一句话把用户引到完全错误的方向上。
+ */
+function isAbortLike(err) {
+  const name = err?.name ?? '';
+  const code = err?.code ?? '';
+  const msg = String(err?.message ?? '');
+  return name === 'AbortError' || code === 'ABORT_ERR' || /\babort(ed)?\b/i.test(msg);
+}
+
+/** 把底层网络错误翻译成「用户能据以行动」的一句话。 */
+function describeNetError(err, timeoutMs) {
+  const msg = err instanceof Error ? err.message : String(err);
+  const code = err?.code ?? '';
+  if (isAbortLike(err)) return `请求超时（${timeoutMs}ms 内未完成）`;
+  if (code === 'ECONNRESET' || code === 'EPIPE') {
+    return `${msg}（连接被对端中途断开；若走了代理，多半是代理或线路的问题）`;
+  }
+  if (code === 'ENOTFOUND' || code === 'EAI_AGAIN' || code === 'ECONNREFUSED') {
+    return `${msg}（域名解析失败或目标拒绝连接；若配了代理，请核对代理地址与端口）`;
+  }
+  return msg;
 }
 
 const methods = {
@@ -189,26 +259,30 @@ const methods = {
    */
   async check_update(params) {
     const consoleVersion = String(params?.console_version ?? '0.0.0');
-    const url =
-      params?.url ??
-      'https://github.com/jkooe/nodeagent/releases/latest/download/latest.json';
+    const url = String(
+      params?.url ?? 'https://github.com/jkooe/nodeagent/releases/latest/download/latest.json',
+    );
+    const timeoutMs = clampTimeoutMs(params?.timeout_ms, 120_000);
 
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 20_000);
+    const out = await resolveProxyOrDirect(url);
+    log('info', `检查更新：${out.proxy ? `经代理 ${out.proxy.href}（来源 ${out.source}）` : '直连'}`);
+    for (const n of out.notes) log('warn', `检查更新：${n}`);
+
+    const t0 = Date.now();
     let meta;
     try {
-      const res = await fetch(url, { signal: ac.signal, redirect: 'follow' });
-      if (!res.ok) {
+      const res = await httpGet(url, { proxy: out.proxy, timeoutMs });
+      if (res.status < 200 || res.status >= 300) {
         throw new Error(`拉取 latest.json 失败：HTTP ${res.status} ${res.statusText}`);
       }
-      meta = await res.json();
+      meta = JSON.parse(res.body.toString('utf8'));
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      throw Object.assign(new Error(`检查更新失败：${msg}（地址 ${url}）`), {
-        data: { url, hint: '若本机网络无法直连 GitHub，可在被控端配置里改用镜像地址' },
-      });
-    } finally {
-      clearTimeout(timer);
+      const msg = describeNetError(err, timeoutMs);
+      const where = out.proxy ? `经代理 ${out.proxy.href}` : '直连';
+      throw Object.assign(
+        new Error(`检查更新失败：${msg}（${where}，耗时 ${Date.now() - t0}ms）`),
+        { data: { url, ...outboundHint({ ...out, timeoutMs }) } },
+      );
     }
 
     const latest = String(meta?.version ?? '');
@@ -230,6 +304,9 @@ const methods = {
       },
       release_url: `https://github.com/jkooe/nodeagent/releases/tag/v${latest}`,
       source: url,
+      // 让界面/日志能一眼看出这次是直连还是走了代理（真机复验与用户自查都需要）
+      via_proxy: out.source,
+      via: out.proxy ? `经代理 ${out.proxy.href}` : '直连',
       checked_at: Date.now(),
     };
   },
@@ -252,17 +329,25 @@ const methods = {
       );
     }
 
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), 300_000);
+    const timeoutMs = clampTimeoutMs(params?.timeout_ms, 300_000);
+
+    const out = await resolveProxyOrDirect(url);
+    log('info', `下载更新包：${out.proxy ? `经代理 ${out.proxy.href}（来源 ${out.source}）` : '直连'}`);
+
+    const t0 = Date.now();
     let buf;
     try {
-      const res = await fetch(url, { signal: ac.signal, redirect: 'follow' });
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-      buf = Buffer.from(await res.arrayBuffer());
+      const res = await httpGet(url, { proxy: out.proxy, timeoutMs });
+      if (res.status < 200 || res.status >= 300) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      }
+      buf = res.body;
     } catch (err) {
-      throw new Error(`下载失败：${err instanceof Error ? err.message : String(err)}`);
-    } finally {
-      clearTimeout(timer);
+      const msg = describeNetError(err, timeoutMs);
+      const where = out.proxy ? `经代理 ${out.proxy.href}` : '直连';
+      throw Object.assign(new Error(`下载失败：${msg}（${where}，耗时 ${Date.now() - t0}ms）`), {
+        data: { url, ...outboundHint({ ...out, timeoutMs }) },
+      });
     }
 
     const got = createHash('sha256').update(buf).digest('hex');

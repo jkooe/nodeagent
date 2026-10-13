@@ -355,6 +355,11 @@ export interface UpdateInfo {
   agent: { url?: string | null; sha256?: string | null; bytes?: number | null };
   release_url: string;
   source: string;
+  /** 本次出网走的代理来源（`HTTPS_PROXY` / `system` / `NA_PROXY`…），直连为 null。
+   *  2026-10-13 加：境内「检查更新」失败的排查线索，必须能在界面上看到。 */
+  via_proxy?: string | null;
+  /** 人类可读的出网路径描述（「直连」/「经代理 http://…」）。 */
+  via?: string | null;
   checked_at: number;
 }
 

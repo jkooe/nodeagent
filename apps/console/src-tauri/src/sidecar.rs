@@ -26,6 +26,68 @@ use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::oneshot;
 
 // ---------------------------------------------------------------------------
+// 更新链路的超时口径（「检查更新 / 下载更新包」）
+// ---------------------------------------------------------------------------
+//
+// 两层超时必须**成对**看：内层是 sidecar 自己的出网超时（下发给它），
+// 外层是本壳等 RPC 的超时。**内层必须小于外层**，否则本壳先放弃，
+// 用户只会看到「check_update 超时」——一条**丢掉真实原因**的假失败
+// （2026-10-13 真机排查就被这种假失败带偏过一轮）。
+//
+// 下面那条单测断言的就是这层关系：改一侧忘了另一侧，测试直接红。
+
+/// 「检查更新」下发给 sidecar 的**出网超时**（毫秒）。
+///
+/// ## 为什么从 20s 抬到 120s（2026-10-13 实测）
+/// 取 `latest.json` 要**跟随两次重定向**（`releases/latest/download/…` → 版本化 URL →
+/// 资产 CDN）。整条链的耗时波动极大，真机连续多次实测：
+/// **2.0s / 10.0s / 39.7s / 68.6s / >109s**（同一台机器、同一个代理）。
+/// 原来的 20s 是「假定能直连 GitHub」时定的值 —— 对真实链路**必然**超时，
+/// 于是用户看到的失败原因永远是「超时」，而不是「到底为什么连不上」。
+///
+/// 为什么敢给到 2 分钟：这是**用户手动点**的动作，界面上按钮有 loading 态
+/// （`LocalServiceView.vue` 的 `:loading="busy"`），等待是可见的；
+/// 而「假失败」会让用户以为功能坏了。宁可慢，不要假失败。
+pub(crate) const UPDATE_CHECK_TIMEOUT_MS: u64 = 120_000;
+
+/// `check_update` 的 RPC 超时（秒）。必须 > `UPDATE_CHECK_TIMEOUT_MS`（120s）。
+pub(crate) const UPDATE_CHECK_RPC_TIMEOUT_SECS: u64 = 150;
+
+/// 「下载更新包」下发给 sidecar 的出网超时（毫秒）。被控端约 1MB，300s 足够。
+pub(crate) const UPDATE_DOWNLOAD_TIMEOUT_MS: u64 = 300_000;
+
+/// `download` 的 RPC 超时（秒）。必须 > `UPDATE_DOWNLOAD_TIMEOUT_MS`（300s）。
+pub(crate) const UPDATE_DOWNLOAD_RPC_TIMEOUT_SECS: u64 = 330;
+
+/// **编译期不变式**：内层出网超时必须小于外层 RPC 超时。
+///
+/// ## 为什么放在 `const _` 里而不是写成 `#[test]`
+/// ① 这层关系一旦破坏，症状是「用户看到假失败、且失败原因指向别处」——
+///    让**构建**直接失败，比等某条单测被跑到更早、更不可能被绕过
+///    （CI 的 `cargo clippy` / `cargo build` 都是闸门，而单测可能被 filter 掉）。
+/// ② 两侧都是常量，写成断言函数会被 `clippy::assertions_on_constants` 拦下
+///    （`-D warnings` 下即失败）—— clippy 给的正是本写法。
+///
+/// 注入验证（2026-10-13）：把 `UPDATE_CHECK_RPC_TIMEOUT_SECS` 改成 50、
+/// 或把 `UPDATE_CHECK_TIMEOUT_MS` 改回 20_000，**构建**即失败并打印下面的文案。
+const _: () = {
+    assert!(
+        UPDATE_CHECK_TIMEOUT_MS < UPDATE_CHECK_RPC_TIMEOUT_SECS * 1000,
+        "check_update：出网超时必须小于 RPC 超时（否则用户只会看到「check_update 超时」这种丢掉真实原因的假失败）"
+    );
+    assert!(
+        UPDATE_DOWNLOAD_TIMEOUT_MS < UPDATE_DOWNLOAD_RPC_TIMEOUT_SECS * 1000,
+        "download：出网超时必须小于 RPC 超时"
+    );
+    // 60s 下限：真机上取 latest.json 的重定向链实测出现过 68.6s（三次为 2.0 / 10.0 / 68.6s），
+    // 回落到「假定能直连」时代的 20s 必然超时。
+    assert!(
+        UPDATE_CHECK_TIMEOUT_MS >= 60_000,
+        "检查更新的出网超时不得低于 60s"
+    );
+};
+
+// ---------------------------------------------------------------------------
 // 路径净化：**交给外部进程**（node）的路径必须先去掉 Windows verbatim 前缀
 // ---------------------------------------------------------------------------
 
@@ -65,7 +127,7 @@ use tokio::sync::oneshot;
 /// `\\?\` 路径 **0.5 秒**即退出、exit 1、**零 JS 执行**（连自带启动日志都没写出来）。
 ///
 /// 控制台侧前后两种表现都由这一条派生：
-/// - 修存活检测**之前**：请求写进已死进程的管道 → 干等 45 秒 → 「check_update 超时」；
+/// - 修存活检测**之前**：请求写进已死进程的管道 → 干等到 RPC 超时（当时 45 秒） → 「check_update 超时」；
 /// - 修存活检测**之后**：stdout 立即 EOF → 「sidecar 已退出（stdout 关闭），请重试」。
 ///
 /// ## 为什么单测 / CI / 开发模式全都测不出来
@@ -163,7 +225,7 @@ pub struct Sidecar {
     /// ⚠️ 为什么不能只靠 `child.try_wait()`：往**已退出进程的管道**里写在 Windows 上
     /// 未必立刻报错（管道缓冲区吞下就返回成功），于是请求会一路干等到 `request` 的超时。
     /// 真机实证（2026-10-13，Windows 11 ARM64）：sidecar 早已退出，控制台却仍复用缓存里的
-    /// `Arc<Sidecar>`，点「检查更新」等满 45 秒 → 界面显示「检查更新失败：check_update 超时」；
+    /// `Arc<Sidecar>`，点「检查更新」等满 RPC 超时（当时 45 秒） → 界面显示「检查更新失败：check_update 超时」；
     /// 而同一台机器上**手工拉起 sidecar 跑同一个请求只要 7 秒**。
     /// 所以判定「它死了」要多路取证：进程状态 ∨ stdout EOF ∨ 写入失败。
     dead: Arc<AtomicBool>,
@@ -252,7 +314,7 @@ impl Sidecar {
                 // 走到这里 = stdout 关闭（EOF 或读取出错）= sidecar 进程已结束。
                 dead.store(true, Ordering::SeqCst);
                 // 顺手唤醒**所有还在等响应**的请求，让它们立刻失败，
-                // 而不是干等各自的 timeout（check_update 45s / download 320s）。
+                // 而不是干等各自的 timeout（见 UPDATE_CHECK_RPC_TIMEOUT_SECS / UPDATE_DOWNLOAD_RPC_TIMEOUT_SECS）。
                 // 没有这一步，sidecar 死掉的那一刻就会有请求白等好几分钟。
                 let mut waiting = pending.lock().unwrap();
                 for (_, tx) in waiting.drain() {
@@ -298,7 +360,7 @@ impl Sidecar {
     pub async fn request(&self, method: &str, params: Value, timeout_secs: u64) -> Result<Value, String> {
         // 入口先判存活 —— 这是「秒失败」的那一道。
         // 只靠写入报错是不够的：Windows 上往已关闭的管道写可能被缓冲区吞掉而"成功"，
-        // 之后就会一路干等到 timeout（真机形态：check_update 45s）。宁可在入口直接拒绝。
+        // 之后就会一路干等到 timeout（真机形态：check_update 的 RPC 超时，当时 45s）。宁可在入口直接拒绝。
         if !self.is_alive() {
             return Err(format!("sidecar 不可用（进程已退出），{method} 已放弃"));
         }
@@ -450,7 +512,7 @@ mod tests {
     //
     // 现象（真机）：控制台点「检查更新」，sidecar 被拉起后**存活约 0.5 秒即消失**、
     //   退出码 1，且一行 JS 都没执行（连自带的启动日志都写不出来）；界面报
-    //   「sidecar 已退出（stdout 关闭），请重试」（修存活检测之前报「等满 45 秒超时」）。
+    //   「sidecar 已退出（stdout 关闭），请重试」（修存活检测之前报「等满 RPC 超时」，当时 45 秒）。
     // 根因：`resource_dir()` 给的是 verbatim 路径（`\\?\C:\…`），当参数交给 node 后，
     //   node 启动期的 `realpathSync` 把 `\\?\C:` 拆成 `C:` → `EISDIR` → exit 1。
     // 为什么本地/CI 全绿：开发模式走的是仓库相对路径（普通路径），只有打包后才暴露。
@@ -600,7 +662,7 @@ mod tests {
     // -----------------------------------------------------------------------
     // 「sidecar 退出后不得被复用」—— 2026-10-13 真机缺陷
     //
-    // 现象：控制台点「检查更新」等满 45 秒，界面报「check_update 超时」；
+    // 现象：控制台点「检查更新」等满 RPC 超时（当时 45 秒），界面报「check_update 超时」；
     //       而同一台机器上手工拉起 sidecar 跑同一个请求只要 7 秒。
     // 根因：控制台缓存里的 Arc<Sidecar> 指向早已退出的子进程，
     //       ensure_sidecar 只判「缓存里有没有」，不判「那进程还活着没」。

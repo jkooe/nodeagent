@@ -72,14 +72,25 @@ async function doSetting(key: "auto_restart" | "close_to_tray" | "auto_start_age
 
 async function doCheckUpdate() {
   const u = await agent.checkUpdate();
-  if (agent.error) msg.error(`检查更新失败：${agent.error}`);
+  if (agent.error) msg.error(prefixOnce(agent.error, "检查更新失败："));
   else if (u) msg.success(u.has_update ? `有新版本 v${u.latest_version}` : "已是最新版本");
 }
 
 async function doApplyUpdate() {
   const r = await agent.applyUpdate();
-  if (agent.error) msg.error(`更新失败：${agent.error}`);
+  if (agent.error) msg.error(prefixOnce(agent.error, "更新失败："));
   else if (r) msg.success(`已更新到 v${r.version}（${r.restarted ? "并已重启" : "未自动启动"}）`);
+}
+
+/**
+ * 错误信息里若已带同一前缀就不再叠加。
+ *
+ * ⚠️ 2026-10-13：sidecar 侧把失败原因写成「检查更新失败：<真实原因>（经代理 …, 耗时 …）」，
+ * 而这里原本又拼一层 → 用户看到「检查更新失败：检查更新失败：请求超时…」。
+ * 但 `ensure_sidecar` 之类来自 Rust 壳的错误**没有**前缀，所以前缀本身要保留，只是不重复。
+ */
+function prefixOnce(text: string, prefix: string) {
+  return text.startsWith(prefix) ? text : prefix + text;
 }
 
 async function doConnectLocal() {
@@ -289,6 +300,11 @@ function openRelease() {
             </div>
             <div v-if="agent.update?.published_at" class="kv">
               <span>发布时间</span><b>{{ fmtTime(Date.parse(agent.update.published_at)) }}</b>
+            </div>
+            <!-- 出网路径：境内「检查更新」失败时最关键的一条排查线索（直连 / 哪个代理） -->
+            <div v-if="agent.update?.via" class="kv">
+              <span>出网</span>
+              <b class="mono ellipsis">{{ agent.update.via }}</b>
             </div>
 
             <n-space style="margin-top: 12px">
