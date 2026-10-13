@@ -21,6 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readCargoPackageName,
+  readCargoTomlVersion,
   setCargoLockVersion,
   setCargoTomlVersion,
   versionTargets,
@@ -108,18 +109,76 @@ test('Cargo.lock：找不到该 crate 时返回原文并报 changed=false（未�
 });
 
 // ---------------------------------------------------------------------------
+// ②' 换行符无关性（CRLF）—— 2026-10-13 Windows CI 实证后补
+//
+// 为什么必须单列：Windows 上 `actions/checkout` 默认 `core.autocrlf=true`，
+// 工作区文本是 CRLF。把 `\n` 写死进正则会在 CRLF 上**静默失配**，
+// 而调用方普遍把 `undefined` 当成「没这个字段」→ **不报错、只是悄悄没改**。
+// CI 报错原文：`undefined  apps/console/src-tauri/Cargo.lock`（其余 10 处均为 2.0.3）。
+// ---------------------------------------------------------------------------
+
+test('Cargo.lock：CRLF 检出下同样读出旧值、改对目标 crate、换行符逐字节保真', () => {
+  const lf = 'version = 4\n\n[[package]]\nname = "nodeagent-console"\nversion = "2.0.3"\n\n[[package]]\nname = "statuses"\nversion = "2.0.2"\n';
+  const crlf = lf.replaceAll('\n', '\r\n');
+
+  // 读旧值：LF / CRLF 必须给出**同一个**结果（这正是 Windows 上失效的那一步）
+  assert.equal(setCargoLockVersion(lf, 'nodeagent-console', '9.9.9').before, '2.0.3');
+  assert.equal(
+    setCargoLockVersion(crlf, 'nodeagent-console', '9.9.9').before,
+    '2.0.3',
+    'CRLF 下读不出旧值 → 发版会静默跳过 Cargo.lock（Windows CI 实证失败点）',
+  );
+
+  const r = setCargoLockVersion(crlf, 'nodeagent-console', '9.9.9');
+  assert.equal(r.changed, true);
+  assert.match(r.text, /name = "nodeagent-console"\r\nversion = "9\.9\.9"\r\n/);
+  assert.match(r.text, /name = "statuses"\r\nversion = "2\.0\.2"/, '依赖版本不得被连带改掉');
+  assert.ok(!/[^\r]\n/.test(r.text), '换行符必须保持 CRLF —— 悄悄转成 LF 会污染整个文件的 diff');
+});
+
+test('Cargo.toml：CRLF 检出下 version 读写一致，且不碰非 [package] 段', () => {
+  const lf = [
+    '[package]',
+    'name = "nodeagent-console"',
+    'version = "2.0.3"',
+    'edition = "2021"',
+    '',
+    '[package.metadata.deb]',
+    'version = "2.0.3"',
+    '',
+  ].join('\n');
+  const crlf = lf.replaceAll('\n', '\r\n');
+
+  assert.equal(readCargoTomlVersion(crlf), '2.0.3', 'CRLF 下必须读得出 [package] 的 version');
+  assert.equal(readCargoPackageName(crlf), 'nodeagent-console');
+
+  const out = setCargoTomlVersion(crlf, '9.9.9', 'Cargo.toml');
+  assert.match(out, /\[package\]\r\nname = "nodeagent-console"\r\nversion = "9\.9\.9"\r\n/);
+  assert.equal(out.match(/version = "2\.0\.3"/g)?.length, 1, '非 [package] 段那处必须原样保留');
+  assert.ok(!/[^\r]\n/.test(out), '换行符必须保持 CRLF');
+});
+
+// ---------------------------------------------------------------------------
 // ③ 编排：对临时目录里的**真实文件**跑一遍
 // ---------------------------------------------------------------------------
 
-function scaffold() {
+/**
+ * 铺一份「真实文件」的临时仓库。
+ *
+ * `crlf: true` 模拟 **Windows 检出**（`actions/checkout` 默认 `core.autocrlf=true`
+ * 会让工作区文本变成 CRLF）。2026-10-13 CI 实证：CRLF 下 Cargo.lock 的版本号
+ * 曾读出 `undefined`，生产代码据此**静默跳过**该文件 —— 必须能被本地复现（铁律 4）。
+ */
+function scaffold({ crlf = false } = {}) {
+  const eol = crlf ? '\r\n' : '\n';
   const dir = mkdtempSync(join(tmpdir(), 'na-version-'));
   const tauriDir = join(dir, 'apps', 'console', 'src-tauri');
   mkdirSync(tauriDir, { recursive: true });
-  writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'nodeagent', version: '2.0.2' }, null, 2)}\n`);
-  writeFileSync(join(tauriDir, 'tauri.conf.json'), `${JSON.stringify({ productName: 'x', version: '2.0.2' }, null, 2)}\n`);
+  writeFileSync(join(dir, 'package.json'), `${JSON.stringify({ name: 'nodeagent', version: '2.0.2' }, null, 2)}${eol}`);
+  writeFileSync(join(tauriDir, 'tauri.conf.json'), `${JSON.stringify({ productName: 'x', version: '2.0.2' }, null, 2)}${eol}`);
   writeFileSync(
     join(tauriDir, 'Cargo.toml'),
-    ['[package]', 'name = "nodeagent-console"', 'version = "2.0.2"', 'edition = "2021"', ''].join('\n'),
+    ['[package]', 'name = "nodeagent-console"', 'version = "2.0.2"', 'edition = "2021"', ''].join(eol),
   );
   writeFileSync(
     join(tauriDir, 'Cargo.lock'),
@@ -134,7 +193,7 @@ function scaffold() {
       'name = "statuses"',
       'version = "2.0.2"',
       '',
-    ].join('\n'),
+    ].join(eol),
   );
   // 必须真的进一次 git 索引 —— `versionTargets` 走 `git ls-files`，
   // 只认「已入库文件」，否则临时目录里它会返回空集，测试就会假绿。
@@ -178,6 +237,43 @@ test('dry-run 一个字节都不改', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ③' 编排层 + CRLF：这是**能打红生产缺陷**的那条守卫
+//
+// 前一条 CRLF 测试只证「纯函数对 CRLF 免疫」；但 Windows 上翻车的是**编排层**
+// ——它曾另写一条正则读旧值，失配后把 Cargo.lock 记进 `skipped` 直接跳过。
+// 所以必须在 CRLF 工作区上真跑一遍 `writeVersionEverywhere`，再读回文件断言。
+// ---------------------------------------------------------------------------
+
+test('CRLF 工作区（Windows 检出）：四处版本号照样全改，且 skipped 必须为空', () => {
+  const dir = scaffold({ crlf: true });
+  const res = writeVersionEverywhere(dir, '9.9.9');
+
+  assert.deepEqual(
+    res.changed.map((c) => c.file).sort(),
+    [
+      'apps/console/src-tauri/Cargo.lock',
+      'apps/console/src-tauri/Cargo.toml',
+      'apps/console/src-tauri/tauri.conf.json',
+      'package.json',
+    ].sort(),
+  );
+  assert.equal(
+    res.skipped.length,
+    0,
+    `CRLF 下不得有跳过项（Windows CI 上 Cargo.lock 曾被静默跳过）：${res.skipped.join(', ')}`,
+  );
+
+  const lock = readFileSync(join(dir, 'apps/console/src-tauri/Cargo.lock'), 'utf8');
+  assert.match(lock, /name = "nodeagent-console"\r\nversion = "9\.9\.9"/, 'Cargo.lock 必须真的被改到');
+  assert.match(lock, /name = "statuses"\r\nversion = "2\.0\.2"/, '依赖版本不得被连带改掉');
+  assert.ok(!/[^\r]\n/.test(lock), 'Cargo.lock 的换行符必须保持 CRLF');
+
+  const toml = readFileSync(join(dir, 'apps/console/src-tauri/Cargo.toml'), 'utf8');
+  assert.match(toml, /version = "9\.9\.9"/);
+  assert.ok(!/[^\r]\n/.test(toml), 'Cargo.toml 的换行符必须保持 CRLF');
+});
+
+// ---------------------------------------------------------------------------
 // ④ 发版漂移守卫：真实仓库里 11 处版本号必须互一致
 // ---------------------------------------------------------------------------
 
@@ -194,13 +290,21 @@ test('仓库内全部版本号互一致（发版漏项会在这里变红）', ()
   for (const f of [...t.pkgFiles, ...t.tauriConfFiles]) {
     versions.set(f, JSON.parse(readFileSync(join(repoRoot, f), 'utf8')).version);
   }
+  // ⚠️ 读旧值一律走**生产函数**，不在这里另写一条正则。
+  //    2026-10-13 Windows CI 实证：本文件曾自己写 `name…\nversion…` 的正则，
+  //    CRLF 检出上返回 undefined → 报「版本号分叉」；而**生产代码里有同一条正则**，
+  //    真实后果是发版时静默跳过 Cargo.lock（比测试变红严重得多）。
+  //    守卫与生产必须共用同一份解析，否则守卫只能验证「两份实现是否一致」。
   for (const f of t.cargoTomlFiles) {
-    const m = /\[package\][\s\S]*?^version\s*=\s*"([^"]*)"/m.exec(readFileSync(join(repoRoot, f), 'utf8'));
-    versions.set(f, m?.[1]);
+    versions.set(f, readCargoTomlVersion(readFileSync(join(repoRoot, f), 'utf8')));
   }
   for (const f of t.cargoLockFiles) {
-    const m = /name\s*=\s*"nodeagent-console"\nversion\s*=\s*"([^"]*)"/.exec(readFileSync(join(repoRoot, f), 'utf8'));
-    versions.set(f, m?.[1]);
+    const { before } = setCargoLockVersion(
+      readFileSync(join(repoRoot, f), 'utf8'),
+      'nodeagent-console',
+      '__probe__',
+    );
+    versions.set(f, before);
   }
 
   const distinct = new Set(versions.values());

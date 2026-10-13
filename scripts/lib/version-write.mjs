@@ -11,6 +11,17 @@
  *   铁律「守卫要落在**最终产物字节**上」。若版本写入逻辑埋在 `release.mjs` 里，
  *   单测只能断言「源码里出现过某个字符串」—— 那种守卫注入故障都不会变红。
  *   抽成纯函数后，测试可以对**临时目录里的真实文件**跑一遍再断言文件内容。
+ *
+ * ⚠️ 换行符纪律（2026-10-13 Windows CI 实证后补）：
+ *   Windows 上 `actions/checkout` 默认 `core.autocrlf=true`，检出的文本是 **CRLF**。
+ *   因此本模块内**一律不得**对原文跑把 `\n` 写死的正则 —— 那种写法在 CRLF 检出上会
+ *   **静默返回 `undefined`**，而调用方普遍把它当成「没这个字段」直接跳过：不报错、
+ *   只是悄悄没改（正是本模块要消灭的那类漂移）。
+ *   统一做法：
+ *     ① **读**值一律 `split('\n')` 后对 `line.trim()` 匹配（`\r` 被 `trim()` 吃掉）；
+ *     ② **写**值先用 `splitLineEol()` 把行尾拆下来、改完正文再拼回去。
+ *        （不能偷懒写 `(".*)$` 兜行尾 —— JS 的 `.` **不匹配 `\r`**，那样照样失配。）
+ *   两条合起来保证：LF / CRLF 两种检出**结果一致**，且写回**逐字节保真**。
  */
 
 import { execFileSync } from 'node:child_process';
@@ -48,6 +59,18 @@ export function versionTargets(root = process.cwd()) {
 }
 
 /**
+ * 把一行拆成「正文 + 行尾」—— 行尾可能是 `\r`（CRLF 检出）或空串。
+ *
+ * ⚠️ 为什么必须拆：JS 里 `.` **不匹配 `\r`**（`\r` 与 `\n` 同属行终止符），
+ *    所以 `^(\s*version\s*=\s*")[^"]*(".*)$` 这类写法在 `version = "2.0.3"\r`
+ *    上会**直接失配** —— 行没改成、`done` 也没置位，全程不报错。
+ *    2026-10-13 本地复现（CRLF 文本喂给纯函数）即命中此处。
+ */
+function splitLineEol(line) {
+  return line.endsWith('\r') ? [line.slice(0, -1), '\r'] : [line, ''];
+}
+
+/**
  * 改 `Cargo.toml` 的版本号 —— **只在 `[package]` 段内**改。
  *
  * 为什么要限定段落：`Cargo.toml` 里 `version = "..."` 这个形状还出现在别处
@@ -67,16 +90,33 @@ export function setCargoTomlVersion(text, version, label = 'Cargo.toml') {
     }
     if (!inPackage || done) continue;
     if (/^version\s*=/.test(trimmed)) {
-      lines[i] = lines[i].replace(/^(\s*version\s*=\s*")[^"]*(".*)$/, `$1${version}$2`);
-      done = true;
+      const [body, eol] = splitLineEol(lines[i]);
+      const m = /^(\s*version\s*=\s*")([^"]*)(".*)$/.exec(body);
+      if (m) {
+        lines[i] = `${m[1]}${version}${m[3]}${eol}`;
+        done = true;
+      }
     }
   }
   if (!done) throw new Error(`${label} 的 [package] 段里找不到 version 行`);
   return lines.join('\n');
 }
 
-/** 从 `Cargo.toml` 的 `[package]` 段读 crate 名（用于去 `Cargo.lock` 里定位同一个包）。 */
-export function readCargoPackageName(text) {
+/** 从 `Cargo.toml` 的 `[package]` 段读版本号（读不到返回 `undefined`）。 */
+export function readCargoTomlVersion(text) {
+  return packageSectionValue(text, 'version');
+}
+
+/**
+ * 在 `[package]` 段内取某个 `key = "值"` 的值。
+ *
+ * ⚠️ 一律走 `line.trim()` 再匹配（而不是对原文跑带 `$` / `\n` 的正则）——
+ *    **这样换行符就与结果无关**：CRLF 的 `\r` 被 `trim()` 吃掉，
+ *    LF / CRLF 两种检出得到同一结果。2026-10-13 Windows CI 实证：
+ *    写死 `\n` 的提取在 CRLF 检出上**静默返回 undefined**，
+ *    而调用方把它当成「没有这个字段」直接跳过 —— 不报错、只是悄悄没改。
+ */
+function packageSectionValue(text, key) {
   const lines = text.split('\n');
   let inPackage = false;
   for (const line of lines) {
@@ -86,10 +126,15 @@ export function readCargoPackageName(text) {
       continue;
     }
     if (!inPackage) continue;
-    const m = /^name\s*=\s*"([^"]*)"$/.exec(trimmed);
+    const m = new RegExp(`^${key}\\s*=\\s*"([^"]*)"$`).exec(trimmed);
     if (m) return m[1];
   }
-  return null;
+  return undefined;
+}
+
+/** 从 `Cargo.toml` 的 `[package]` 段读 crate 名（用于去 `Cargo.lock` 里定位同一个包）。 */
+export function readCargoPackageName(text) {
+  return packageSectionValue(text, 'name') ?? null;
 }
 
 /**
@@ -104,6 +149,7 @@ export function setCargoLockVersion(text, pkgName, version) {
   const lines = text.split('\n');
   let currentName = null;
   let done = false;
+  let before;
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
     if (trimmed === '[[package]]') {
@@ -116,11 +162,18 @@ export function setCargoLockVersion(text, pkgName, version) {
       continue;
     }
     if (currentName === pkgName && !done && /^version\s*=/.test(trimmed)) {
-      lines[i] = lines[i].replace(/^(\s*version\s*=\s*")[^"]*(".*)$/, `$1${version}$2`);
-      done = true;
+      // 先拆掉行尾再改正文，改完把原行尾接回去 → CRLF 检出下换行符**逐字节保真**，
+      // 不会把 Windows 工作区悄悄转成 LF（那会污染整个文件的 diff）。
+      const [body, eol] = splitLineEol(lines[i]);
+      const m = /^(\s*version\s*=\s*")([^"]*)(".*)$/.exec(body);
+      if (m) {
+        before = m[2];
+        lines[i] = `${m[1]}${version}${m[3]}${eol}`;
+        done = true;
+      }
     }
   }
-  return { text: lines.join('\n'), changed: done };
+  return { text: lines.join('\n'), changed: done, before };
 }
 
 /**
@@ -154,28 +207,31 @@ export function writeVersionEverywhere(root, version, { dryRun = false } = {}) {
   }
 
   // ---- Cargo.toml + Cargo.lock：成对处理（lock 里要按 crate 名定位） ----
+  //
+  // ⚠️ 「读旧值」与「写新值」**必须共用同一份实现**（`readCargoTomlVersion` /
+  //    `setCargoLockVersion`）。早先这里另写了一条 `name…\nversion…` 的正则读旧值，
+  //    那与写入实现是**两份会各自漂移的解析**：2026-10-13 Windows CI 实证，
+  //    CRLF 检出上那条正则返回 `undefined` → 本函数把它当成「没找到该 crate」记入
+  //    `skipped` 并**跳过 Cargo.lock**，发版后该文件滞留旧版本 ——
+  //    正是本模块要消灭的那类分叉，而且**不报错**。
   for (const rel of targets.cargoTomlFiles) {
     const abs = join(root, rel);
     const text = readFileSync(abs, 'utf8');
-    const before = /\[package\][\s\S]*?^version\s*=\s*"([^"]*)"/m.exec(text)?.[1];
     const crateName = readCargoPackageName(text);
-    changed.push({ file: rel, before: before ?? '?', kind: 'cargo-toml' });
+    changed.push({ file: rel, before: readCargoTomlVersion(text) ?? '?', kind: 'cargo-toml' });
     if (!dryRun) writeFileSync(abs, setCargoTomlVersion(text, version, rel));
 
     if (!crateName) continue;
     const lockRel = targets.cargoLockFiles.find((f) => f.startsWith(rel.slice(0, rel.length - 'Cargo.toml'.length)));
     if (!lockRel) continue;
     const lockAbs = join(root, lockRel);
-    const lockText = readFileSync(lockAbs, 'utf8');
-    const lockBefore = new RegExp(`name\\s*=\\s*"${crateName}"\\nversion\\s*=\\s*"([^"]*)"`).exec(lockText)?.[1];
-    if (lockBefore === undefined) {
+    const lockRes = setCargoLockVersion(readFileSync(lockAbs, 'utf8'), crateName, version);
+    if (lockRes.before === undefined) {
       skipped.push(`${lockRel}（未找到 crate ${crateName}，可能尚未构建）`);
       continue;
     }
-    changed.push({ file: lockRel, before: lockBefore, kind: 'cargo-lock' });
-    if (dryRun) continue;
-    const result = setCargoLockVersion(lockText, crateName, version);
-    if (result.changed) writeFileSync(lockAbs, result.text);
+    changed.push({ file: lockRel, before: lockRes.before, kind: 'cargo-lock' });
+    if (!dryRun && lockRes.changed) writeFileSync(lockAbs, lockRes.text);
   }
 
   return { changed, skipped };

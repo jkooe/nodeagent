@@ -375,6 +375,44 @@ e2e 新增的 ACL / 畸形报文用例有个必须记住的姿势：**每个场�
 > （`.msi` / NSIS）；直接重启已装的旧版控制台只是**临时绕开**（进程内缓存被清空 → 重新拉起 sidecar），
 > 症状会消失，但下次 sidecar 再退出仍会复发。
 
+### 修复 —— 两条守卫在 Windows 上必红（平台差异：CRLF 与路径分隔符）
+
+CI 实证（run `38380306200`，提交 `73ed06f`）：`Windows 真机验证 → 单元测试` **319/321**，
+macOS 上同样两条却是绿的 —— 典型的「只在 Windows 暴露」。两条各有明确根因：
+
+**① `仓库内全部版本号互一致`：CRLF 把版本号读成 `undefined`**
+
+报错原文：`undefined  apps/console/src-tauri/Cargo.lock`（其余 10 处均为 `2.0.3`，`2 !== 1`）。
+根因：Windows 上 `actions/checkout` 默认 `core.autocrlf=true`，工作区文本是 **CRLF**，
+而 `Cargo.lock` 的版本提取把 `\n` 写死了。更严重的是 —— **同一处隐患也在生产代码里**：
+`version-write.mjs` 的写入路径另有一条 `name…\nversion…` 正则读旧值，CRLF 下同样返回 `undefined`，
+于是它把 Cargo.lock 当成「没找到该 crate」记入 `skipped` 并**跳过** → 发版后该文件滞留旧版本，
+**正是本模块要消灭的那类分叉，且不报错**。
+
+- 收敛为**单一真源**：读旧值改走 `readCargoTomlVersion()` / `setCargoLockVersion().before`，
+  删掉那条会漂移的重复正则。
+- 新增 `splitLineEol()`：写值前先把行尾拆下来、改完正文再拼回去 ——
+  不能偷懒写 `(".*)$` 兜行尾，因为 **JS 的 `.` 不匹配 `\r`**（与 `\n` 同属行终止符），照样失配。
+- 读值一律 `split('\n')` 后对 `line.trim()` 匹配 → LF / CRLF 结果一致，写回**逐字节保真**。
+- 新增 3 条守卫：Cargo.lock / Cargo.toml 纯函数级 CRLF 用例 + **CRLF 工作区上真跑一遍
+  `writeVersionEverywhere` 并读回文件断言**（注入故障后 3 条如期变红）。
+
+**② `W-01 根因守卫：PowerShell 单引号字面量必须来自 util/quote.ts`：把唯一真源自己判成违规**
+
+报错原文：`以下文件手写了 PS 单引号转义：util\quote.ts`。
+根因：守卫用 `file.slice(dir.length + 1)` 得相对路径，Windows 上是 `util\quote.ts`，
+与白名单里的 `util/quote.ts` 比不中 → **守卫自己错**（铁律 3 的第 ② 类），macOS 上复现不出。
+
+- 新增 `relPosix()` 把相对路径统一归一成 `/`；并补一条**用 `path.win32` 形态字符串在 macOS 上
+  直接测掉 Windows 分支**的用例 —— 跨平台差异不必真上 Windows 才能验（铁律 4）。
+
+回归：`test:unit` **325/325**（321 + 新增 4），注入故障实测 4 条守卫如期变红、还原逐字节一致。
+
+> 附带发现（不构成缺陷，但值得记档）：控制台随包的 `agent.mjs` 与发布版 `agent.mjs`
+> **逐行一致、同报 2.0.3**，唯二差异是 esbuild 的模块相对路径串与内嵌 commit 常量
+> （随包 `73ed06f` / 发布版 `a1c51d6`）—— 源于两次构建的**基准目录不同**。
+> 因此二者 **sha256 必然不同**，不能用发布清单的哈希去校验控制台播种出来的那份。
+
 ---
 
 ## [v2.0.2] —— 2026-10-11

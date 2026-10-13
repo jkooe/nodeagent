@@ -109,6 +109,18 @@ function walk(dir) {
 }
 
 /**
+ * 相对路径一律归一成 `/` 分隔 —— 否则「白名单」在 Windows 上必然比不中。
+ *
+ * ⚠️ 2026-10-13 Windows CI 实证：`file.slice(dir.length + 1)` 在 Windows 上得到
+ *    `util\quote.ts`，与白名单里的 `util/quote.ts` 不等 → **唯一真源自己被判成违规**
+ *    （报错原文：`以下文件手写了 PS 单引号转义：util\quote.ts`）。
+ *    守卫自己错（铁律 3 的第 ② 类），而 macOS 上 100% 复现不出 —— 平台差异必须收敛掉。
+ */
+function relPosix(dir, file) {
+  return file.slice(dir.length + 1).replaceAll('\\', '/');
+}
+
+/**
  * 去掉注释后再扫。
  *
  * ⚠️ 必须去：本仓库大量注释在**讲解这个漏洞**，里面会原样出现 `replace(/'/g, "''")`
@@ -136,7 +148,7 @@ test('W-01 根因守卫：源文件里不得出现 `${JSON.stringify(…)}` 拼�
   ];
   const offenders = [];
   for (const file of walk(AGENT_SRC)) {
-    const rel = file.slice(AGENT_SRC.length + 1);
+    const rel = relPosix(AGENT_SRC, file);
     const lines = stripComments(readFileSync(file, 'utf8')).split('\n');
     lines.forEach((line, i) => {
       if (!line.includes('${JSON.stringify(')) return;
@@ -156,7 +168,7 @@ test('W-01 根因守卫：PowerShell 单引号字面量必须来自 util/quote.t
   const ALLOWED = new Set(['util/quote.ts', 'capabilities/network.ts']);
   const offenders = [];
   for (const file of walk(AGENT_SRC)) {
-    const rel = file.slice(AGENT_SRC.length + 1);
+    const rel = relPosix(AGENT_SRC, file);
     if (ALLOWED.has(rel)) continue;
     const text = stripComments(readFileSync(file, 'utf8'));
     // 手写 `replace(/'/g, "''")` 就是「又发明了一份 psLit」——两份实现必然漂移
@@ -165,4 +177,22 @@ test('W-01 根因守卫：PowerShell 单引号字面量必须来自 util/quote.t
     }
   }
   assert.deepEqual(offenders, [], `以下文件手写了 PS 单引号转义，应改用 util/quote.ts：\n${offenders.join('\n')}`);
+});
+
+// ---------------------------------------------------------------------------
+// 守卫自身的可信度：路径归一
+//
+// 前面两条守卫都靠「相对路径 = 白名单里的字面量」来判断。若这一步在 Windows 上
+// 比不中，守卫就会**冤枉唯一真源自己**（CI 原文：`以下文件手写了 PS 单引号转义：util\quote.ts`）。
+// 这里用 `path.win32` 形态的字符串在 macOS 上直接把 Windows 分支测掉 ——
+// 跨平台差异不必真上 Windows 才能验（铁律 4）。
+// ---------------------------------------------------------------------------
+
+test('守卫自身的路径归一：Windows 反斜杠必须归一成 /（否则白名单比不中）', () => {
+  const winDir = 'C:\\x\\apps\\agent\\src';
+  assert.equal(relPosix(winDir, 'C:\\x\\apps\\agent\\src\\util\\quote.ts'), 'util/quote.ts');
+  assert.equal(relPosix(winDir, 'C:\\x\\apps\\agent\\src\\capabilities\\network.ts'), 'capabilities/network.ts');
+
+  const posixDir = '/x/apps/agent/src';
+  assert.equal(relPosix(posixDir, '/x/apps/agent/src/util/quote.ts'), 'util/quote.ts');
 });
