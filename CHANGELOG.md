@@ -591,7 +591,12 @@ sidecar 这条路径一直没被覆盖。
 **隧道与 TLS 握手阶段没有接 abort 信号** —— 那个阶段外层 `http.request` 还没建立，
 `signal`/`timeout` 都无人受理。真机形态：配置 75s 超时，**实际挂了 109s** 才失败。
 
-**守卫**（`tests/unit/sidecar-proxy.test.mjs`，15 用例）+ 注入验证：
+**第三个缺陷**（同一轮真机暴露）：**`ECONNRESET` 被误归入 abort 类**，于是连接被中途重置时
+报的是「请求超时」——真机形态是耗时 **82.9s**（预算 120s）却报「请求超时（120000ms 内未完成）」，
+把「对端把连接掐断了」这条最有价值的信息抹掉。改为**只认真正的 abort**（`AbortError`/`ABORT_ERR`），
+其余网络错误单列翻译（`ENOTFOUND`/`EAI_AGAIN`/`ECONNREFUSED`/`ECONNRESET`/`EPIPE`）。
+
+**守卫**（`tests/unit/sidecar-proxy.test.mjs`，16 用例）+ 注入验证：
 
 | # | 守什么 | 注入故障实测 |
 |---|---|---|
@@ -599,14 +604,23 @@ sidecar 这条路径一直没被覆盖。
 | 9–12 | 真发请求（**离线本地服务器**）：直连跟随 302、经代理走绝对形态、**代理不通必须报错**（防静默降级）、CONNECT 可用 / 被拒报错、**隧道+TLS 阶段 abort 必须立即生效**（带看门狗，故障时失败而非挂死） | 去掉隧道阶段 abort 挂载 → 用例 12 红（`实际 4002ms`） |
 | 13 | **端到端**：真 spawn sidecar 进程走 JSON-RPC 跑 `check_update`，断言返回正确且 **`via_proxy` 正确**、代理**真收到了**请求；反面对照（代理指死端口）必须失败 | 把 `check_update` 退回裸 `fetch` → 用例 13 红（`代理必须真收到这次请求`）+ 用例 14 红 |
 | 14 | 形态守卫：sidecar 源码不得再出现裸 `fetch(`（防止修复被无声改回去） | 同上 |
+| 15 | 错误映射：连接被**中途重置**时不得报成「请求超时」（真机踩过） | 把 `ECONNRESET` 塞回 abort 类 → 用例 15 红 |
 
-**真机复验**（重打 sidecar 产物 248KB，用**打包后的 `dist/sidecar.mjs`** 直跑）：
+**真机复验**（重打 sidecar 产物 249KB，用**打包后的 `dist/sidecar.mjs`** 直跑）：
 
-| 组 | 配置 | 结果 |
+| 组 | 平台 / 配置 | 结果 |
 |---|---|---|
-| C | 无代理 | **成功 2169ms** → 最新版本 `v2.0.3`、已是最新；日志正确报出「系统代理使用 PAC 自动配置脚本…已按无代理处理」（macOS `scutil` 探测真实生效） |
-| A | `NA_PROXY=http://127.0.0.1:1`（死端口） | **51ms 明确失败**：`connect ECONNREFUSED 127.0.0.1:1（经代理 http://127.0.0.1:1/，耗时 5ms）`；`data` 里带全 `via`/`proxy`/`proxy_source`/`timeout_ms`/`hint` |
-| B | `NA_PROXY=http://127.0.0.1:<代理端口>` | 代理路径被正确选中（日志 `经代理 …（来源 NA_PROXY）`）；该次宿主代理线路拥塞未在预算内完成 —— **线路本身的问题**，错误信息如实说明「代理已生效但仍失败」 |
+| C | macOS / 无代理 | **成功 2169ms** → 最新版本 `v2.0.3`、已是最新；日志正确报出「系统代理使用 PAC 自动配置脚本…已按无代理处理」（`scutil` 探测真实生效） |
+| A | macOS / `NA_PROXY=http://127.0.0.1:1`（死端口） | **51ms 明确失败**：`connect ECONNREFUSED 127.0.0.1:1（经代理 http://127.0.0.1:1/，耗时 5ms）`；`data` 里带全 `via`/`proxy`/`proxy_source`/`timeout_ms`/`hint` |
+| B | macOS / `NA_PROXY=http://127.0.0.1:<代理端口>` | 代理路径被正确选中（日志 `经代理 …（来源 NA_PROXY）`）；该次宿主代理线路拥塞未在预算内完成 —— **线路本身的问题**，错误信息如实说明「代理已生效但仍失败」 |
+| D | **Win11 ARM64 VM** / 未配系统代理、未给任何环境变量（直连） | **30877ms 失败**，但报的是真实原因：`socket hang up（连接被对端中途断开…）`，`data` 明确给出 `via=直连`、`proxy=null`、`timeout_ms=120000` 与一句可操作提示「请在系统里开启『系统代理』，或设置 `HTTPS_PROXY=…` 后重启控制台」 |
+| E | **Win11 ARM64 VM** / 只设 **WinINET 系统代理**指向转发端点（**不给任何环境变量**） | **成功 28883ms** → `v2.0.3`、`has_update=false`；日志 `检查更新：经代理 http://…（来源 system）`、结果 `via_proxy=system`，**退出码 0** |
+
+> 组 D/E 用的是**随包 `node.exe`**（`%LOCALAPPDATA%\nodeagent-console\node.exe`）直跑
+> `dist/sidecar.mjs`，两侧 sha256 一致（`07dd592b…`）；E 组**没有任何环境变量参与**，
+> 走通的正是本次新增的**系统代理发现**（`reg query` → `来源 system`）。
+> E 组耗时 28.9s 同时反证根因 3：旧实现固定 20s 的内部超时对这条链路**必然**失败。
+> 复验后 VM 的 `ProxyEnable`/`ProxyServer` 已**原样还原**（复原为 `0x0` / 值不存在）。
 
 > **未覆盖（如实记档）**：**https 目标经 CONNECT 隧道的 TLS 叠层**没有离线自动化用例 ——
 > 需要一个受信任证书的本地 TLS 源站，而本仓库没有证书夹具（`selfsigned` 只装在被控端包内，
