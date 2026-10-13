@@ -158,14 +158,19 @@ pub fn mark_installed_version(data_dir: &Path, version: &str, source: &str) -> R
 ///
 /// 优先级：环境变量 `NODEAGENT_CONSOLE_AGENT` → 随包 resource 的 `agent.mjs` →
 /// 开发期的 `apps/agent/dist/index.js`。
+///
+/// ⚠️ 出口一律经 `sidecar::unverbatim`：`resource_dir()` 在 Windows 上给的是
+/// verbatim 路径（`\\?\C:\…`）。本函数的结果最终会**交给 node**（播种后作为脚本路径），
+/// 带 `\\?\` 的路径会让 node **启动即 EISDIR 秒退** —— 这正是 2026-10-13
+/// 「sidecar 秒退」真机缺陷的同类风险，必须在源头堵掉。
 pub fn resolve_bundled_agent(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("NODEAGENT_CONSOLE_AGENT") {
         if !p.is_empty() && Path::new(&p).exists() {
-            return Ok(PathBuf::from(p));
+            return Ok(crate::sidecar::unverbatim(PathBuf::from(p)));
         }
     }
     if let Some(dir) = resource_dir {
-        let bundled = dir.join("agent.mjs");
+        let bundled = crate::sidecar::unverbatim(dir.join("agent.mjs"));
         if bundled.exists() {
             return Ok(bundled);
         }
@@ -429,16 +434,24 @@ impl AgentManager {
             ),
         );
 
-        let mut cmd = Command::new(node);
-        cmd.arg(script)
-            .current_dir(data_dir)
+        // 进程边界：交给 node 的三条路径都先去掉 verbatim 前缀。
+        // 被控端的脚本路径来自数据目录（本来就是普通路径），但 node 路径来自
+        // `resource_dir()`（Windows 上是 `\\?\C:\…`）—— 与 2026-10-13「sidecar 秒退」
+        // 同一类风险，故在此统一兜住，不依赖上游是否记得净化。
+        let node = crate::sidecar::unverbatim(node.to_path_buf());
+        let script = crate::sidecar::unverbatim(script.to_path_buf());
+        let data_dir = crate::sidecar::unverbatim(data_dir.to_path_buf());
+
+        let mut cmd = Command::new(&node);
+        cmd.arg(&script)
+            .current_dir(&data_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(false); // 由本管理器显式管理生命周期，不留孤儿也不误杀
 
         // 让被控端与控制台用**同一个**数据目录（不设则各按各自规则解析）
-        cmd.env("NODEAGENT_HOME", data_dir);
+        cmd.env("NODEAGENT_HOME", &data_dir);
 
         // ⚠️ 消灭黑窗：Windows 上不加这个标志，每 spawn 一次 node 就弹一个控制台窗口
         #[cfg(windows)]

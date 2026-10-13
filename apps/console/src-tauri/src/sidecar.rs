@@ -25,6 +25,70 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::oneshot;
 
+// ---------------------------------------------------------------------------
+// 路径净化：**交给外部进程**（node）的路径必须先去掉 Windows verbatim 前缀
+// ---------------------------------------------------------------------------
+
+/// 去掉 Windows 的 verbatim 前缀（`\\?\` 与 `\\?\UNC\`）。
+///
+/// ## 为什么非做不可（2026-10-13 真机缺陷的根因）
+/// Tauri 的 `resource_dir()` 返回的是**规范化之后的 verbatim 路径**
+/// （`\\?\C:\Users\…\nodeagent-console`）。把它当**参数**交给 node 时，
+/// node 启动流程会在入口模块的 `realpathSync` 里把它拆成 `C:` 与剩余部分：
+///
+/// ```text
+/// Error: EISDIR: illegal operation on a directory, lstat 'C:'
+///     at Object.realpathSync (node:fs:27xx)
+/// ```
+///
+/// → **exit 1，且一行 JS 都来不及执行**（连 sidecar 自己的启动日志都写不出来）。
+///
+/// 真机 A/B（Windows 11 ARM64；控制台 v2.0.3；同一个 `node.exe`、同一份 `sidecar.mjs`）：
+///
+/// | 脚本参数 | 结果 |
+/// |---|---|
+/// | `C:\…\sidecar.mjs` | 2.5 秒返回 `check_update` 结果，进程常驻 |
+/// | `\\?\C:\…\sidecar.mjs` | **0.5 秒即退出，exit 1**，零 JS 执行 |
+///
+/// 控制台侧前后两种表现都由这一条派生：
+/// - 修存活检测**之前**：请求写进已死进程的管道 → 干等 45 秒 → 「check_update 超时」；
+/// - 修存活检测**之后**：stdout 立即 EOF → 「sidecar 已退出（stdout 关闭），请重试」。
+///
+/// ## 为什么单测 / CI / 开发模式全都测不出来
+/// 开发期 `resolve_sidecar` 走的是 `CARGO_MANIFEST_DIR` 拼出来的**普通路径**；
+/// 只有**打包之后**才会从 `resource_dir()` 拿到 verbatim 路径。
+/// 于是「本地全绿 + CI 全绿 + 真机必挂」。
+///
+/// 纯字符串处理，**任何平台都可安全调用**（非 Windows 上一般原样返回），
+/// 因此可以用 Windows 形态的字符串在 macOS / Linux 上直接验证 Windows 分支。
+pub(crate) fn unverbatim(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        // \\?\UNC\server\share\x → \\server\share\x
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        // \\?\C:\x → C:\x
+        return PathBuf::from(rest);
+    }
+    path
+}
+
+/// 构造「把 sidecar 拉起来」的那条命令 —— **唯一**把路径交给 node 的地方。
+///
+/// 「必须去掉 verbatim 前缀」这条纪律只在这里守一次；单测直接断言本函数产出的
+/// `program` / `args`，因此**在 macOS / Linux 上也守得住 Windows 分支**（守的是
+/// 「最终下发文本」，不是「源码里出现过某个常量」）。
+fn sidecar_command(node: &Path, script: &Path) -> Command {
+    let mut cmd = Command::new(unverbatim(node.to_path_buf()));
+    cmd.arg(unverbatim(script.to_path_buf()))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true); // app 退出时不留孤儿进程
+    cmd
+}
+
 /// sidecar 主动推上来的事件（与 `main.mjs` 的 `params.kind` 一一对应）。
 #[derive(Debug, Clone)]
 pub enum SidecarEvent {
@@ -66,12 +130,13 @@ impl Sidecar {
         script: &Path,
         on_event: Arc<dyn Fn(SidecarEvent) + Send + Sync>,
     ) -> Result<Arc<Self>, String> {
-        let mut child = Command::new(node)
-            .arg(script)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true) // app 退出时不留孤儿进程
+        // 进程边界：先净化一次（用于报错信息与实际下发文本一致）。
+        // 真正「不得带 verbatim 前缀」这道纪律由 `sidecar_command` 兜底 ——
+        // 去掉它会复现真机缺陷（node 启动即 EISDIR 退出），单测会红。
+        let node = unverbatim(node.to_path_buf());
+        let script = unverbatim(script.to_path_buf());
+
+        let mut child = sidecar_command(&node, &script)
             .spawn()
             .map_err(|e| format!("启动 sidecar 失败（{} {}）：{e}", node.display(), script.display()))?;
 
@@ -244,14 +309,17 @@ impl Sidecar {
 /// 解析 node 可执行文件。
 ///
 /// 优先级：环境变量 `NODEAGENT_CONSOLE_NODE` → 随包 resource 的 `node` → 系统 `node`。
+///
+/// ⚠️ 出口一律经 `unverbatim`：`resource_dir()` 在 Windows 上给的是 verbatim 路径，
+/// 带 `\\?\` 的路径交给 node 会**启动即 EISDIR 秒退**（详见 `unverbatim` 的说明）。
 pub fn resolve_node(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("NODEAGENT_CONSOLE_NODE") {
         if !p.is_empty() {
-            return Ok(PathBuf::from(p));
+            return Ok(unverbatim(PathBuf::from(p)));
         }
     }
     if let Some(dir) = resource_dir {
-        let bundled = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+        let bundled = unverbatim(dir.join(if cfg!(windows) { "node.exe" } else { "node" }));
         if bundled.exists() {
             return Ok(bundled);
         }
@@ -281,14 +349,18 @@ fn which(cmd: &str) -> Option<PathBuf> {
 ///
 /// 优先级：环境变量 `NODEAGENT_CONSOLE_SIDECAR` → 随包 resource 的 `sidecar.mjs` →
 /// 开发期的 `apps/console/sidecar/dist/sidecar.mjs`（相对本 crate）。
+///
+/// ⚠️ 出口一律经 `unverbatim` —— **这一条就是 2026-10-13 真机缺陷的修复点**：
+/// 打包后 `resource_dir()` 给的是 `\\?\C:\…`，交给 node 当参数会让 node 在启动期
+/// `realpathSync` 里炸成 `EISDIR ... lstat 'C:'` 并 exit 1（sidecar 秒退）。
 pub fn resolve_sidecar(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("NODEAGENT_CONSOLE_SIDECAR") {
         if !p.is_empty() && Path::new(&p).exists() {
-            return Ok(PathBuf::from(p));
+            return Ok(unverbatim(PathBuf::from(p)));
         }
     }
     if let Some(dir) = resource_dir {
-        let bundled = dir.join("sidecar.mjs");
+        let bundled = unverbatim(dir.join("sidecar.mjs"));
         if bundled.exists() {
             return Ok(bundled);
         }
@@ -320,6 +392,90 @@ mod tests {
 
     fn node_bin() -> PathBuf {
         resolve_node(None).expect("需要 node 才能跑 sidecar 单测")
+    }
+
+    // -----------------------------------------------------------------------
+    // 「交给 node 的路径不得带 Windows verbatim 前缀」—— 2026-10-13 真机缺陷
+    //
+    // 现象（真机）：控制台点「检查更新」，sidecar 被拉起后**存活约 0.5 秒即消失**、
+    //   退出码 1，且一行 JS 都没执行（连自带的启动日志都写不出来）；界面报
+    //   「sidecar 已退出（stdout 关闭），请重试」（修存活检测之前报「等满 45 秒超时」）。
+    // 根因：`resource_dir()` 给的是 verbatim 路径（`\\?\C:\…`），当参数交给 node 后，
+    //   node 启动期的 `realpathSync` 把 `\\?\C:` 拆成 `C:` → `EISDIR` → exit 1。
+    // 为什么本地/CI 全绿：开发模式走的是仓库相对路径（普通路径），只有打包后才暴露。
+    // 因此这里的守卫**必须落在「最终下发给 node 的 program / args」上**，
+    // 而不是「源码里有没有调用过某个函数」—— 这样在 macOS / Linux 上也能守住 Windows 分支。
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unverbatim_去掉各类_windows_前缀() {
+        // 常见的盘符形态
+        assert_eq!(
+            unverbatim(PathBuf::from(r"\\?\C:\Users\u\AppData\Local\x\node.exe")),
+            PathBuf::from(r"C:\Users\u\AppData\Local\x\node.exe")
+        );
+        // UNC 形态：\\?\UNC\server\share\x → \\server\share\x
+        assert_eq!(
+            unverbatim(PathBuf::from(r"\\?\UNC\srv\share\sidecar.mjs")),
+            PathBuf::from(r"\\srv\share\sidecar.mjs")
+        );
+        // 普通路径原样返回（含 POSIX）
+        assert_eq!(
+            unverbatim(PathBuf::from(r"C:\a\b.mjs")),
+            PathBuf::from(r"C:\a\b.mjs")
+        );
+        assert_eq!(
+            unverbatim(PathBuf::from("/Users/x/y.mjs")),
+            PathBuf::from("/Users/x/y.mjs")
+        );
+        // 幂等：净化两次 == 净化一次（spawn 与 sidecar_command 都会调）
+        let once = unverbatim(PathBuf::from(r"\\?\C:\a\b.mjs"));
+        assert_eq!(unverbatim(once.clone()), once);
+    }
+
+    #[test]
+    fn unverbatim_对_resource_dir_拼接后的路径同样生效() {
+        // 真实形态就是「resource_dir().join("sidecar.mjs")」——前缀在目录上，拼完仍在最前
+        let joined = unverbatim(Path::new(r"\\?\C:\app").join("sidecar.mjs"));
+        let s = joined.to_string_lossy().into_owned();
+        assert!(!s.contains(r"\\?\"), "拼接后仍带 verbatim 前缀：{s}");
+        assert!(s.starts_with(r"C:\app"), "应剥成普通路径，实际：{s}");
+        assert!(s.ends_with("sidecar.mjs"), "文件名不该被动：{s}");
+    }
+
+    #[test]
+    fn 交给_node_的路径必须去掉_verbatim_前缀() {
+        // 直接断言**最终下发给 node 的文本**（program 与 args），而不是源码长相。
+        // 去掉 `sidecar_command` 里的 unverbatim → 本用例立刻变红。
+        let cmd = sidecar_command(
+            Path::new(r"\\?\C:\Users\u\AppData\Local\nodeagent-console\node.exe"),
+            Path::new(r"\\?\C:\Users\u\AppData\Local\nodeagent-console\sidecar.mjs"),
+        );
+        let std_cmd = cmd.as_std();
+
+        let prog = std_cmd.get_program().to_string_lossy().into_owned();
+        assert!(
+            !prog.contains(r"\\?\"),
+            "program 仍带 verbatim 前缀（示例：{prog}）"
+        );
+        assert_eq!(
+            prog, r"C:\Users\u\AppData\Local\nodeagent-console\node.exe",
+            "program 应剥成普通路径"
+        );
+
+        let args: Vec<String> = std_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a.contains(r"\\?\")),
+            "脚本参数仍带 verbatim 前缀 → node 启动即 EISDIR 退出（真机表现为「sidecar 秒退」）：{args:?}"
+        );
+        assert_eq!(
+            args,
+            vec![r"C:\Users\u\AppData\Local\nodeagent-console\sidecar.mjs".to_string()],
+            "脚本参数应为唯一一个、且已净化的路径"
+        );
     }
 
     #[tokio::test]

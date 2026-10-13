@@ -30,8 +30,15 @@ const LABEL: &str = "cn.jkooe.nodeagent-console";
 pub const AGENT_ONLY_FLAG: &str = "--agent-only";
 
 /// 当前可执行文件路径。
+///
+/// ⚠️ 出口经 `unverbatim`：Windows 上 `current_exe()` 可能带 `\\?\` 前缀，
+/// 而这条路径会**被写进计划任务的执行路径**（`New-ScheduledTaskAction -Execute`）。
+/// 带前缀的路径不是「一定不能用」，但它会以原样进入 PowerShell 字符串与任务定义 ——
+/// 与 2026-10-13「verbatim 路径交给外部程序」那类真机缺陷同源，统一在出口净化。
 fn app_exe() -> Result<PathBuf, String> {
-    std::env::current_exe().map_err(|e| format!("取当前程序路径失败：{e}"))
+    std::env::current_exe()
+        .map(crate::sidecar::unverbatim)
+        .map_err(|e| format!("取当前程序路径失败：{e}"))
 }
 
 /// macOS 上 LaunchAgent plist 的位置。

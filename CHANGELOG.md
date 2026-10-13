@@ -413,6 +413,66 @@ macOS 上同样两条却是绿的 —— 典型的「只在 Windows 暴露」。
 > （随包 `73ed06f` / 发布版 `a1c51d6`）—— 源于两次构建的**基准目录不同**。
 > 因此二者 **sha256 必然不同**，不能用发布清单的哈希去校验控制台播种出来的那份。
 
+### 修复 —— 打包后 sidecar 因 Windows verbatim 路径秒退（真机症状：「sidecar 已退出（stdout 关闭），请重试」）
+
+上一节修好「复用已退出的 sidecar」之后，真机复验**症状变了但没解决**：不再干等 45 秒，
+改为**立刻**报「检查更新失败：**sidecar 已退出（stdout 关闭），请重试**」——
+说明被拉起的 sidecar **在请求进行中真的退出了**，只是这次被立刻发现。本节是它的真根因。
+
+**真机 A/B（决定性的一条）**：Windows 11 ARM64；同一个 `node.exe`、同一份 `sidecar.mjs`，
+**只换脚本参数的写法**：
+
+| 脚本参数 | 结果 |
+|---|---|
+| `C:\…\sidecar.mjs` | 2.5 秒返回 `check_update` 结果，进程常驻、心跳持续 |
+| `\\?\C:\…\sidecar.mjs` | **0.47 秒即退出，exit 1**，**零 JS 执行** |
+
+「零 JS 执行」是实测出来的：sidecar 自己的启动日志一行没写、审计日志在 `agent.start` 之后
+一片空白、判死探针文件 0 字节 —— 连第一行 JS 都没跑到。
+
+**根因**：Tauri 的 `resource_dir()` 在 Windows 上返回的是 `std::fs::canonicalize` 之后的
+**verbatim 路径**（`\\?\C:\Users\…\nodeagent-console`）。把它当**参数**交给 node 时，
+node 启动流程在入口模块的 `realpathSync` 里把 `\\?\C:` 拆成盘符 `C:` 与剩余部分：
+
+```text
+Error: EISDIR: illegal operation on a directory, lstat 'C:'
+    at Object.realpathSync (node:fs:27xx)
+```
+
+→ exit 1，**一行 JS 都来不及执行**。两种界面表现都由这一条派生：
+修存活检测**之前**是「写进已死进程的管道 → 干等 45 秒超时」，
+修**之后**是「stdout 立即 EOF → 立刻报 sidecar 已退出」。
+
+**为什么单测 / CI / 开发模式全都测不出来**：开发期 `resolve_sidecar` 走的是
+`CARGO_MANIFEST_DIR` 拼出来的**普通路径**；只有**打包之后**才会从 `resource_dir()`
+拿到 verbatim 路径。CI 里 `cargo test` 又只在 `ubuntu-latest` 跑（`.github/workflows/rust.yml`），
+Windows 侧只有打包（`console-windows.yml`）。于是「本地全绿 + CI 全绿 + 真机必挂」。
+
+**修法**（`apps/console/src-tauri/src/sidecar.rs` + `agent.rs` + `autostart.rs`）：
+- 新增 `unverbatim()`：剥 `\\?\UNC\` → `\\`、剥 `\\?\` → 无前缀，其余原样返回；
+  **纯字符串处理，任何平台都可安全调用** —— 因此可以用 Windows 形态的字符串在
+  macOS / Linux 上直接守住 Windows 分支（铁律 4：跨平台差异不必真上 Windows 才能验）。
+- 新增 `sidecar_command()`：**唯一**把路径交给 node 的地方，内部统一净化。
+  纪律只在这里守一次，单测直接断言它产出的 `program` / `args`（守「最终下发文本」，
+  不是「源码里出现过某个常量」）。
+- 四个来源统一加闸：`resolve_node` / `resolve_sidecar` / `resolve_bundled_agent` 的
+  **全部出口**（环境变量、resource_dir、系统 PATH / 开发路径），以及进程边界的
+  `Sidecar::spawn` 与 `AgentManager::start`（对 node / script / data_dir 三条路径都净化）。
+- `autostart::app_exe()` 一并净化：该路径会被写进计划任务的 `New-ScheduledTaskAction -Execute`，
+  与上述同源风险。
+
+**回归**：
+- 新增 3 条守卫 —— `unverbatim_去掉各类_windows_前缀`（盘符 / UNC / 普通 / POSIX / **幂等**）、
+  `unverbatim_对_resource_dir_拼接后的路径同样生效`（前缀在目录上、拼完仍在最前）、
+  **`交给_node_的路径必须去掉_verbatim_前缀`**（断言最终 `program` 与 `args` 文本）。
+- **注入故障实测**：把 `sidecar_command` 里的 `unverbatim` 去掉 → 第三条如期变红，
+  报错正文即 `program 仍带 verbatim 前缀（示例：\\?\C:\…\node.exe）`；还原后 **sha256 逐字节一致**，复跑全绿。
+- `pnpm test:rust` **17/17**（14 → +3）。
+
+> ⚠️ **本项属控制台上壳变更，不是被控端变更**，因此**不触发** `pnpm release patch`。
+> 但要让用户真正拿到修复，**必须重新构建并分发控制台安装包**。
+> ⚠️ 修复只净化了「交给 node 的路径」，**尚待在真机上跑通完整链路**（下一版安装包复验）。
+
 ---
 
 ## [v2.0.2] —— 2026-10-11
