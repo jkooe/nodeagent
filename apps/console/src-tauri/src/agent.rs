@@ -458,10 +458,10 @@ impl AgentManager {
         cmd.env("NODEAGENT_HOME", &data_dir);
 
         // ⚠️ 消灭黑窗：Windows 上不加这个标志，每 spawn 一次 node 就弹一个控制台窗口
+        // （与 sidecar 共用同一常量，避免两处硬编码漂移 —— 2026-10-13 sidecar 就是漏了这一行）
         #[cfg(windows)]
         {
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            cmd.creation_flags(CREATE_NO_WINDOW);
+            cmd.creation_flags(crate::sidecar::CREATE_NO_WINDOW);
         }
 
         let mut child = cmd

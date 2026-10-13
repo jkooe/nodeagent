@@ -490,7 +490,38 @@ Windows 侧只有打包（`console-windows.yml`）。于是「本地全绿 + CI 
 
 > ⚠️ **本项属控制台上壳变更，不是被控端变更**，因此**不触发** `pnpm release patch`。
 > 但要让用户真正拿到修复，**必须重新构建并分发控制台安装包**。
-> ⚠️ 修复只净化了「交给 node 的路径」，**尚待在真机上跑通完整链路**（下一版安装包复验）。
+
+**真机复验（Windows 11 ARM64 VM，装 CI 产出的 arm64 NSIS 包）**：
+
+| 项 | 修复前（2.0.3） | 修复后 |
+|---|---|---|
+| sidecar 进程命令行 | `"\\?\C:\…\node.exe" C:\…\sidecar.mjs`（**program 带 verbatim**） | `"C:\…\node.exe" C:\…\sidecar.mjs`（两侧均干净） |
+| 点「检查更新」后 | sidecar 0.5 秒即退，界面报「sidecar 已退出（stdout 关闭）」 | sidecar 常驻（pid 恰在点击那一刻出现），界面显示**最新版本 v2.0.3 / 已是最新 / 发布时间 2026-10-13 17:36:54** |
+| 安装包 | `e7636120…` | `27e41ef8…`（exe）/ `b2b78546…`（随包 sidecar） |
+
+结论：**缺陷已消除，完整链路真机跑通**。复验同时暴露了一个既有缺陷，见下节。
+
+### 修复 —— sidecar 拉起时弹出**常驻黑窗**（上项修复后暴露的既有缺陷）
+
+**现象**：真机复验时「检查更新」能返回结果了，但屏幕上多出一个**不消失的黑窗** ——
+由 `WindowsTerminal.exe` 承载，标题就是 `C:\Users\…\nodeagent-console\node.exe`。
+
+**为什么以前没人发现**：修复 verbatim 之前 sidecar 0.5 秒即退，这个黑窗**一闪而过**；
+sidecar 常驻之后它才留在屏幕上。所以它是**被上一项修复暴露出来的既有缺陷**，不是本次引入。
+
+**根因**：控制台自身是 **GUI 子系统**程序（不占控制台）。GUI 父进程 spawn 一个
+**控制台子系统**程序（`node.exe`）时，Windows 会**新建一个控制台** —— 必须靠
+`CREATE_NO_WINDOW` 抑制。`AgentManager::start` 早已加了这个标志（所以被控端从不弹窗），
+**`sidecar_command` 漏了**。换句话说：CHANGELOG 里「消灭命令行窗口」那节写的三条措施，
+sidecar 这条路径一直没被覆盖。
+
+**修法**：`sidecar_command` 补 `creation_flags(CREATE_NO_WINDOW)`；
+常量提为 `sidecar::CREATE_NO_WINDOW`，由 sidecar 与 `AgentManager::start` **共用**，避免值漂移。
+
+> ⚠️ **本项没有自动化守卫**，如实记档原因：`creation_flags` 只有 setter、**没有 getter**
+> （`std::process::Command` 与 `tokio::process::Command` 都如此），断言不到「到底带没带」；
+> 而「扫源码看有没有写过这个常量」属源码级检查，违反铁律 1（守卫要落在最终下发值上）。
+> 故本条靠**真机截图对照**把关（修复前有黑窗 / 修复后无黑窗），并确保 Windows CI 能真编译到这段代码。
 
 ---
 

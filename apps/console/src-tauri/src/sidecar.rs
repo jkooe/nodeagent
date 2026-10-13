@@ -99,6 +99,27 @@ pub(crate) fn unverbatim(path: PathBuf) -> PathBuf {
 /// 「必须去掉 verbatim 前缀」这条纪律只在这里守一次；单测直接断言本函数产出的
 /// `program` / `args`，因此**在 macOS / Linux 上也守得住 Windows 分支**（守的是
 /// 「最终下发文本」，不是「源码里出现过某个常量」）。
+/// `CREATE_NO_WINDOW`（`0x0800_0000`）：进程创建时不新开控制台窗口。
+///
+/// ## 为什么必须显式加（2026-10-13 真机发现的既有缺陷）
+/// 控制台自身是 **GUI 子系统**程序（不占控制台）。GUI 父进程 spawn 一个**控制台子系统**
+/// 程序（`node.exe`）时，Windows 会**新建一个控制台**；Windows 11 上它由
+/// **WindowsTerminal.exe** 承载 → 用户屏幕上多出一个常驻黑窗。
+///
+/// 修复 verbatim 缺陷**之前**，sidecar 被拉起后 0.5 秒即退，黑窗一闪而过（所以一直没被发现）；
+/// 修复**之后** sidecar 常驻，黑窗就留在屏幕上不走了 —— 真机截图实证（窗口标题即
+/// `C:\Users\…\nodeagent-console\node.exe`，进程名 `WindowsTerminal`）。
+///
+/// 这与「消灭命令行窗口」那条既有目标直接冲突（`AgentManager::start` 早已加了此标志），
+/// 故 `sidecar_command` 必须同样带上，两边**共用本常量**以免值漂移。
+///
+/// ⚠️ **本项没有单测守卫**，原因如实记档：`creation_flags` 只有 setter、**没有 getter**
+/// （`std::process::Command` 与 `tokio::process::Command` 都如此），断言不到「到底带没带」；
+/// 而任何「扫源码看有没有写过这个常量」的做法都违反铁律 1（守卫要落在最终下发值上）。
+/// 因此这条纪律靠**真机截图对照**把关（修复前有黑窗 / 修复后无黑窗）。
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 fn sidecar_command(node: &Path, script: &Path) -> Command {
     let mut cmd = Command::new(unverbatim(node.to_path_buf()));
     cmd.arg(unverbatim(script.to_path_buf()))
@@ -106,6 +127,13 @@ fn sidecar_command(node: &Path, script: &Path) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true); // app 退出时不留孤儿进程
+
+    // ⚠️ 消灭黑窗：不加这一行，用户每点一次「检查更新」都会多出一个常驻黑窗
+    // （详见 `CREATE_NO_WINDOW` 的说明）。
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     cmd
 }
 
