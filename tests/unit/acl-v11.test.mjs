@@ -12,13 +12,13 @@ import {
 // ---------- B3：对端地址规范化（真机踩坑回归） ----------
 
 test('normalizeIp：IPv4-mapped IPv6 归一为 IPv4（真机坑）', () => {
-  assert.equal(normalizeIp('::ffff:192.168.1.85'), '192.168.1.85');
-  assert.equal(normalizeIp('::FFFF:192.168.1.85'), '192.168.1.85');
+  assert.equal(normalizeIp('::ffff:192.168.1.10'), '192.168.1.10');
+  assert.equal(normalizeIp('::FFFF:192.168.1.10'), '192.168.1.10');
 });
 
 test('normalizeIp：IPv4:port 去端口；纯 IP 原样', () => {
-  assert.equal(normalizeIp('192.168.1.85:51234'), '192.168.1.85');
-  assert.equal(normalizeIp('192.168.1.85'), '192.168.1.85');
+  assert.equal(normalizeIp('192.168.1.10:51234'), '192.168.1.10');
+  assert.equal(normalizeIp('192.168.1.10'), '192.168.1.10');
 });
 
 test('normalizeIp：真 IPv6 原样保留（不误当 IPv4）', () => {
@@ -29,20 +29,20 @@ test('normalizeIp：真 IPv6 原样保留（不误当 IPv4）', () => {
 });
 
 test('normalizeIp + deny_cidr：mapped 地址也能命中黑名单（端到端复现）', () => {
-  const ip = normalizeIp('::ffff:192.168.1.85');
-  const client = { client_id: 'mac_01', allow: [], deny_cidr: ['192.168.1.85'] };
+  const ip = normalizeIp('::ffff:192.168.1.10');
+  const client = { client_id: 'mac_01', allow: [], deny_cidr: ['192.168.1.10'] };
   assert.equal(ipAllowed(client, ip).allowed, false);
 });
 
 // ---------- B3：CIDR ----------
 
 test('CIDR：单 IP 精确匹配', () => {
-  assert.equal(ipMatchesCidr('192.168.1.85', '192.168.1.85'), true);
-  assert.equal(ipMatchesCidr('192.168.1.86', '192.168.1.85'), false);
+  assert.equal(ipMatchesCidr('192.168.1.10', '192.168.1.10'), true);
+  assert.equal(ipMatchesCidr('192.168.1.11', '192.168.1.10'), false);
 });
 
 test('CIDR：/24 网段匹配', () => {
-  assert.equal(ipMatchesCidr('192.168.1.85', '192.168.1.0/24'), true);
+  assert.equal(ipMatchesCidr('192.168.1.10', '192.168.1.0/24'), true);
   assert.equal(ipMatchesCidr('192.168.1.255', '192.168.1.0/24'), true);
   // ⚠️ 这条测的是「**跨网段不匹配**」—— 必须用不同网段的地址。
   // （2026-10-10 一次机械 IP 替换曾把它改成同段，导致断言必红 —— 语义测试别被批量替换破坏）
@@ -91,9 +91,9 @@ test('IP 白名单：deny 优先、白名单为空则放行', () => {
     ipAllowed({ client_id: 'a', allow: [], allow_cidr: ['192.168.1.0/24'] }, '10.0.0.1').allowed,
     false,
   );
-  const both = { client_id: 'a', allow: [], allow_cidr: ['192.168.1.0/24'], deny_cidr: ['192.168.1.85'] };
-  assert.equal(ipAllowed(both, '192.168.1.85').allowed, false, '黑名单优先');
-  assert.equal(ipAllowed(both, '192.168.1.86').allowed, true);
+  const both = { client_id: 'a', allow: [], allow_cidr: ['192.168.1.0/24'], deny_cidr: ['192.168.1.10'] };
+  assert.equal(ipAllowed(both, '192.168.1.10').allowed, false, '黑名单优先');
+  assert.equal(ipAllowed(both, '192.168.1.11').allowed, true);
 });
 
 // ---------- B3：生效时段 ----------

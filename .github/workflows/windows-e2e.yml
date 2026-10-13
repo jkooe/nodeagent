@@ -159,7 +159,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          # 真机教训（Parallels 27 + Win11 ARM）：曾出现 arm64 包里装的其实是 x64 的 node.exe
+          # 真机教训（虚拟化平台 + Win11 ARM）：曾出现 arm64 包里装的其实是 x64 的 node.exe
           # —— 两份包的 node.exe 字节完全相同。x64 node 在 ARM Windows 上**能 listen，
           # 但 TLS 握手不完成**（客户端只见超时）→ 被控端实际不可用，且 macOS 侧 100% 测不出。
           # 根因是 pack.mjs 的运行时缓存文件名不含架构。这里直接验**最终产物**的 PE 架构，

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# nodeagent 被控端 —— Linux 安装器（Debian 12 / Ubuntu / fnOS 等 systemd 系统）
+# nodeagent 被控端 —— Linux 安装器（Debian 12 / Ubuntu / NAS 系统等 systemd 系统）
 #
 # 用法:
 #   sudo bash scripts/install-linux.sh                        # 系统级（/opt/nodeagent + 系统 systemd）
 #   bash scripts/install-linux.sh --user                      # 用户级（~/.local/share + user systemd + linger）
-#   sudo bash scripts/install-linux.sh --node-id dxp2800 --port 8765
+#   sudo bash scripts/install-linux.sh --node-id nas-01 --port 8765
 #   sudo bash scripts/install-linux.sh --no-service            # 只装程序+配置，不注册 systemd
 #   sudo bash scripts/install-linux.sh --uninstall             # 卸载（保留配置）
 #   sudo bash scripts/install-linux.sh --uninstall --purge     # 卸载并删配置
@@ -152,7 +152,7 @@ else
        b) 手工启动：NODEAGENT_HOME=$DATA_DIR $INSTALL_DIR/runtime/bin/node $INSTALL_DIR/agent.mjs"
 fi
 
-# 发行版信息（fnOS 基于 Debian 12，此处只作展示）
+# 发行版信息（部分 NAS 系统基于 Debian 12，此处只作展示）
 if [ -r /etc/os-release ]; then
   # shellcheck disable=SC1091
   . /etc/os-release

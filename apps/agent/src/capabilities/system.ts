@@ -537,7 +537,7 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
     //
     // 现策略：非 Running **或** LastRunTime **早于"本 agent 启动时刻"** → 清。
     //
-    // ⚠️ 2026-10-11 真机（Parallels Win11 ARM）修正：原先用「早于 1 小时」作阈值，
+    // ⚠️ 2026-10-11 真机（虚拟化平台上的 Win11 ARM）修正：原先用「早于 1 小时」作阈值，
     //    实测发现**频繁 restart（间隔 < 1h）时旧任务照样累积**（v26 想治的僵尸只是从
     //    "永不清理"变成"1 小时后才清"）。根因是阈值选得太粗：
     //    阈值应表达「**这个任务是不是我（当前 agent）的宿主**」——

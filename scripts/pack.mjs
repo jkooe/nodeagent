@@ -37,7 +37,7 @@ const getArg = (k, d) => {
 };
 
 const NODE_VERSION = getArg('--node', 'v22.20.0');
-// 2026-10-11：Windows 也分架构。x64 包在 **ARM Windows（含 Parallels 的 Win11 ARM）** 上
+// 2026-10-11：Windows 也分架构。x64 包在 **ARM Windows（含虚拟化平台的 Win11 ARM）** 上
 // 能启动、能 listen，但 **TLS 握手不完成**（Prism 模拟下协议层异常）→ 必须按架构出包。
 // 用法：node scripts/pack.mjs --arch arm64  → nodeagent-win-arm64.zip
 const NODE_ARCH = getArg('--arch', 'x64');

@@ -5,8 +5,8 @@
 > 保留原文是为了可回溯决策过程；实现以「实施决策」节与代码为准。
 
 
-> 版本 v1.0 ｜ 日期 2026-10-07 ｜ 状态：待皇上评审
-> 定位：为「Mac 控 Windows」补上**人肉可视化操作台**——CLI 是脚本底座、MCP 是 AI 落点、本方案是**皇上自己点按钮**的桌面界面。
+> 版本 v1.0 ｜ 日期 2026-10-07 ｜ 状态：待用户评审
+> 定位：为「Mac 控 Windows」补上**人肉可视化操作台**——CLI 是脚本底座、MCP 是 AI 落点、本方案是**用户自己点按钮**的桌面界面。
 
 ---
 
@@ -20,8 +20,8 @@
 
 | 层 | 选型 | 版本 | 选型理由 |
 |---|---|---|---|
-| 桌面壳 | **Tauri 2** | 2.x | 跨端（Mac/Win）+ 性能好 + 体积小；Rust 后端契合皇上「Rust 加速」技术栈 |
-| 前端框架 | **Vue 3** | 3.5+ | 皇上既有 Vue2/Vue3 经验（reader、FinDataHub），迁移成本最低 |
+| 桌面壳 | **Tauri 2** | 2.x | 跨端（Mac/Win）+ 性能好 + 体积小；Rust 后端契合用户「Rust 加速」技术栈 |
+| 前端框架 | **Vue 3** | 3.5+ | 既有 Vue 2 / Vue 3 实战经验，迁移成本最低 |
 | 语言 | **TypeScript** | 5.x | 与 monorepo 既有 TS 生态对齐，复用协议类型定义 |
 | 构建 | **Vite** | 6.x | Tauri 官方模板默认，HMR 快 |
 | 状态管理 | **Pinia** | 2.x | Vue3 官方推荐，模块化 store 天然契合多面板 |
@@ -41,7 +41,7 @@
 | 性能 | 好（Rust 后端） | 中 | 受浏览器沙箱限制 |
 | 直接复用 Node SDK | ❌（需 Rust 版 client） | ✅（主进程可 import） | ❌（需浏览器版） |
 
-**取舍**：Tauri 需要新写一份 Rust 版 client（协议本身是 JSON-RPC over WebSocket，语言无关，逻辑对齐已跑通的 client.ts 即可），换取体积、内存、性能上的长期优势——与皇上「性能好 + 跨端」的要求一致。
+**取舍**：Tauri 需要新写一份 Rust 版 client（协议本身是 JSON-RPC over WebSocket，语言无关，逻辑对齐已跑通的 client.ts 即可），换取体积、内存、性能上的长期优势——与用户「性能好 + 跨端」的要求一致。
 
 ---
 
@@ -323,16 +323,15 @@ cargo run --example probe -- ws://127.0.0.1:8765 <key> /tmp/nodeagent-e2e
 
 ---
 
-## 11. 待确认项（请皇上评审时一并拍板）
+## 11. 待确认项（请用户评审时一并拍板）
 
-| # | 事项 | 臣的建议 |
+| # | 事项 | 建议 |
 |---|---|---|
 | C1 | Windows 端桌面应用的定位 | 被控端本地面板（默认侧重）+ 对称可作控制端 |
-| C2 | 组件库 | Naive UI（暗色友好、TS 完整）；若皇上惯用 Element Plus 可换 |
+| C2 | 组件库 | Naive UI（暗色友好、TS 完整）；若用户惯用 Element Plus 可换 |
 | C3 | 图表库 | ECharts（资源趋势/磁盘）；确认后纳入 M2 |
 | C4 | 是否同步做图形接管 UI | 建议 v2 再做，首期聚焦闭环 |
 
-> 仅供参考，本方案为技术规划，不构成任何投资建议。
 
 ---
 
@@ -580,6 +579,35 @@ node 去跑打包内的 sidecar，并走一次真实 JSON-RPC 握手 —— 源�
 > 整个模式不匹配 —— 于是「写错的变量名」反而逃过检查。放宽到 `[^)\s,;]+` 后才真正生效。
 > 教训：**注入故障不只是验证守卫有没有，还要验证它是否覆盖了目标形态**。
 
+### 出网代理：让「检查更新」在境内真的能用（2026-10-13）
+
+「检查更新 / 下载更新包」是控制台**唯一**两条需要出公网（GitHub）的路径。原实现直接用
+Node 内建 `fetch`，于是境内**必然**失败，且失败原因永远是笼统的 `fetch failed`。三条根因：
+
+1. `fetch`（undici）**默认不读代理环境变量**（`NODE_USE_ENV_PROXY=1` 能开，但只认环境变量）；
+2. **系统代理读不到** —— Windows 用户配的是 WinINET（第三方代理客户端的「系统代理」），macOS 用户配的是系统设置里的代理，Node 两者都不读；
+3. `fetch(url,{dispatcher})` 也走不通：`dispatcher` 必须是 undici 的实例，而 Node 未把 undici 暴露成可导入模块。
+
+因此 `apps/console/sidecar/proxy.mjs` **自持出网**（零新依赖）：
+
+| 目标 | 经代理的做法 |
+|---|---|
+| `https://` | 先向代理发 `CONNECT host:443` 建隧道，再在隧道 socket 上叠 TLS；socket 交 `http.request`（**不用 `https.request`**，否则二次握手） |
+| `http://` | 按 HTTP 代理规范发**绝对形态**请求行 |
+| 无代理 | 直连（与改动前行为一致） |
+
+代理来源优先级：`NA_PROXY` → 目标协议对应的环境变量 → **系统代理**（Windows 读注册表 WinINET / macOS 读 `scutil --proxy`）。
+`NO_PROXY` 命中则直连。只支持 HTTP 代理；遇到 `socks5://` 或**系统代理是 PAC 脚本**时
+**明确把原因带给用户**（本机 AdGuard 正是 PAC 模式）—— 静默降级是这类缺陷最坏的地方。
+
+**超时成对定义**（`sidecar.rs`）：内层出网 120s / 外层 RPC 150s，且**内层必须小于外层** ——
+这条关系写成**编译期不变式**，因为一旦破坏，用户只会看到「check_update 超时」这种**丢掉真实原因**的假失败。
+120s 的依据是真机实测的重定向链耗时分布（2.0 / 10.0 / 39.7 / 68.6 / >109 秒），不是拍脑袋。
+
+守卫：`tests/unit/sidecar-proxy.test.mjs`（15 用例）= 纯函数解析（夹具取自真机）＋ 离线真发请求
+（直连/绝对形态/CONNECT/**隧道+TLS 阶段 abort 必须立即生效**）＋ 真 spawn sidecar 走 JSON-RPC 的端到端
+＋ 「sidecar 源码不得再出现裸 `fetch(`」形态守卫。全部做过注入故障实测。
+
 ## Windows 端控制台（2026-10-11）
 
 ### 起因
@@ -802,7 +830,7 @@ msiexec /a 失败（退出码 ）：nodeagent-console_2.0.2_x64_en-US.msi
 
 ## ARM64 真机安装冒烟与界面实点（2026-10-12）
 
-上一节那张表里的条目，本轮在 **Parallels 27 + Win11 ARM64** 上逐条做完；
+上一节那张表里的条目，本轮在 **虚拟化平台 + Win11 ARM64** 上逐条做完；
 过程中还挖出并修掉一个**只在真机上才暴露**的缺陷（见本节末「真机暴露的缺陷」）。
 
 ### 怎么把包送进去
@@ -831,7 +859,7 @@ msiexec /a 失败（退出码 ）：nodeagent-console_2.0.2_x64_en-US.msi
 | **无黑窗** | ✅ 结构性（PE subsystem=2）+ 视觉确认 | PE 头 + 截图 |
 | 输入默认禁 | ✅ `input.mouse.move` → `E_CAPABILITY_DISABLED` | 错误名 |
 | 开机自启 | ✅ 计划任务 `cn_jkooe.nodeagent-console` **不存在**，与 UI 开关=关 一致 | `schtasks` |
-| 数据目录显示 | ✅ UI 显示 `C:\Users\pdverify\.nodeagent`，与真实生效目录一致 | 配置比对 |
+| 数据目录显示 | ✅ UI 显示 `C:\Users\<user>\.nodeagent`，与真实生效目录一致 | 配置比对 |
 | 「最近日志」 | ✅ 正确记下「端口 8765 已被占用」并给出降级提示 | 截图 |
 
 ### ⚠️ 本轮新发现（**未修**）：控制台没有单实例保护
@@ -852,7 +880,7 @@ msiexec /a 失败（退出码 ）：nodeagent-console_2.0.2_x64_en-US.msi
 
 | 调用 | 不感知时的结果 |
 |---|---|
-| `Screen.Bounds` / `SystemInformation.VirtualScreen` | 报**逻辑**尺寸 1800×1010 |
+| `Screen.Bounds` / `SystemInformation.VirtualScreen` | 报**逻辑**尺寸 1280×720 |
 | `CopyFromScreen` | 按**物理**像素裁剪 → `screen.capture` 缺省只截到左上 1/4 |
 | `SetCursorPos` | 被系统 ×2（喂 100,100 → 光标到 200,200） |
 | UIA（`screen.find`） | 报**物理**坐标（与进程是否感知无关） |
@@ -863,4 +891,3 @@ msiexec /a 失败（退出码 ）：nodeagent-console_2.0.2_x64_en-US.msi
 修法：新增 `apps/agent/src/util/dpi.ts`，把 `SetProcessDPIAware()` 注入到**全部坐标相关脚本的最前面**
 （5 个文件），并配 8 条单测守卫。详见证见 `CHANGELOG.md` 与 `docs/VM-VERIFICATION.md` §10。
 
-> 仅供技术参考，不构成任何投资建议。

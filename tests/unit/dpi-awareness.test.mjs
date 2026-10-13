@@ -12,10 +12,10 @@ import { PS_DPI_AWARE } from '../../apps/agent/dist/util/dpi.js';
 /**
  * 回归守卫：**屏幕坐标口径必须统一为物理像素**。
  *
- * ## 背景（2026-10-12 真机实证，Parallels Win11 ARM / 主机 200% 缩放 / 物理 3600×2020）
+ * ## 背景（2026-10-12 真机实证，虚拟化平台的 Win11 ARM / 宿主 200% 缩放 / 物理 2560×1440）
  *
  * PowerShell 默认 DPI 不感知，于是**同一个进程里并存两套坐标系**：
- *   - `Screen.Bounds` / `SystemInformation.VirtualScreen` → **逻辑**（1800×1010）
+ *   - `Screen.Bounds` / `SystemInformation.VirtualScreen` → **逻辑**（1280×720）
  *   - `CopyFromScreen` / `SetCursorPos`                   → **物理**
  *     （缺省整屏只截到左上 1/4；(100,100) 实际落到 (200,200)）
  * 而 UIA（`screen.find`）返回的**一直是物理坐标**。结果：

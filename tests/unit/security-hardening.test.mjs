@@ -78,7 +78,7 @@ test('install.ps1 的 stdin 读取：校验规则与防阻塞', () => {
 // ---------- v2.0.0 自重启任务清理的保守判定（源码断言） ----------
 //
 // 用 includes 而非正则：这里断言的是源码字面片段，正则转义层数容易写错
-// （臣本轮就在这上面栽过两次）。
+// （本项目就在这上面栽过两次）。
 
 const restartSrc = readFileSync(
   new URL('../../apps/agent/src/capabilities/system.ts', import.meta.url),

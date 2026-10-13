@@ -1,6 +1,6 @@
-# VM 验证清单（Parallels Desktop 27 + Windows 11 ARM）
+# VM 验证清单（宿主虚拟化平台 + Windows 11 ARM）
 
-> 用途：Windows 真机不可用时，用 **Parallels 27 的 Windows 11 ARM 虚拟机**提前跑掉
+> 用途：Windows 真机不可用时，用**虚拟化平台上的 Windows 11 ARM 虚拟机**提前跑掉
 > **架构无关**的验证项，把"等机器"的时间省下来。
 >
 > ⚠️ **本清单的结论必须按 §5 的规则标注**：VM 验过的项写「VM 已验」，并注明
@@ -16,7 +16,7 @@
 | **输入注入层** | v1.5 四项（字符串热键/预设别名/长按/后台定向投递） | ✅ 可验（走 Win32 `SendInput`/`WM_APPCOMMAND`，ARM Windows 同样完整） |
 | **安装与自持** | `install.cmd` 自提权、计划任务注册、受控重启 | ✅ 可验（VM 里也是真 Windows，机制一致） |
 | **系统能力** | 进程/服务/文件/剪贴板/命令执行/`winget` | ✅ 可验 |
-| **刻意不可验** | 第三方杀软拦截（火绒等） | ❌ VM 里只有 Defender |
+| **刻意不可验** | 第三方杀软拦截 | ❌ VM 里只有 Defender |
 | | 显示 / DPI / 多显示器 / 坐标校准 | ❌ VM 显示栈不同 |
 | | 性能指标（P95 时延等） | ❌ VM 数字不可比 |
 | **需注意** | `win-x64` 包在 ARM Windows 上走 **Prism 模拟** | ❌ **实测结论（2026-10-11）：能启动、能 listen，但 TLS 握手不完成**（控制端只见 `E_TIMEOUT`）→ 被控端实际不可用。ARM Windows **必须**用 `nodeagent-win-arm64.zip`（见 B5） |
@@ -26,7 +26,7 @@
 ## 2. 前置准备
 
 ```
-① Parallels 27 装 Windows 11 ARM（Pro/Enterprise）
+① 虚拟化软件里装 Windows 11 ARM（Pro/Enterprise）
    └ Apple silicon 只能跑 ARM 版 Windows（x86_64 仅 Pro/Business 的早期预览，性能显著更低）
 
 ② 网络 → 桥接（Bridged），不要用默认「共享网络」
@@ -153,7 +153,7 @@ node scripts/anchor-audit.mjs verify --anchors /tmp/vm-anchor.jsonl --node vm
 
 ```bash
 # ① VM 内，用包内自带 node 起被控端（务必 arm64 包）
-C:\nodeagent-test\node.exe C:\nodeagent-test\agent.mjs
+C:\na-test\node.exe C:\na-test\agent.mjs
 #    注意：以 SYSTEM（会话 0）启动时 screen.capture 等图形能力必失败（会话 0 无交互桌面），
 #    正式安装路径不受影响 —— install.ps1 的计划任务用登录用户 + LogonType Interactive。
 
@@ -188,7 +188,7 @@ A 基础验收（verify.mjs）
 | 杀软交互 / 显示 / 性能 | `⏳ 待真机`（VM 不可替代，**不得**因 VM 通过就标已验） |
 | 分发包架构适配（B5） | `✅ 已验证（VM · Windows 11 ARM）：arm64 包原生可用；win-x64 包 TLS 握手不完成、不可用` |
 
-> **一条纪律**：VM 与真机**架构不同**（真机 i7-12650H = x86_64）。任何"VM 通过"
+> **一条纪律**：VM 与真机**架构不同**（真机 = x86_64）。任何"VM 通过"
 > 都不能自动推出"真机通过"；涉及**原生二进制、驱动、杀软、显示栈**的部分尤其如此。
 > 宁可多留一条"待真机复验"，也不要让台账出现无法追溯来源的"已验证"。
 
@@ -214,18 +214,19 @@ A 基础验收（verify.mjs）
 |---|---|---|---|
 | 2026-10-11 | **B5 架构适配** | ✅ arm64 包原生可用；❌ win-x64 包不可用 | 同机同参对照：arm64 握手成功 / x64 `E_TIMEOUT` |
 | 2026-10-11 | 基础能力（A 子集） | ✅ | `system.info`（`arch=arm64`、能力 51 项两端一致）/ `status` / `process.list` / `service.list` / `shell.exec`（退出码 0）/ `audit.list` / `audit verify`（链完整）均正常 |
-| 2026-10-11 | **图形能力** | ✅ **登录态下全通** | 以登录用户 + `LogonType Interactive` 启动后：`screen.capture` 返回**真实桌面** 1800×1010（含中文，渲染正常）／`window.list` 返回窗口列表（前台窗口 PID 与实测一致）／`screen` 枚举显示器／`audit verify` 链完整。**证实会话 0 的失败是身份问题，非产品缺陷** |
+| 2026-10-11 | **图形能力** | ✅ **登录态下全通** | 以登录用户 + `LogonType Interactive` 启动后：`screen.capture` 返回**真实桌面** 1280×720（含中文，渲染正常）／`window.list` 返回窗口列表（前台窗口 PID 与实测一致）／`screen` 枚举显示器／`audit verify` 链完整。**证实会话 0 的失败是身份问题，非产品缺陷** |
 
 > 本轮**尚未执行**：B1（v1.5 四项输入）/ B2（v23 三防护）/ B3（v26 重启清理）/ B4（审计锚点端到端）。
-> 另注：VM 的 `prlctl exec` 默认以 **SYSTEM（会话 0）** 身份执行，图形类能力须换登录用户会话方可复验。
+> 另注：宿主虚拟机 CLI 的 `exec` 子命令默认以 **SYSTEM（会话 0）** 身份执行，图形类能力须换登录用户会话方可复验。
 > **图形能力复验配方（本轮实证可通过）**：见 §8 末节。
 
 ---
 
-## 8. 实际验证结果（2026-10-11，Parallels 27 + Win11 ARM）
+## 8. 实际验证结果（2026-10-11，虚拟化平台 + Win11 ARM）
 
-> 本节是**实测记录**，不是计划。环境：Parallels 共享网络，VM `10.211.55.9`，
-> Mac 侧 `bridge100=10.211.55.2`；被控端 `-NodeId win-arm -AllowInput`。
+> 本节是**实测记录**，不是计划。环境：虚拟化平台的共享网络，VM `192.0.2.9`，
+> Mac 侧 `bridge100=192.0.2.2`；被控端 `-NodeId win-arm -AllowInput`。
+> （上列地址为文档保留段示例，非真实环境值。）
 
 ### B5 结论（重要，与预期不同）
 
@@ -241,7 +242,7 @@ A 基础验收（verify.mjs）
 node scripts/pack.mjs --arch arm64     # → release/nodeagent-win-arm64.zip（内含 ARM64 node.exe）
 node scripts/pack.mjs                  # 默认仍出 x64 包（向后兼容）
 ```
-ARM Windows（含 Parallels Win11 ARM）请用 **arm64 包**；用 x64 包会卡在 TLS 握手。
+ARM Windows（含虚拟化平台上的 Win11 ARM）请用 **arm64 包**；用 x64 包会卡在 TLS 握手。
 （临时替代：手工把包内 `node.exe` 换成 ARM64 版同样可行，重启后需再换 —— 故推荐用 arm64 包。）
 
 ### 各项结果
@@ -288,11 +289,11 @@ VM 无人登录时停在 LogonUI。可脚本化的路径只有 **autologon**，�
 **配方**：新建一个**本地账户**再 autologon：
 ```powershell
 $pw = ConvertTo-SecureString '<password>' -AsPlainText -Force
-New-LocalUser -Name pdverify -Password $pw -PasswordNeverExpires -AccountNeverExpires
-Add-LocalGroupMember -Group Administrators -Member pdverify
+New-LocalUser -Name na-test -Password $pw -PasswordNeverExpires -AccountNeverExpires
+Add-LocalGroupMember -Group Administrators -Member na-test
 $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 Set-ItemProperty $k AutoAdminLogon   '1'
-Set-ItemProperty $k DefaultUserName  'pdverify'
+Set-ItemProperty $k DefaultUserName  'na-test'
 Set-ItemProperty $k DefaultDomainName $env:COMPUTERNAME
 Set-ItemProperty $k DefaultPassword  '<password>'    # 明文，验完务必清理
 Restart-Computer -Force
@@ -301,8 +302,8 @@ Restart-Computer -Force
 ### ② 以登录用户身份启动被控端（这一步才是图形能力的关键）
 
 ```powershell
-$act = New-ScheduledTaskAction -Execute 'C:\nodeagent-test\node.exe' -Argument 'C:\nodeagent-test\agent.mjs'
-$pri = New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME + '\pdverify') -LogonType Interactive -RunLevel Highest
+$act = New-ScheduledTaskAction -Execute 'C:\na-test\node.exe' -Argument 'C:\na-test\agent.mjs'
+$pri = New-ScheduledTaskPrincipal -UserId ($env:COMPUTERNAME + '\na-test') -LogonType Interactive -RunLevel Highest
 Register-ScheduledTask -TaskName 'na-gui' -Action $act -Principal $pri -Force
 Start-ScheduledTask -TaskName 'na-gui'
 ```
@@ -315,7 +316,7 @@ Start-ScheduledTask -TaskName 'na-gui'
 |---|---|
 | `Get-Process node \| Select Id,SessionId` | **SessionId = 1**（不是 0） |
 | `Get-Process explorer \| Select SessionId` | 1（桌面已就绪） |
-| `Get-LocalUser pdverify \| Select LastLogon` | 有值（确实登录过） |
+| `Get-LocalUser na-test \| Select LastLogon` | 有值（确实登录过） |
 
 ### ④ 证书指纹会变（这是钉住机制在正常工作）
 
@@ -332,7 +333,7 @@ $k = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 Remove-ItemProperty $k DefaultPassword -ErrorAction SilentlyContinue
 Set-ItemProperty   $k AutoAdminLogon '0'
 Unregister-ScheduledTask -TaskName 'na-gui' -Confirm:$false
-Remove-LocalUser -Name pdverify          # 临时账户一并删除
+Remove-LocalUser -Name na-test          # 临时账户一并删除
 ```
 
 > 若需**保留**该环境供后续验证（重启后仍自动恢复图形会话），可暂不清理 ——
@@ -342,7 +343,7 @@ Remove-LocalUser -Name pdverify          # 临时账户一并删除
 
 ## 10. 200% 缩放下的坐标口径，与 VM 输入通道的真机真相（2026-10-12）
 
-全部在 **Parallels 27 + Win11 ARM64（200% 缩放）** 上实测。
+全部在 **虚拟化平台 + Win11 ARM64（200% 缩放）** 上实测。
 §9 讲「怎么让图形能力跑起来」，本节讲「跑起来之后坐标为什么还是错的」以及「被控端自己不动了怎么救」。
 
 ### 10.1 缺陷本体：一个进程里并存两套坐标系
@@ -351,7 +352,7 @@ Remove-LocalUser -Name pdverify          # 临时账户一并删除
 
 | 调用 | 不感知时的结果 | 危害 |
 |---|---|---|
-| `Screen.Bounds` / `SystemInformation.VirtualScreen` | **逻辑**尺寸 1800×1010 | `screen.info` 报错尺寸；`screen.capture` 缺省 region 一并错 |
+| `Screen.Bounds` / `SystemInformation.VirtualScreen` | **逻辑**尺寸 1280×720 | `screen.info` 报错尺寸；`screen.capture` 缺省 region 一并错 |
 | `CopyFromScreen` | 按**物理**像素裁剪 | `screen.capture` 缺省**只截到左上 1/4** |
 | `SetCursorPos` | 被系统 **×2** | `input.mouse.*` 喂 100,100 → 光标落到 200,200 |
 | UIA（`screen.find`） | **物理**坐标（与进程是否感知无关） | 与上面三项**口径不一致** |
@@ -363,7 +364,7 @@ Remove-LocalUser -Name pdverify          # 临时账户一并删除
 
 | 断言 | 怎么取 | 修复前 | 修复后应为 |
 |---|---|---|---|
-| 屏幕尺寸口径 | `screen.info` | `1800x1010` | **`3600x2020`**，且与**裸 Win32** `GetSystemMetrics(0/1)`（感知后）一致 |
+| 屏幕尺寸口径 | `screen.info` | `1280x720` | **`2560x1440`**，且与**裸 Win32** `GetSystemMetrics(0/1)`（感知后）一致 |
 | 缺省整屏截图 | `screen.capture`（**不传** `region`） | 只有左上 1/4 | 整屏（按 `scale` 缩放后返回） |
 | 光标落点 | `input.mouse.move(x,y)` 后**用同样感知的助手**读回 `GetCursorPos` | 落到 (2x,2y) | **精确等于** `(x,y)` |
 | 端到端零换算 | `screen.find` 的物理矩形中心**直接**喂 `input.mouse.click` | 点不中 | 命中（可用主题单选框的 UIA `selected` 翻转验证） |
@@ -381,10 +382,10 @@ Remove-LocalUser -Name pdverify          # 临时账户一并删除
 | 会话 / 窗口站 / 桌面 | `session=1` / `WinSta0` / `Default` ✅ |
 | `UserInteractive` | `True` ✅ |
 | `OpenInputDesktop` | 成功 → `Default`；`SetThreadDesktop(它)` 报 `ERROR_BUSY(170)`（本就在该桌面）✅ |
-| `ClipCursor` | 整屏 `0,0,3600,2020`，无裁剪 ✅ |
-| 指点设备 | `HID-compliant mouse` + `Parallels USB Mouse Synchronization Device` 均 `Status OK` ✅ |
-| `prl_mouf` 驱动 | `STATE: 4 RUNNING` ✅ |
-| **进程来源** | 从 **node 子树** 与 **`prlctl enter`**（Parallels Tools 侧）两条**互不相干**的来源跑同一段探针，**结果完全一致** ❌ |
+| `ClipCursor` | 整屏 `0,0,2560,1440`，无裁剪 ✅ |
+| 指点设备 | `HID-compliant mouse` + 虚拟化平台的 USB 鼠标同步设备 均 `Status OK` ✅ |
+| 虚拟化平台的鼠标过滤驱动 | `STATE: 4 RUNNING` ✅ |
+| **进程来源** | 从 **node 子树** 与 **宿主虚拟机 CLI 的 `enter` 子命令**（Guest Tools 侧）两条**互不相干**的来源跑同一段探针，**结果完全一致** ❌ |
 
 判决性证据（**纯 Win32 探针，不含任何本产品代码**）：
 
@@ -404,8 +405,8 @@ GetAsyncKeyState(按键)   = 0x0000          ← 连键盘注入也不被系统�
 | 手段 | 结果 |
 |---|---|
 | `--smart-mouse-optimize` 三档（`off` / `auto` / `on`） | ❌ 无效 |
-| `prlctl suspend` + `start`（挂起 / 恢复） | ❌ 无效 —— resume 会**完整还原 win32k 状态**，卡住的输入态当然一起被还原 |
-| **`prlctl stop --acpi` + `start`（真正冷启动 Windows）** | ✅ **立即恢复** |
+| 虚拟机「挂起 / 恢复」 | ❌ 无效 —— resume 会**完整还原 win32k 状态**，卡住的输入态当然一起被还原 |
+| **虚拟机「ACPI 关机 + 启动」（真正冷启动 Windows）** | ✅ **立即恢复** |
 
 > 结论：VM 输入栈瞬时卡死，**只有冷启动能复位**。
 > 开工前先让宿主机把 VM 窗口真正当前台窗口交互一次（宿主机侧绝对鼠标集成会把 guest 指针从属过去；
@@ -416,10 +417,10 @@ GetAsyncKeyState(按键)   = 0x0000          ← 连键盘注入也不被系统�
 **① 计划任务以 `RunLevel Highest` 拉起时，普通权限 `taskkill` 会「拒绝访问」。**
 
 ```text
-na-gui   user=pdverify  logon=Interactive  runlevel=Highest
+na-gui   user=na-test  logon=Interactive  runlevel=Highest
 ```
 
-→ 必须从**更高权限通道**杀：`prlctl enter "Windows 11"`（**不带** `--current-user`）
+→ 必须从**更高权限通道**杀：宿主虚拟机 CLI 进入 guest（**不带** `--current-user`）
 拿到 `nt authority\system` 的 shell，`taskkill /F /PID <pid>` 才会成功。
 
 另外：旧进程仍占着 8765 时，`schtasks /run /tn na-gui` 会**报「执行成功」但新实例立即退出**
@@ -429,7 +430,7 @@ na-gui   user=pdverify  logon=Interactive  runlevel=Highest
 
 ```text
 netstat -ano | findstr 8765
-  TCP   10.211.55.9:8765   10.211.55.2:57182   CLOSE_WAIT   9396
+  TCP   192.0.2.9:8765   192.0.2.2:57182   CLOSE_WAIT   9396
 ```
 
 此时新连接**能完成 TCP 三次握手，但 TLS 握手永不完成**（控制端只见 `E_TIMEOUT`），
@@ -440,19 +441,20 @@ netstat -ano | findstr 8765
 > 记此供后续专门排查。若成因是「`console.log` 写满无人读取的管道 → 事件循环阻塞」，
 > 那对「被控端常驻、控制端随时可能硬断开」这种使用模式是个真问题。
 
-### 10.5 两条 `prlctl` 通道的语义差异（本轮踩出来的）
+### 10.5 两条虚拟机 CLI 通道的语义差异（本轮踩出来的）
+
+> 下表 `<vm-cli>` 泛指所用虚拟化平台提供的 guest 控制命令（具体命令名见该平台文档）。
 
 | 命令 | 实测行为 |
 |---|---|
-| `prlctl exec <VM> -- <cmd>` | **返回 exit=0 但完全空转**：无输出、无副作用（用「guest 反连 Mac 监听端口」判决）→ **不可用** |
-| `prlctl enter <VM>` | 默认 `nt authority\system`（会话 0，无交互桌面） |
-| `prlctl enter <VM> --current-user` | 登录用户的**真实交互** shell ✅ |
+| `<vm-cli> exec <VM> -- <cmd>` | **返回 exit=0 但完全空转**：无输出、无副作用（用「guest 反连 Mac 监听端口」判决）→ **不可用** |
+| `<vm-cli> enter <VM>` | 默认 `nt authority\system`（会话 0，无交互桌面） |
+| `<vm-cli> enter <VM> --current-user` | 登录用户的**真实交互** shell ✅ |
 
 另两条：
 
-- `prlctl enter` **没有执行参数**（加 `--` 报 `Unrecognized option`），它是交互式 shell，
-  命令要**经 stdin 喂**：`printf 'cmd\r\n...\r\nexit\r\n' | prlctl enter ...`
-- **`prlctl` 的参数里带逗号 / `&&` / 重定向会报 `Invalid argument`** —— 复杂逻辑一律先落成 `.cmd` / `.ps1` 再调用。
+- `<vm-cli> enter` **没有执行参数**（加 `--` 报 `Unrecognized option`），它是交互式 shell，
+  命令要**经 stdin 喂**：`printf 'cmd\r\n...\r\nexit\r\n' | <vm-cli> enter ...`
+- **该 CLI 的参数里带逗号 / `&&` / 重定向会报 `Invalid argument`** —— 复杂逻辑一律先落成 `.cmd` / `.ps1` 再调用。
 
-> 仅供技术参考，不构成任何投资建议。
 

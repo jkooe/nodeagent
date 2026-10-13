@@ -8,7 +8,7 @@
  *   node scripts/release.mjs 1.0.0 --dry-run    # 只演练：构建+生成资产，不改 git、不发布
  *   node scripts/release.mjs 1.0.0 --no-publish # 提交打标签，但不发 GitHub Release
  *
- * 为什么要有它（对齐皇上的要求「每次更新，GitHub 上也要同步资产」）：
+ * 为什么要有它（发版纪律：「每次更新，GitHub 上也要同步资产」）：
  *   手工发版要记住「改几处 package.json、打哪个包、算哪些哈希、传什么资产」——
  *   必然漏项（尤其是给人用的 zip 与给自更新用的 agent.mjs 是**两个不同的东西**）。
  *   本脚本把两者都产出，并把 sha256 写进 latest.json，供被控端 `system.agent.update` 直接使用。
@@ -178,7 +178,7 @@ mkdirSync(distDir, { recursive: true });
 const assets = [
   { name: 'agent.mjs', path: agentPath, purpose: '自更新载荷（被控端 system.agent.update 直接使用）' },
   { name: 'nodeagent-win-x64.zip', path: zipX64, purpose: '人工安装包 · x64 Windows（自包含 node.exe）' },
-  { name: 'nodeagent-win-arm64.zip', path: zipArm64, purpose: '人工安装包 · ARM Windows（Parallels Win11 ARM 等）' },
+  { name: 'nodeagent-win-arm64.zip', path: zipArm64, purpose: '人工安装包 · ARM Windows（虚拟机里的 Win11 ARM 等）' },
 ];
 for (const a of assets) {
   copyFileSync(a.path, join(distDir, a.name));
@@ -302,7 +302,7 @@ writeFileSync(
     `## 人工安装（首次）`,
     `\`\`\`powershell`,
     `Expand-Archive nodeagent-win-x64.zip C:\\nodeagent -Force`,
-    `# ARM Windows（如 Parallels 的 Win11 ARM）请改用 nodeagent-win-arm64.zip —— x64 包在其上 TLS 握手不通`,
+    `# ARM Windows（如虚拟机里的 Win11 ARM）请改用 nodeagent-win-arm64.zip —— x64 包在其上 TLS 握手不通`,
     `# 先把 C:\\nodeagent 加入杀软信任区（主流杀软）`,
     `powershell -ExecutionPolicy Bypass -File C:\\nodeagent\\install.ps1 -NodeId win -AllowInput`,
     '```',

@@ -1,4 +1,4 @@
-# Linux 被控端部署（Debian 12 / fnOS / Ubuntu 等 systemd 系统）
+# Linux 被控端部署（Debian 12 / Ubuntu / NAS 系统等 systemd 系统）
 
 > 适用：把一台 Linux 机器作为**被控端**，让 Mac/Linux 控制端接管。
 > 本文的能力清单是 **2026-10-13 在 Debian 12 容器里实测**得出的，不是推测。
@@ -13,7 +13,7 @@ Linux 端未实现 —— 调用会明确返回 `E_UNSUPPORTED_PLATFORM`，不�
 
 ---
 
-## 1. 快速开始（以绿联 DXP2800 / fnOS 为例）
+## 1. 快速开始（以 NAS 设备为例）
 
 ```bash
 # ① 把仓库放到 NAS 上（任选其一）
@@ -25,7 +25,7 @@ node scripts/pack.mjs                       # → release/agent.mjs
 
 # ③ 在 NAS 上执行安装（需要 sudo；会自动注册 systemd 服务并开机自启）
 cd nodeagent
-sudo bash scripts/install-linux.sh --node-id dxp2800
+sudo bash scripts/install-linux.sh --node-id nas-01
 
 # ④ 抄下屏幕上打印的「密钥」与「连接命令」，回控制端执行：
 #    nodeagent connect <NAS的IP> --port 8765 --key <密钥> --insecure

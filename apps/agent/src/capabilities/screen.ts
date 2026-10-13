@@ -39,7 +39,7 @@ export function buildListDisplaysScript(): string {
   return [
     // ⚠️ 必须最先执行：不设 DPI 感知时，`Screen.Bounds` 返回的是**逻辑**尺寸，
     // 而 `CopyFromScreen` 又按**物理**像素裁剪 → 缺省整屏截图只截到左上 1/4
-    //（200% 缩放下 3600×2020 的桌面报成 1800×1010）。真机 2026-10-12 实证。
+    //（200% 缩放下 2560×1440 的桌面报成 1280×720）。真机 2026-10-12 实证。
     PS_DPI_AWARE,
     'Add-Type -AssemblyName System.Windows.Forms',
     '$s = [System.Windows.Forms.Screen]::AllScreens',

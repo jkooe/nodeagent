@@ -14,8 +14,13 @@
 // 用相对路径：从仓库根跑时解析不到 workspace 包（根 package.json 未声明它）
 import { NodeAgentClient } from '../packages/client/dist/index.js';
 
-const URL = process.env.NA_URL ?? 'wss://10.211.55.9:8765'  // ⚠️ 必须 wss：被控端 tls=true（写成 ws 会 socket hang up）;
+// ⚠️ 必须 wss：被控端 tls=true（写成 ws 会 socket hang up）
+const URL = process.env.NA_URL;
 const KEY = process.env.NA_KEY;
+if (!URL) {
+  console.error('需要 NA_URL 环境变量，例如 wss://<被控端地址>:8765');
+  process.exit(1);
+}
 if (!KEY) {
   console.error('需要 NA_KEY 环境变量');
   process.exit(1);

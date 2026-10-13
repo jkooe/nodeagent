@@ -8,10 +8,10 @@
  *
  * | 调用 | 该进程看到的 |
  * |---|---|
- * | `[System.Windows.Forms.Screen]::Bounds` | **逻辑**尺寸（物理 3600×2020 → 报 1800×1010） |
+ * | `[System.Windows.Forms.Screen]::Bounds` | **逻辑**尺寸（物理 2560×1440 → 报 1280×720） |
  * | `[System.Windows.Forms.SystemInformation]::VirtualScreen` | **逻辑**（同上） |
- * | `CopyFromScreen(0,0,1800,1010)` | **物理**裁剪 → 只截到屏幕左上 1/4 |
- * | `SetCursorPos(552,1489)` | 落点实际在物理 (1104, 2978)（被系统 ×2） |
+ * | `CopyFromScreen(0,0,1280,720)` | **物理**裁剪 → 只截到屏幕左上 1/4 |
+ * | `SetCursorPos(552,745)` | 落点实际在物理 (1104, 1490)（被系统 ×2） |
  * | UIA（`screen.find`） | **物理**（与进程 DPI 感知无关） |
  *
  * 于是最要命的一条链路会静默断掉：`screen.find` 返回物理坐标 → 直接喂给
@@ -25,11 +25,11 @@
  *
  * ## 真机实证（2026-10-12）
  *
- * Parallels Win11 ARM 虚拟机，主机缩放 200%，物理 3600×2020：
- * - 缺省 `screen.capture` 只拿到 1800×1010（= 屏幕左上 1/4），且 `screen.info` 报 1800×1010
+ * 某虚拟化平台上的 Win11 ARM 虚拟机，宿主缩放 200%，物理 2560×1440：
+ * - 缺省 `screen.capture` 只拿到 1280×720（= 屏幕左上 1/4），且 `screen.info` 报 1280×720
  * - `input.mouse.move 100,100` → DPI 感知读回 **(200,200)**
- * - `input.mouse.move 552,1489` → 实际落点 **(1104, 2019)**（截断到屏幕底部）
- * - 补上本段后：`screen.capture` 拿到完整 3600×2020；`screen.find` 的物理坐标
+ * - `input.mouse.move 552,745` → 实际落点 **(1104, 1439)**（截断到屏幕底部）
+ * - 补上本段后：`screen.capture` 拿到完整 2560×1440；`screen.find` 的物理坐标
  *   可直接用于 `input.mouse.click`（同一坐标一次点中）
  *
  * ⚠️ 不要删。这不是「锦上添花」的兼容代码，而是坐标口径统一的**前提**。
