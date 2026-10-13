@@ -241,6 +241,105 @@
   | `input.mouse.move(x,y)` → 读回光标（物理） | 四次抽样**精确等于** (x,y) ✅ |
   | `screen.find` 物理矩形 → `input.mouse.click` **直接点击** | 移动后光标 = 物理中心；主题单选框 `selected` 翻转且**可逆** ✅ |
 
+### 修复 —— 安全加固批次：18 条实机复现缺陷（**属被控端变更**）
+
+> 来源：一轮「静态审查 + 真机实测」的完整缺陷普查（报告 `bug-report-2026-10-13.html`）。
+> 基线 v2.0.2 / `ad90634` 上 `test:unit` **291/291** + `test:e2e` **30/30** **全绿** ——
+> 也就是说 **18 条全部落在既有覆盖之外**。分级 **2×P0 / 5×P1 / 10×P2 / 1×P3**。
+
+#### P0-1 命令注入（`window.focus` 的 `title`）—— 而且它是**静默**的
+
+原实现把 `JSON.stringify(title)` 直接插进 PowerShell 的**双引号**串。PS 里 `\` 不是转义符，
+双引号串还会做变量插值与 `$(...)` 展开 —— 于是 `title` 里的 `"; <命令>; "` 被当代码执行。
+
+真机实测里最险的一点：**接口返回的是「正常业务错误」**（`E_EXECUTION_FAILED: 未找到匹配的窗口`），
+而 payload 已经把文件创建出来了 —— 调用方从返回值里完全看不出异常。
+
+- 新增 `apps/agent/src/util/quote.ts`：`psLit` / `shLit` 作**单一真源**
+  （PS 用 `''` 转义、sh 用 `'\''`），另加 `assertSingleQuotedLiteral()` 与裸参前提校验
+  `isSafeBareWindowsPathArg()`（用于 `-File <path>` 这种不能用引号的位置）。
+- 全仓注入点收敛到 `psLit`/`shLit`：`window.focus` / `uiaFind` / `ocrFind` /
+  `system.ts` 的计划任务参数 / `ps-helper.ts` 的 `-File` 裸拼 等 **14 处**；
+  原有的「双引号」断言同步**翻转**为单引号 —— 旧断言的方向本就是错的（CI 断言会过期且方向可能反）。
+- 新增 `tests/unit/quote.test.mjs`：既有行为断言，也有**源码形态守卫**
+  （禁止 `${JSON.stringify(` 拼进 PS 模板、禁止再手写 `replace(/'/g,"''")`）。
+  形态守卫带 `stripComments()` —— 否则注释里**讲解漏洞**的文字会被当成犯案。
+
+#### P0-2 ACL 省略 `clients` → 每条 invoke 崩掉被控端
+
+`{"acl":{"default_effect":"deny"}}`（没写 `clients`）会让 `aclPolicy.clients.find(...)` 抛错，
+而这段**落在 `if (hasAcl)` 块之外**、无条件执行 —— 配置少写一个字段，整个被控端即不可用。
+
+⚠️ 值得记一笔：**静态审查当时判它是「fail-open 放行」，实测是崩溃**（后果更严重）。
+静态审查必须配实测 —— 这是本轮最直接的一条教训。
+
+#### 崩溃链的共同根因：没有 `unhandledRejection` 兜底
+
+`ws.on('message')` 用 `void handleMessage()` 起 Promise 且**没有 `.catch`**，
+而全仓没有任何 `process.on('unhandledRejection')` —— Node ≥22 遇到未处理的 rejection **直接终止进程**。
+`verifyNonce` 有 try/catch，而 psk 默认路径走的 `verifyHmac` 没有。于是两条畸形报文就够了：
+`hello {protocol:123}` 与 `auth {hmac:1}` 都能在**认证之前**把被控端打死。
+
+- `apps/agent/src/index.ts` 新增进程级兜底：日志每次都打、**审计按 10s 限流**
+  （否则畸形报文可高频刷爆 `audit.log`）。
+- 明确**不**退出进程：源头已有校验与 `.catch`，可用性优先（取舍写在注释里）。
+
+#### 其余 15 条
+
+| 级别 | 缺陷 | 修法 |
+|---|---|---|
+| P1 | `clients: []` → **fail-open 全放行** | 判据改为「对象是否存在」而非「数组长度」 |
+| P1 | 畸形 hello / 畸形 auth → 崩且**免认证** | 控制面报文类型校验 + 上述进程级兜底 |
+| P1 | macOS `screen.find` 的 text 拼 bash → `$(...)` 实测执行 | 走 `shLit` |
+| P1 | 控制台审计筛选项与协议 enum 漂移（除 `invoke` 外全 `E_PARAM_INVALID`） | 新增 `packages/protocol/src/audit-types.ts` 作**唯一真源**，manifest enum 由它派生，并加编译期双向守卫 |
+| P2 | `monitor.start` 的 target 注入；monitor id 路径穿越（读/删） | 走 `psLit` + 统一过 `guardPath` |
+| P2 | `keys{}` + `client_id:"constructor"` 崩 | 改 `Object.prototype.hasOwnProperty.call`（原型链取值） |
+| P2 | 事件订阅跨控制端可见/可删；`event.watch` 绕开 `fs_roots` | 有状态资源落 owner + 统一路径白名单 |
+| P2 | `screen.capture` 的 region 无上界 | `assertRegionSane()`，并**提前到枚举显示器之前**（fail fast） |
+| P2 | `ipMatchesCidr('8.8.8.8','10.0.0.0/')` → `true`（空掩码被 `Number('') === 0` 当成 `/0`） | 掩码解析加严，补 `/0` 与 `/32` 对照组用例 |
+| P3 | CLI `--timeout` 静默失效 | `parseArgs` 补声明（`strict:false` 下未声明选项被当 boolean，值掉进 `positionals`，双重危害） |
+| P3 | 拒绝类事件不写审计 | 补 `request.rejected` / `agent.error` 两类事件 |
+
+#### 回归
+
+`test:unit` **312/312**（+21）、`test:e2e` **33/33**（+3 组硬化用例）、`test:rust` **11/11**。
+e2e 新增的 ACL / 畸形报文用例有个必须记住的姿势：**每个场景独占端口 + 独立临时 `NODEAGENT_HOME`** ——
+首版复用了同一端口，结果连上了上一块的残留实例，把对照组误判成「实现有缺陷」。
+
+### 新增 —— 控制台单实例保护（症状：Windows 端起了两个被控端）
+
+真机观察到两桩现象：① Windows 上同时跑着**两个被控端**；② **旧的服务端还在运行时，控制台起不来**。
+根因是同一个：控制台**没有单实例锁**，再启动一次就是第二个进程 → 第二个 `AgentManager`
+→ 抢同一个 8765 端口 → 后起的那个起不来。另有一条陈旧的 `na-gui` 计划任务指向
+测试部署目录，也在抢同一个端口。
+
+- 引入 `tauri-plugin-single-instance`（**必须注册为第一个插件**）。
+- 第二次启动**不是**静默退出，而是「聚焦既有窗口 + 发 `na-second-instance` 事件」让前端刷新状态。
+  这一点是刻意为之：自启动的实例是**无窗口**的，若第二次启动静默退出，用户双击图标只会看到
+  「什么都不发生」—— 那比缺陷本身更难排查。带自启参数（`AGENT_ONLY_FLAG`）时跳过显示。
+- 端口占用的报错补上「怎么找出占用者」：`netstat -ano | findstr :<port>` /
+  `lsof -nP -iTCP:<port> -sTCP:LISTEN`，并新增一条单测。
+
+### 修复 —— 发版脚本漏改 Cargo 清单（版本号会分叉）
+
+`release.mjs patch --dry-run` 实测：只改 **8 个 `package.json` + 1 个 `tauri.conf.json`**，
+而 `apps/console/src-tauri/{Cargo.toml,Cargo.lock}` 里**同样存着 2.0.2** —— 发版后必然滞留，
+与 `tauri.conf.json` 悄悄分叉，且**不报错**（Tauri 打包以 `tauri.conf.json` 为准）。
+
+- 版本写入抽成 `scripts/lib/version-write.mjs`（纯函数、可测），`release.mjs` 调用它。
+- `Cargo.toml` **只在 `[package]` 段**改（非 package 段里也可能有独占一行的 `version = "…"`）；
+  `Cargo.lock` **按 `[[package]]` 块 + crate 名定位**（全文盲替换会改坏 `thiserror 2.0.21` 这类依赖版本）。
+- `release.mjs` 的「脏文件白名单」改为取自**实际改写结果**（`changed`），不再手写文件名列表 ——
+  手写的那份一旦与写入逻辑漂移，要么拦下本该放行的（发版卡死），要么放过不该放行的（静默推走改动）。
+- 新增 `tests/unit/version-write.test.mjs`（9 条）：在临时目录铺**真实文件**并 `git init` / `git add`
+  （`versionTargets` 走 `git ls-files`，不真进索引就会假绿），跑完**读回文件**断言；
+  另含一条**仓库版本号一致性守卫**，发版漏项会直接变红。
+- 注入 4 处故障实测：编排漏 Cargo / `Cargo.toml` 全文盲替换 / `Cargo.lock` 按位置盲改 /
+  仓库版本分叉 —— **全部变红**，还原后全绿。
+
+> ⚠️ 本批**含被控端变更**（`apps/agent/src/**` 十余个文件），按版本纪律，发版时
+> `pnpm release patch`（→ **v2.0.3**）**必须**执行，否则 `agent.mjs` 会谎报一个并不包含这些修复的版本。
+
 ---
 
 ## [v2.0.2] —— 2026-10-11
