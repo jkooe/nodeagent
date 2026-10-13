@@ -19,6 +19,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkZipArch } from './lib/zip-pe-arch.mjs';
+import { writeVersionEverywhere } from './lib/version-write.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -98,41 +99,25 @@ const remote = sh('git', ['remote', 'get-url', 'origin'])
 const repoPath = remote.replace(/^https:\/\/github\.com\//, '');
 if (!/^[\w.-]+\/[\w.-]+$/.test(repoPath)) fail(`无法从 remote 推断 GitHub 仓库: ${remote}`);
 
-// ---------- ② 改版本（单一版本源：根 + 各 workspace + Tauri 清单）----------
-const pkgFiles = ['package.json'];
-for (const f of sh('git', ['ls-files', '*package.json']).split('\n').filter(Boolean)) {
-  if (f === 'package.json' || f.includes('node_modules')) continue;
-  pkgFiles.push(f);
-}
-// Tauri 的版本号不在 package.json 里，另存于 src-tauri/tauri.conf.json，
-// 且它才是最终打进 .app / 安装包的版本。漏掉会「包里是旧版本号」，故一并纳入。
-const tauriConfFiles = sh('git', ['ls-files', '*src-tauri/tauri.conf.json'])
-  .split('\n')
-  .filter(Boolean);
+// ---------- ② 改版本（单一版本源：根 + 各 workspace + Tauri/Cargo 清单）----------
+// 2026-10-13：原先这里手写两段 for 循环，只覆盖 package.json + tauri.conf.json，
+// 于是 src-tauri/{Cargo.toml,Cargo.lock} 里的版本号在发版后会**滞留**（dry-run 实证：8+1 处，
+// Cargo 两处漏网），与 tauri.conf.json 悄悄分叉 —— 不报错，属最难发现的漂移。
+// 现收敛进 lib/version-write.mjs（纯函数），由 tests/unit/version-write.test.mjs 对**真实文件**断言。
+const { changed, skipped } = writeVersionEverywhere(root, version, { dryRun });
 if (dryRun) {
-  // dry-run 绝不改文件 —— 演练就该是无副作用的
-  console.log(`（dry-run）将把 ${pkgFiles.length} 个 package.json 的 version 改为 ${version}`);
-  if (tauriConfFiles.length) {
-    console.log(`（dry-run）以及 ${tauriConfFiles.length} 个 tauri.conf.json：${tauriConfFiles.join(', ')}`);
-  }
+  // dry-run 绝不改文件 —— 演练就该是无副作用的（writeVersionEverywhere 已按 dryRun 只读）
+  const byKind = (k) => changed.filter((c) => c.kind === k).map((c) => c.file);
+  console.log(`（dry-run）将把 ${changed.length} 处版本号改为 ${version}：`);
+  for (const rel of byKind('json')) console.log(`           ${rel}`);
+  for (const rel of byKind('cargo-toml')) console.log(`           ${rel}`);
+  for (const rel of byKind('cargo-lock')) console.log(`           ${rel}`);
+  for (const s of skipped) console.log(`           （跳过）${s}`);
   console.log('（dry-run）将执行：构建 → pack:win → pack:mac → 生成资产 → 提交打标签 → gh release create');
   process.exit(0);
 }
-for (const f of pkgFiles) {
-  const p = join(root, f);
-  const j = JSON.parse(readFileSync(p, 'utf8'));
-  if (!j.version) continue;
-  j.version = version;
-  writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
-}
-for (const f of tauriConfFiles) {
-  const p = join(root, f);
-  const j = JSON.parse(readFileSync(p, 'utf8'));
-  if (!j.version) continue;
-  j.version = version;
-  writeFileSync(p, JSON.stringify(j, null, 2) + '\n');
-}
-console.log(`✓ 版本号已写入 ${pkgFiles.length} 个 package.json + ${tauriConfFiles.length} 个 tauri.conf.json`);
+for (const s of skipped) console.warn(`（跳过）${s}`);
+console.log(`✓ 版本号已写入 ${changed.length} 处（package.json + tauri.conf.json + Cargo 清单）`);
 
 // ---------- ③ 构建 + 打包 ----------
 console.log('=== 构建 ===');
@@ -261,9 +246,12 @@ if (untracked.length > 0) {
 // 同样会提交已修改的跟踪文件，而它们不在第一层的视野里。
 // 真例：`pnpm install` 把某个应用的依赖写进了跟踪中的根 pnpm-lock.yaml
 // （+1401 行），发版时静默推走，第一层闸门完全不响。
-// 故此处用「脏文件白名单」：除脚本自己改的 package.json 外，一律不许有别处改动。
+// 故此处用「脏文件白名单」：除脚本自己改的版本号文件外，一律不许有别处改动。
 // 正常发版应在**干净工作区**上开始，所以这条不该有例外。
-const allowedDirty = new Set([...pkgFiles, ...tauriConfFiles]);
+// ⚠️ 白名单**必须**取自 writeVersionEverywhere 的实际改写清单（changed），
+//    而不是重新手写一份文件名列表 —— 手写的那份一旦与写入逻辑漂移，
+//    要么把该放行的拦下来（发版卡死），要么把不该放行的放过去（静默推走改动）。
+const allowedDirty = new Set(changed.map((c) => c.file));
 const dirty = sh('git', ['diff', '--name-only', 'HEAD'])
   .split('\n')
   .filter(Boolean);
