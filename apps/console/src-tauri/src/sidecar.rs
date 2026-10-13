@@ -43,12 +43,26 @@ use tokio::sync::oneshot;
 ///
 /// → **exit 1，且一行 JS 都来不及执行**（连 sidecar 自己的启动日志都写不出来）。
 ///
-/// 真机 A/B（Windows 11 ARM64；控制台 v2.0.3；同一个 `node.exe`、同一份 `sidecar.mjs`）：
+/// ## 真机 A/B —— 二维四格，精确到是「哪一维」出问题
+/// Windows 11 ARM64；同一个 `node.exe`、同一份最小脚本 `mini.mjs`；用
+/// `ProcessStartInfo` 下发，**精确对应 Rust `Command::new(prog).arg(script)` 的形态**：
 ///
-/// | 脚本参数 | 结果 |
-/// |---|---|
-/// | `C:\…\sidecar.mjs` | 2.5 秒返回 `check_update` 结果，进程常驻 |
-/// | `\\?\C:\…\sidecar.mjs` | **0.5 秒即退出，exit 1**，零 JS 执行 |
+/// | # | `program` | 脚本参数 | 结果 |
+/// |---|---|---|---|
+/// | G1 | `C:\…\node.exe` | `C:\…\mini.mjs` | exit 0，正常输出（**= 修复后的形态**） |
+/// | G2 | `C:\…\node.exe` | `\\?\C:\…\mini.mjs` | **exit 1**，`EISDIR … lstat 'C:'` |
+/// | G3 | `\\?\C:\…\node.exe` | `C:\…\mini.mjs` | exit 0，正常输出 |
+/// | G4 | `\\?\C:\…\node.exe` | `\\?\C:\…\mini.mjs` | **exit 1**，`EISDIR … lstat 'C:'` |
+///
+/// **结论**：炸的是「**脚本参数**带 verbatim」，**不是**「可执行文件带 verbatim」——
+/// G3 证明 `program` 位置带前缀 node 照常启动；真机上也有旁证：被控端与 sidecar 进程的
+/// `program` 都带 `\\?\`（见 `Get-CimInstance Win32_Process` 的 CommandLine）却长期存活。
+/// 因此 `sidecar_command` 里**净化 `script` 才是关键修复**，净化 `node` 属防御性
+/// （幂等、无副作用；且 `\\?\` 路径不适合出现在计划任务 `-Execute` 之类场景）。
+///
+/// 另有一次更贴近原症状的观测（同一台机器，直接用真 `sidecar.mjs`）：
+/// 普通路径 **2.5 秒**返回 `check_update` 结果并常驻；
+/// `\\?\` 路径 **0.5 秒**即退出、exit 1、**零 JS 执行**（连自带启动日志都没写出来）。
 ///
 /// 控制台侧前后两种表现都由这一条派生：
 /// - 修存活检测**之前**：请求写进已死进程的管道 → 干等 45 秒 → 「check_update 超时」；
@@ -310,8 +324,11 @@ impl Sidecar {
 ///
 /// 优先级：环境变量 `NODEAGENT_CONSOLE_NODE` → 随包 resource 的 `node` → 系统 `node`。
 ///
-/// ⚠️ 出口一律经 `unverbatim`：`resource_dir()` 在 Windows 上给的是 verbatim 路径，
-/// 带 `\\?\` 的路径交给 node 会**启动即 EISDIR 秒退**（详见 `unverbatim` 的说明）。
+/// ⚠️ 出口一律经 `unverbatim`：`resource_dir()` 在 Windows 上给的是 verbatim 路径。
+/// 对本函数而言这是**防御性**净化 —— 真机四格实验（见 `unverbatim`）证明 `program`
+/// 位置带 `\\?\` 本身无害（G3 照常启动）。之所以仍然净化，是为了守住「凡从本模块
+/// 出去的路径都干净」这一条**单一纪律**：靠「记住哪些位置安全」来省这一步，
+/// 迟早会有人把它挪到参数位置而不自知（那才是 G2/G4 的必炸形态）。
 pub fn resolve_node(resource_dir: Option<&Path>) -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("NODEAGENT_CONSOLE_NODE") {
         if !p.is_empty() {

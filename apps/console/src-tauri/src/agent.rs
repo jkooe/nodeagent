@@ -435,9 +435,13 @@ impl AgentManager {
         );
 
         // 进程边界：交给 node 的三条路径都先去掉 verbatim 前缀。
-        // 被控端的脚本路径来自数据目录（本来就是普通路径），但 node 路径来自
-        // `resource_dir()`（Windows 上是 `\\?\C:\…`）—— 与 2026-10-13「sidecar 秒退」
-        // 同一类风险，故在此统一兜住，不依赖上游是否记得净化。
+        // - `script` 来自数据目录（通常已是普通路径），但一旦带 `\\?\` 就**必炸** ——
+        //   脚本参数位置是 2026-10-13「sidecar 秒退」的致命维度（真机四格实验 G2 / G4：
+        //   exit 1，`EISDIR ... lstat 'C:'`）；
+        // - `node` 来自 `resource_dir()`（Windows 上是 `\\?\C:\…`），该位置实测**无害**
+        //   （G3 照常启动），净化属防御性；
+        // - 两条都净化是为了守住「凡交给外部进程的路径都干净」这条单一纪律 ——
+        //   靠「记住哪个位置安全」省这一步，迟早会把安全的那个挪到致命的位置上。
         let node = crate::sidecar::unverbatim(node.to_path_buf());
         let script = crate::sidecar::unverbatim(script.to_path_buf());
         let data_dir = crate::sidecar::unverbatim(data_dir.to_path_buf());

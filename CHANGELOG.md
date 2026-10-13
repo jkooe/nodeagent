@@ -419,13 +419,25 @@ macOS 上同样两条却是绿的 —— 典型的「只在 Windows 暴露」。
 改为**立刻**报「检查更新失败：**sidecar 已退出（stdout 关闭），请重试**」——
 说明被拉起的 sidecar **在请求进行中真的退出了**，只是这次被立刻发现。本节是它的真根因。
 
-**真机 A/B（决定性的一条）**：Windows 11 ARM64；同一个 `node.exe`、同一份 `sidecar.mjs`，
-**只换脚本参数的写法**：
+**真机 A/B（决定性的一条）**：Windows 11 ARM64；同一个 `node.exe`、同一份脚本，
+用 `ProcessStartInfo` 下发（精确对应 Rust `Command::new(prog).arg(script)` 的形态），
+**二维四格**各跑一遍 —— 要回答的是「炸的是哪一个维度」：
 
-| 脚本参数 | 结果 |
-|---|---|
-| `C:\…\sidecar.mjs` | 2.5 秒返回 `check_update` 结果，进程常驻、心跳持续 |
-| `\\?\C:\…\sidecar.mjs` | **0.47 秒即退出，exit 1**，**零 JS 执行** |
+| # | `program` | 脚本参数 | 结果 |
+|---|---|---|---|
+| G1 | `C:\…\node.exe` | `C:\…\mini.mjs` | exit 0，正常输出 ← **= 修复后的形态** |
+| G2 | `C:\…\node.exe` | `\\?\C:\…\mini.mjs` | **exit 1**，`EISDIR … lstat 'C:'` |
+| G3 | `\\?\C:\…\node.exe` | `C:\…\mini.mjs` | exit 0，正常输出 |
+| G4 | `\\?\C:\…\node.exe` | `\\?\C:\…\mini.mjs` | **exit 1**，`EISDIR … lstat 'C:'` |
+
+**炸的是「脚本参数」带 verbatim，不是「可执行文件」带 verbatim** —— G3 证明 `program`
+位置带前缀 node 照常启动；真机上也有旁证：被控端与 sidecar 进程的 `program` 都带 `\\?\`
+却长期存活（`Get-CimInstance Win32_Process` 的 CommandLine 可直接看到）。
+修复方向由此确定：**净化脚本参数是关键**，净化 node 属防御性。
+
+另有一次更贴近原症状的观测（同一台机器、直接用真 `sidecar.mjs`）：
+普通路径 **2.5 秒**返回 `check_update` 结果、进程常驻且心跳持续；
+`\\?\` 路径 **0.47 秒**即退出、exit 1、**零 JS 执行** —— 连 sidecar 自带的启动日志一行都没写。
 
 「零 JS 执行」是实测出来的：sidecar 自己的启动日志一行没写、审计日志在 `agent.start` 之后
 一片空白、判死探针文件 0 字节 —— 连第一行 JS 都没跑到。
