@@ -75,17 +75,23 @@ use tokio::sync::oneshot;
 ///
 /// 纯字符串处理，**任何平台都可安全调用**（非 Windows 上一般原样返回），
 /// 因此可以用 Windows 形态的字符串在 macOS / Linux 上直接验证 Windows 分支。
+///
+/// ## 为什么用 `to_str()` 而不是 `to_string_lossy()`
+/// 后者会把**非法字节替换成 U+FFFD** 再用替换后的串重建路径 —— 那是**损坏路径**，
+/// 比不净化更糟：原本只是 node 会报 EISDIR，改完会变成「指向一个不存在的目录」，
+/// 更难排查。故非 UTF-8 一律**原样返回**（Windows 上是含未配对代理项的路径；
+/// Unix 上是含非法字节的文件名 —— 两者都不该被我们的「净化」悄悄改写）。
 pub(crate) fn unverbatim(path: PathBuf) -> PathBuf {
-    let s = path.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        // \\?\UNC\server\share\x → \\server\share\x
-        return PathBuf::from(format!(r"\\{rest}"));
-    }
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        // \\?\C:\x → C:\x
-        return PathBuf::from(rest);
-    }
-    path
+    let fixed: Option<PathBuf> = path.to_str().and_then(|s| {
+        let rest = s.strip_prefix(r"\\?\")?;
+        Some(match rest.strip_prefix("UNC\\") {
+            // \\?\UNC\server\share\x → \\server\share\x（UNC 必须还原成双反斜杠）
+            Some(unc) => PathBuf::from(format!(r"\\{unc}")),
+            // \\?\C:\x → C:\x
+            None => PathBuf::from(rest),
+        })
+    });
+    fixed.unwrap_or(path)
 }
 
 /// 构造「把 sidecar 拉起来」的那条命令 —— **唯一**把路径交给 node 的地方。
@@ -448,6 +454,29 @@ mod tests {
         // 幂等：净化两次 == 净化一次（spawn 与 sidecar_command 都会调）
         let once = unverbatim(PathBuf::from(r"\\?\C:\a\b.mjs"));
         assert_eq!(unverbatim(once.clone()), once);
+    }
+
+    /// 反例守卫：**非 UTF-8 路径必须原样返回，不得被 lossy 重建损坏**。
+    ///
+    /// ⚠️ 构造必须**同时**含 `\\?\` 前缀与非法字节，否则测不出差异 ——
+    /// 不带前缀时新旧实现都会落到「原样返回」那一步（`to_string_lossy` 也安全），
+    /// 只有在「剥前缀 → `PathBuf::from(rest)`」这一步才会把 U+FFFD 写进路径。
+    /// 若把实现退回 `to_string_lossy()`，本用例立刻变红：那是把「node 报 EISDIR」
+    /// 换成「指向一个不存在的路径」，更难排查 —— 宁可原样返回。
+    #[cfg(unix)]
+    #[test]
+    fn unverbatim_对非_utf8_的_verbatim_路径必须原样返回不得损坏() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        // 0xff / 0xfe 永不出现在合法 UTF-8 序列里；前缀形态按 Windows 写法给全
+        let raw = OsStr::from_bytes(b"\\\\?\\C:\\na-\xff\xfe-weird.mjs");
+        let p = PathBuf::from(raw);
+        assert!(p.to_str().is_none(), "构造出来的路径应确实是非 UTF-8");
+        assert_eq!(
+            unverbatim(p.clone()),
+            p,
+            "非 UTF-8 路径被改写了（很可能退回了 to_string_lossy）"
+        );
     }
 
     #[test]

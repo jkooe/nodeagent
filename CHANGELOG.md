@@ -464,6 +464,9 @@ Windows 侧只有打包（`console-windows.yml`）。于是「本地全绿 + CI 
 - 新增 `unverbatim()`：剥 `\\?\UNC\` → `\\`、剥 `\\?\` → 无前缀，其余原样返回；
   **纯字符串处理，任何平台都可安全调用** —— 因此可以用 Windows 形态的字符串在
   macOS / Linux 上直接守住 Windows 分支（铁律 4：跨平台差异不必真上 Windows 才能验）。
+  实现用 `to_str()` 而**不是** `to_string_lossy()`：后者会把非法字节替换成 U+FFFD
+  再重建路径，那是**损坏路径**（把「node 报 EISDIR」换成「指向不存在的路径」，
+  更难排查）。非 UTF-8 一律原样返回。
 - 新增 `sidecar_command()`：**唯一**把路径交给 node 的地方，内部统一净化。
   纪律只在这里守一次，单测直接断言它产出的 `program` / `args`（守「最终下发文本」，
   不是「源码里出现过某个常量」）。
@@ -474,12 +477,16 @@ Windows 侧只有打包（`console-windows.yml`）。于是「本地全绿 + CI 
   与上述同源风险。
 
 **回归**：
-- 新增 3 条守卫 —— `unverbatim_去掉各类_windows_前缀`（盘符 / UNC / 普通 / POSIX / **幂等**）、
+- 新增 4 条守卫 —— `unverbatim_去掉各类_windows_前缀`（盘符 / UNC / 普通 / POSIX / **幂等**）、
   `unverbatim_对_resource_dir_拼接后的路径同样生效`（前缀在目录上、拼完仍在最前）、
-  **`交给_node_的路径必须去掉_verbatim_前缀`**（断言最终 `program` 与 `args` 文本）。
-- **注入故障实测**：把 `sidecar_command` 里的 `unverbatim` 去掉 → 第三条如期变红，
-  报错正文即 `program 仍带 verbatim 前缀（示例：\\?\C:\…\node.exe）`；还原后 **sha256 逐字节一致**，复跑全绿。
-- `pnpm test:rust` **17/17**（14 → +3）。
+  **`交给_node_的路径必须去掉_verbatim_前缀`**（断言最终 `program` 与 `args` 文本）、
+  `unverbatim_对非_utf8_的_verbatim_路径必须原样返回不得损坏`（`#[cfg(unix)]`，见上）。
+- **注入故障实测（两轮）**：
+  ① 把 `sidecar_command` 里的 `unverbatim` 去掉 → 第三条如期变红，
+  报错正文即 `program 仍带 verbatim 前缀（示例：\\?\C:\…\node.exe）`；
+  ② 把 `unverbatim` 的实现退回 `to_string_lossy()` → 第四条如期变红。
+  两轮还原后均 **sha256 逐字节一致**，复跑全绿。
+- `pnpm test:rust` **18/18**（14 → +4）。
 
 > ⚠️ **本项属控制台上壳变更，不是被控端变更**，因此**不触发** `pnpm release patch`。
 > 但要让用户真正拿到修复，**必须重新构建并分发控制台安装包**。
