@@ -28,19 +28,29 @@ const typeFilter = ref<string | null>(null);
 const loading = ref(false);
 const verify = ref<AuditVerifyResult | null>(null);
 
+/**
+ * 审计筛选项（取值必须是 `@nodeagent/protocol` 里 `AUDIT_FILTER_TYPES` 的一员）。
+ *
+ * ⚠️ C-01（v2.0.3 修）：这里原本列了 11 个**细粒度**取值（`auth.success`、`acl.denied`…），
+ *    而协议 manifest 的 enum 只有 `['invoke','auth','acl','agent']` → 被控端 schema 校验把
+ *    除 `invoke` 外的**全部**取值判成 `E_PARAM_INVALID`：下拉框形同虚设，且**不报类型错**。
+ *
+ *    改用**粗粒度前缀**：被控端按 `entry.type.startsWith(query)` 过滤，所以
+ *    `agent` 一次覆盖 `agent.start/stop/update/error`，`request` 覆盖新增的 `request.rejected`。
+ *    覆盖面更全（每个审计类型都能被至少一项筛到），下拉框也不必膨胀成二十几项。
+ *    防漂移由 `tests/unit/audit-filter.test.mjs` 钉死（正反双向都比对真源）。
+ */
 const typeOptions = [
   { label: "全部", value: "" },
-  { label: "invoke", value: "invoke" },
-  { label: "auth.success", value: "auth.success" },
-  { label: "auth.failure", value: "auth.failure" },
-  { label: "acl.denied", value: "acl.denied" },
-  { label: "capability.disabled", value: "capability.disabled" },
-  { label: "rate.limited", value: "rate.limited" },
-  { label: "net.deny", value: "net.deny" },
-  { label: "net.change", value: "net.change" },
-  { label: "agent.update", value: "agent.update" },
-  { label: "agent.start", value: "agent.start" },
-  { label: "agent.stop", value: "agent.stop" },
+  { label: "调用 invoke", value: "invoke" },
+  { label: "认证 auth", value: "auth" },
+  { label: "ACL 拒绝 acl", value: "acl" },
+  { label: "能力被禁 capability", value: "capability" },
+  { label: "限速 rate", value: "rate" },
+  { label: "网络 net", value: "net" },
+  { label: "agent 生命周期 agent", value: "agent" },
+  { label: "会话 session", value: "session" },
+  { label: "被拒请求 request", value: "request" },
 ];
 
 const cols: DataTableColumns<AuditEntry> = [
@@ -141,7 +151,7 @@ onMounted(() => {
             v-model:value="typeFilter"
             :options="typeOptions"
             size="small"
-            style="width: 140px"
+            style="width: 190px"
             @update:value="load"
           />
           <n-input-number v-model:value="limit" :min="10" :max="2000" :step="50" size="small" style="width: 110px" />

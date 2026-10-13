@@ -1,6 +1,8 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { exec } from 'node:child_process';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
+// ⚠️ E-03：file watcher 必须与 fs.* 用**同一套**路径白名单守卫（否则 fs_roots 形同虚设）
+import { guardPath } from './capabilities/fs.js';
 
 type Args = Record<string, unknown>;
 
@@ -30,6 +32,8 @@ interface WatchRecord {
   id: string;
   kind: 'file' | 'process' | 'net';
   owner: string; // 连接标识，断开时清理
+  /** 创建者的 client_id —— 跨控制端隔离的依据（E-01/E-02） */
+  clientId: string;
   description: string;
   createdAt: number;
   count: number;
@@ -186,8 +190,21 @@ function startNetWatch(rec: WatchRecord, intervalMs: number): () => void {
 export interface WatchContext {
   /** 连接标识（用于断开时清理） */
   owner: string;
+  /** 调用方 client_id（跨控制端隔离；缺省视为匿名，彼此可见） */
+  clientId?: string;
   /** 该连接的推送出口 */
   emit: (evt: WatchEvent) => void;
+}
+
+/**
+ * 该 watcher 是否属于 caller。
+ *
+ * 兼容性：`clientId` 为空（匿名 / 老客户端）时**不做隔离** —— 但只要有 client_id，
+ * 隔离就必须生效：否则 B 控制端能看到甚至 `event.unwatch` 掉 A 的订阅（E-01/E-02 实测）。
+ */
+function ownedBy(rec: WatchRecord, callerId: string): boolean {
+  if (!callerId) return true;
+  return !rec.clientId || rec.clientId === callerId;
 }
 
 export async function eventWatch(args: Args, ctx: WatchContext): Promise<unknown> {
@@ -202,6 +219,7 @@ export async function eventWatch(args: Args, ctx: WatchContext): Promise<unknown
     id,
     kind,
     owner: ctx.owner,
+    clientId: ctx.clientId ?? '',
     description: '',
     createdAt: Date.now(),
     count: 0,
@@ -210,8 +228,12 @@ export async function eventWatch(args: Args, ctx: WatchContext): Promise<unknown
   };
 
   if (kind === 'file') {
-    const path = args['path'] as string | undefined;
-    if (!path) throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'file 类型需要 path');
+    const raw = args['path'] as string | undefined;
+    if (!raw) throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'file 类型需要 path');
+    // ⚠️ E-03（实测复现）：file watcher **必须**过 `guardPath`。
+    //    原来 `fs.read` 会被 `fs_roots` 正确拦下，而 `event.watch` 用同一路径却畅通无阻
+    //    —— 白名单形同虚设（可通过事件流观察白名单外的目录变动）。
+    const path = guardPath(raw);
     const recursive = args['recursive'] === true;
     rec.dispose = startFileWatch(rec, path, recursive, pattern);
     rec.description = `文件变动 ${path}${recursive ? '（递归）' : ''}${pattern ? ` pattern=${pattern}` : ''}`;
@@ -227,18 +249,27 @@ export async function eventWatch(args: Args, ctx: WatchContext): Promise<unknown
   return { watch_id: id, kind, description: rec.description };
 }
 
-export async function eventUnwatch(args: Args): Promise<unknown> {
+/** 取消订阅。**只有创建者（同 client_id）能取消** —— 否则任意控制端可掐掉别人的监控。 */
+export async function eventUnwatch(args: Args, ctx?: WatchContext): Promise<unknown> {
   const id = args['watch_id'] as string;
   const rec = watches.get(id);
   if (!rec) return { removed: false };
+  const callerId = ctx?.clientId ?? '';
+  if (!ownedBy(rec, callerId)) {
+    // 明确回报，而不是假装成功（也便于审计追查越权尝试）
+    return { removed: false, reason: `订阅 ${id} 属于其他控制端，无权取消` };
+  }
   rec.dispose();
   watches.delete(id);
   return { removed: true };
 }
 
-export async function eventList(_args: Args): Promise<unknown> {
+/** 列出订阅：**只列自己的**（含匿名创建的）。 */
+export async function eventList(_args: Args, ctx?: WatchContext): Promise<unknown> {
+  const callerId = ctx?.clientId ?? '';
+  const mine = [...watches.values()].filter((w) => ownedBy(w, callerId));
   return {
-    watches: [...watches.values()].map((w) => ({
+    watches: mine.map((w) => ({
       watch_id: w.id,
       kind: w.kind,
       description: w.description,
@@ -249,12 +280,28 @@ export async function eventList(_args: Args): Promise<unknown> {
   };
 }
 
-export async function eventPoll(args: Args): Promise<unknown> {
+/** 拉取事件：只回「属于本 client_id 的订阅」产生的事件。 */
+export async function eventPoll(args: Args, ctx?: WatchContext): Promise<unknown> {
   const limit = Math.max(1, Math.min(500, (args['limit'] as number | undefined) ?? 50));
   const since = (args['since'] as number | undefined) ?? 0;
   const watchId = args['watch_id'] as string | undefined;
+  const callerId = ctx?.clientId ?? '';
+  // watch_id 显式指定时先验归属，避免「猜 id 就能读别人事件」
+  if (watchId) {
+    const rec = watches.get(watchId);
+    if (rec && !ownedBy(rec, callerId)) {
+      throw new CapabilityError(ErrorCodes.ACL_DENIED, `订阅 ${watchId} 属于其他控制端`, { watch_id: watchId });
+    }
+  }
   let list = buffer.filter((e) => e.seq > since);
-  if (watchId) list = list.filter((e) => e.watch_id === watchId);
+  if (watchId) {
+    list = list.filter((e) => e.watch_id === watchId);
+  } else if (callerId) {
+    const allowed = new Set(
+      [...watches.values()].filter((w) => ownedBy(w, callerId)).map((w) => w.id),
+    );
+    list = list.filter((e) => allowed.has(e.watch_id));
+  }
   const sliced = list.slice(0, limit);
   const nextCursor = sliced.length > 0 ? sliced[sliced.length - 1]!.seq : since;
   return { events: sliced, next_cursor: nextCursor, dropped };

@@ -1,6 +1,7 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { runPowerShellSmart } from '../util/ps-helper.js';
+import { shLit } from '../util/quote.js';
 
 type Args = Record<string, unknown>;
 
@@ -132,7 +133,9 @@ async function runWindows(body: string, timeoutMs = 30_000): Promise<string> {
 
 /** macOS：osascript 原生音量控制（静音用 `output muted`，音量用 `output volume`）。 */
 async function runMac(script: string): Promise<string> {
-  const r = await execCommand({ command: `osascript -e ${JSON.stringify(script)}`, timeoutMs: 15_000 });
+  // ⚠️ AppleScript 源码里含用户可控文本 → 必须走 shell 单引号字面量。
+  //    曾用 JSON.stringify（双引号）→ bash 会在双引号内展开 `$(...)` 与反引号（注入面）。
+  const r = await execCommand({ command: `osascript -e ${shLit(script)}`, timeoutMs: 15_000 });
   if (r.exit_code !== 0) {
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, '音频控制失败（osascript）', {
       detail: (r.stderr || r.stdout).slice(0, 300),

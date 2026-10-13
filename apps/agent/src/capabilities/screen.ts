@@ -1,5 +1,6 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { shLit } from '../util/quote.js';
 import { PS_DPI_AWARE } from '../util/dpi.js';
 
 type Args = Record<string, unknown>;
@@ -122,20 +123,50 @@ export async function screenCapture(args: Args): Promise<unknown> {
     region: args['region'] as CaptureOpts['region'],
   };
 
+  /**
+   * ⚠️ S-01（v2.0.3）：region 的合法性检查必须放在**枚举显示器之前**。
+   *
+   * 两道闸的由来：被控端会照 region 直接 `New-Object Bitmap $w,$h`（32bpp ≈ 4×w×h 字节），
+   * 一个 100000×100000 的请求足以吃光内存（≈40GB）→ 进程被杀。
+   * 收敛为「单边 ≤ 16384（常见位图/纹理上限）+ 总像素 ≤ 32M（≈128MB）」。
+   *
+   * 放在枚举之前有两个理由：① 校验不依赖显示器信息，没理由先付出枚举成本；
+   * ② 真要挡住的就是这种请求 —— 让它在任何副作用之前就失败（fail fast）。
+   */
+  if (opts.region) assertRegionSane(opts.region);
+
   const displays = await listDisplays();
   const display = displays[opts.display_id] ?? displays[0];
   if (!display) {
     throw new CapabilityError(ErrorCodes.EXECUTION_FAILED, `显示器 ${opts.display_id} 不存在`);
   }
 
-  // region 缺省 = 整个目标屏；带上多屏偏移
+  // region 缺省 = 整个目标屏；带上多屏偏移。
+  // 缺省值也要过同一道闸：显示器自报异常尺寸时同样不能放行。
   const region = opts.region ?? { x: display.x, y: display.y, width: display.width, height: display.height };
-  if (region.width < 1 || region.height < 1) {
-    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'region 宽高必须 ≥ 1', { region });
-  }
+  assertRegionSane(region);
 
   if (IS_WINDOWS) return captureWindows(opts, region);
   return capturePosix(opts, region);
+}
+
+/** region 上界校验（S-01）。缺省值与显式传入走**同一份**判据，避免两处漂移。 */
+function assertRegionSane(region: NonNullable<CaptureOpts['region']>): void {
+  if (region.width < 1 || region.height < 1) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'region 宽高必须 ≥ 1', { region });
+  }
+  const MAX_EDGE = 16384;
+  const MAX_PIXELS = 33_554_432;
+  if (region.width > MAX_EDGE || region.height > MAX_EDGE || region.width * region.height > MAX_PIXELS) {
+    throw new CapabilityError(
+      ErrorCodes.PARAM_INVALID,
+      `region 过大：单边须 ≤ ${MAX_EDGE} 且总像素 ≤ ${MAX_PIXELS}（当前 ${region.width}×${region.height}）`,
+      { region, max_edge: MAX_EDGE, max_pixels: MAX_PIXELS },
+    );
+  }
+  if (![region.x, region.y, region.width, region.height].every((n) => Number.isFinite(n))) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'region 必须都是有限数字', { region });
+  }
 }
 
 /** captureWindows 下发给 PowerShell 的脚本（导出**仅供单测断言**，同 buildListDisplaysScript）。 */
@@ -226,7 +257,7 @@ async function capturePosix(
 
   // macOS 用 screencapture；区域用 -R x,y,w,h
   const cmd =
-    `screencapture -x -t ${ext} -R ${region.x},${region.y},${region.width},${region.height} ${JSON.stringify(file)}`;
+    `screencapture -x -t ${ext} -R ${region.x},${region.y},${region.width},${region.height} ${shLit(file)}`;
   const r = await execCommand({ command: cmd, timeoutMs: 30_000 });
   if (r.exit_code !== 0) {
     throw new CapabilityError(ErrorCodes.UNSUPPORTED_PLATFORM, '当前平台截屏不可用（需要 macOS 屏幕录制权限）', {

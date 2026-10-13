@@ -19,6 +19,15 @@ import { logQuery, monitorStart, monitorReport, monitorStop, monitorList, monito
 export interface HandlerContext {
   /** 连接标识（事件订阅归属 / 断开清理） */
   owner: string;
+  /**
+   * 调用方身份（`client_id`）。用于**跨控制端隔离**：
+   * 事件订阅的 list / unwatch / poll 只暴露给「创建它的那个 client_id」。
+   *
+   * 为什么按 client_id 而不是连接：同一次工作的多个连接（如 MCP 每次调用新建连接、
+   * CLI 的 watch 与 poll 分属两个进程）必须能互相看到自己的订阅，否则语义就断了。
+   * psk 模式下 client_id 由客户端自报（配置级约束）；ed25519 + 每客户端独立 PSK 下身份才被真正绑定。
+   */
+  clientId?: string;
   /** 向该连接推送事件 */
   emit: (evt: unknown) => void;
 }

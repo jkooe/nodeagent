@@ -5,6 +5,7 @@ import { agentDir } from './config.js';
 import {
   judgeAnchors,
   parseAnchorsFromJsonl,
+  AUDIT_TYPES,
   type AnchorComparison,
   type AnchorRecord,
 } from '@nodeagent/protocol';
@@ -25,7 +26,37 @@ export type AuditType =
   /** v19：agent 自更新（拉取式） */
   | 'agent.update'
   /** v2.0.0：连接空闲被主动断开 */
-  | 'session.idle_close';
+  | 'session.idle_close'
+  /**
+   * v2.0.3：**被拒的请求**统一留痕。
+   *
+   * 为什么单独一个类型：原来「畸形报文 / 未知方法 / 未认证调用 / 参数非法 / 能力不存在」
+   * 这类拒绝**完全不留痕**（U-01）—— 被扫描、被爆破、被误用时事后无从复盘。
+   * 归到 `invoke` 会污染正常调用统计，归到 `acl.denied` 又不准确（很多拒绝与 ACL 无关）。
+   */
+  | 'request.rejected'
+  /**
+   * v2.0.3：**进程级未捕获错误 / 未处理 Promise 拒绝**。
+   *
+   * 为什么单独一个类型：这类错误是「最后一次兜底拦截」（`index.ts` 的
+   * `unhandledRejection` / `uncaughtException`）。既然选择了**不退出进程**，
+   * 就必须留下证据 —— 归到 `request.rejected` 会让「被扫描」与「我们自己有 bug」
+   * 混在同一类里，事后无法区分。
+   */
+  | 'agent.error';
+
+/**
+ * 编译期守卫（v2.0.3，修 C-01）：本文件这份联合类型必须与 `@nodeagent/protocol` 的
+ * `AUDIT_TYPES` **双向一致**。
+ *
+ * 少了 → 「写进日志但协议不认」（控制台筛不到，用户以为没发生）；
+ * 多了 → 「协议认但从不写」（下拉框里是个永远为空的选项）。
+ * 两种漂移都**不报错**，所以必须让 `tsc` 来说话。真正的真源在
+ * `packages/protocol/src/audit-types.ts`，此处保留逐条注释只为记录「哪个版本引入的」。
+ */
+type AssertExact<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
+const _auditTypeInSyncWithProtocol: AssertExact<AuditType, (typeof AUDIT_TYPES)[number]> = true;
+void _auditTypeInSyncWithProtocol;
 
 /** 一条审计记录（JSONL 单行）。 */
 export interface AuditEntry {

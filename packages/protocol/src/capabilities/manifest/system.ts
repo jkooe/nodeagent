@@ -1,6 +1,8 @@
 import type { CapabilityDescriptor } from '../../messages.js';
 import { CapabilityNames } from '../names.js';
 import { filterSchema } from '../schemas.js';
+// ⚠️ 审计类型的**唯一真源**（v2.0.3，修 C-01）：enum 不再手写，否则必然与控制台下拉框漂移。
+import { AUDIT_FILTER_TYPES } from '../../audit-types.js';
 
 /** system 组能力清单 */
 export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
@@ -205,7 +207,15 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
         limit: { type: 'integer', default: 50, minimum: 1, maximum: 1000 },
         since: { type: 'integer', description: '仅返回该时间戳（Unix 毫秒）之后的记录' },
         client_id: { type: 'string', description: '按调用方筛选' },
-        type: { type: 'string', enum: ['invoke', 'auth', 'acl', 'agent'], description: '按事件类别筛选' },
+        // ⚠️ enum 由 `AUDIT_FILTER_TYPES` 派生（真源见 packages/protocol/src/audit-types.ts）。
+        //    曾经手写成 `['invoke','auth','acl','agent']`，而控制台下拉框给的是细粒度取值
+        //    → 除 `invoke` 外全被判 E_PARAM_INVALID（C-01，静默失效）。
+        //    被控端按 `startsWith` 过滤，故精确类型与粗粒度前缀都是合法取值。
+        type: {
+          type: 'string',
+          enum: [...AUDIT_FILTER_TYPES],
+          description: '按事件类别筛选（前缀匹配，如 auth 命中 auth.success/auth.failure）',
+        },
       },
       additionalProperties: false,
     },

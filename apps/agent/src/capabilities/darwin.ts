@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { shLit } from '../util/quote.js';
 import { agentDir } from '../config.js';
 
 type Args = Record<string, unknown>;
@@ -344,7 +345,7 @@ export async function macScreenFind(args: Args): Promise<unknown> {
   try {
     for (;;) {
       const cap = await execCommand({
-        command: `screencapture -x -t png -R ${captureRegion.x},${captureRegion.y},${captureRegion.width},${captureRegion.height} ${JSON.stringify(shot)}`,
+        command: `screencapture -x -t png -R ${captureRegion.x},${captureRegion.y},${captureRegion.width},${captureRegion.height} ${shLit(shot)}`,
         timeoutMs: 30_000,
       });
       if (cap.exit_code !== 0) {
@@ -359,8 +360,10 @@ export async function macScreenFind(args: Args): Promise<unknown> {
       const scale =
         img && captureRegion.width > 0 ? img.width / captureRegion.width : 1;
 
+      // ⚠️ `text` 来自控制端，`bin`/`shot` 是内部路径 —— 一律 shLit 包成 shell 单引号字面量。
+      //    曾用 JSON.stringify（双引号）→ `$(touch /tmp/p)` 会被 bash 执行（P1 D-01，实测复现）。
       const r = await execCommand({
-        command: `${JSON.stringify(bin)} ${JSON.stringify(shot)} ${JSON.stringify(text)}`,
+        command: `${shLit(bin)} ${shLit(shot)} ${shLit(text)}`,
         timeoutMs: 60_000,
         maxOutputBytes: 4 * 1024 * 1024,
       });

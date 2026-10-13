@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execCommand } from './exec.js';
+import { isSafeBareWindowsPathArg } from './quote.js';
 
 /**
  * PowerShell 常驻助手（v14）。
@@ -438,8 +439,18 @@ export async function runPowerShellSmart(opts: RunPsOptions): Promise<{ stdout: 
   const dir = mkdtempSync(join(tmpdir(), 'na-ps-'));
   const scriptPath = join(dir, 'run.ps1');
   writeFileSync(scriptPath, `\uFEFF${prelude}\n${body}`, 'utf8');
+  // ⚠️ 这里**只能裸拼**路径：`-File` 的引号由 powershell.exe 自己的命令行解析器处理，
+  //    塞 PS 单引号字面量进去不保证被剥掉。既然裸拼，就必须**显式**确认路径里没有
+  //    会改变解析的字符（引号/$/&/|/^/…）—— 正常它由 mkdtempSync 生成，但 TMP 被设成
+  //    怪路径时前提就破了，而且破了也是静默的（与 W-01 同类）。破前提就当场报错。
+  if (!isSafeBareWindowsPathArg(scriptPath)) {
+    throw new Error(
+      `PowerShell 临时脚本路径含可能改变命令行解析的字符，拒绝拼接：${JSON.stringify(scriptPath)}` +
+        '（请检查 TMP/TEMP 或用户目录名）',
+    );
+  }
   const r = await execCommand({
-    command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${JSON.stringify(scriptPath)}`,
+    command: `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${scriptPath}`,
     timeoutMs,
   });
   if (r.exit_code !== 0) {

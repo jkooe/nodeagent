@@ -63,6 +63,24 @@ test('CIDR：非法输入不误放行（IPv6/主机名/越界位）', () => {
   assert.equal(ipMatchesCidr('192.168.1.999', '192.168.1.0/24'), false);
 });
 
+test('F-01：空的掩码位数必须判非法，不得被当成 /0 而放行全部', () => {
+  // 真机复现：原来只做 `Number.isFinite(Number(bitsRaw))`，而 **Number('') === 0**
+  // → '10.0.0.0/' 被当成 /0 = 匹配全部，于是 `ipMatchesCidr('8.8.8.8','10.0.0.0/')` 返回 true。
+  // 这类「配置写漏了却被读成最宽松」的形态最危险：不报错、且方向正好相反。
+  assert.equal(ipMatchesCidr('8.8.8.8', '10.0.0.0/'), false, '空掩码不得被当成 /0');
+  assert.equal(ipMatchesCidr('10.0.0.1', '10.0.0.0/'), false);
+  assert.equal(ipMatchesCidr('8.8.8.8', '0.0.0.0/'), false);
+  // 其它畸形位长同样不得放行
+  assert.equal(ipMatchesCidr('8.8.8.8', '0.0.0.0/  '), false);
+  assert.equal(ipMatchesCidr('8.8.8.8', '0.0.0.0/+0'), false);
+  assert.equal(ipMatchesCidr('8.8.8.8', '0.0.0.0/0x0'), false);
+  assert.equal(ipMatchesCidr('8.8.8.8', '0.0.0.0/-1'), false);
+  // 对照组（铁律 20：预期逐条推演，别把正确行为误报成缺陷）
+  assert.equal(ipMatchesCidr('8.8.8.8', '0.0.0.0/0'), true, '显式的 /0 是合法的「匹配全部」');
+  assert.equal(ipMatchesCidr('10.0.0.0', '10.0.0.0/32'), true, '/32 只含这一个地址');
+  assert.equal(ipMatchesCidr('10.0.0.1', '10.0.0.0/32'), false, '/32 不含 10.0.0.1');
+});
+
 test('IP 白名单：deny 优先、白名单为空则放行', () => {
   assert.equal(ipAllowed({ client_id: 'a', allow: [] }, '1.2.3.4').allowed, true);
   assert.equal(

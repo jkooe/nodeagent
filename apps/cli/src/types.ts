@@ -1,6 +1,10 @@
 // CLI 共享类型与常量（从 index.ts 拆出）
 /** 已解析的常用选项。 */
 export interface Options {
+  /** 打印帮助后退出（`--help` / `-h`）。选项而非位置参数 */
+  help: boolean;
+  /** 关闭 TLS（`--no-tls`）。原来是直接扫 process.argv，现归位到解析器 */
+  noTls: boolean;
   json: boolean;
   insecure: boolean;
   port?: string;

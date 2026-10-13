@@ -74,9 +74,27 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
   const capabilityRegistry = createCapabilityRegistry(cfg);
   /** v3：本次实例采用的认证模式（psk 向后兼容 / ed25519 零信任） */
   const authMode: 'psk' | 'ed25519' = cfg.auth_mode === 'ed25519' ? 'ed25519' : 'psk';
-  const aclPolicy = cfg.acl ?? { default_effect: 'deny' as const, clients: [] };
-  /** 只要配置了 ACL 就启用能力级授权（无论 psk 还是 ed25519）。 */
-  const hasAcl = Boolean(cfg.acl?.clients?.length);
+  /**
+   * ACL 策略归一化。
+   *
+   * ⚠️ A-01（真机实测，P0）：`clients` 必须在**这里**补齐成数组。
+   *    原实现只写 `cfg.acl ?? {…, clients: []}` —— 当用户配置 `{"acl":{"default_effect":"deny"}}`
+   *    （很自然的写法，省略空的 clients）时，`cfg.acl` 非空 → `??` 不兜底 →
+   *    `aclPolicy.clients` 为 `undefined` → 后面无条件执行 `.find()` → **每次 invoke 都崩掉被控端进程**。
+   */
+  const aclPolicy = {
+    default_effect: cfg.acl?.default_effect === 'allow' ? ('allow' as const) : ('deny' as const),
+    clients: Array.isArray(cfg.acl?.clients) ? cfg.acl.clients : [],
+  };
+  /**
+   * 只要**配置了 ACL 对象**就启用能力级授权（无论 psk 还是 ed25519）。
+   *
+   * ⚠️ A-02（真机实测，P1）：判据必须是「对象是否存在」，**不能**用 `clients.length`。
+   *    原实现 `Boolean(cfg.acl?.clients?.length)` 在 `{"acl":{"default_effect":"deny","clients":[]}}`
+   *    时得到 `false` → 整段 ACL 校验被跳过 → **fail-open 全放行**（配置写着默认拒绝却全通）。
+   *    空 clients 的正确语义是「没有任何调用方被授权」，即拒绝一切（由 default_effect 决定）。
+   */
+  const hasAcl = Boolean(cfg.acl);
 
   /** 按调用方的滑动窗口限速（每分钟）。 */
   const rateBuckets = new Map<string, number[]>();
@@ -114,14 +132,37 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
 
   function handleHello(ws: WebSocket, state: ConnState, req: RpcRequest): void {
     const params = req.params as HelloParams | undefined;
-    const proto = params?.protocol ?? '';
+    // ⚠️ B-01（真机实测，P1）：`protocol` 必须先做**类型**校验再 `.split()`。
+    //    原实现 `params?.protocol ?? ''` 对 `protocol: 123` 得到数字 → `proto.split` 抛
+    //    TypeError → 未捕获的 rejection → Node ≥22 直接终止被控端进程（**免认证即可打崩**）。
+    const rawProto = params?.protocol;
+    if (typeof rawProto !== 'string' || rawProto === '') {
+      log('warn', `握手失败：protocol 非法（${typeof rawProto}）`);
+      audit({
+        type: 'request.rejected',
+        remote: state.remote,
+        status: 'denied',
+        reason: `hello.protocol 类型非法: ${typeof rawProto}`,
+      });
+      sendError(ws, req.id, ErrorCodes.PARAM_INVALID, 'hello 的 protocol 必须是形如 "1.0" 的字符串', {
+        got: typeof rawProto,
+      });
+      return;
+    }
+    const proto = rawProto;
     if (proto.split('.')[0] !== PROTOCOL_VERSION.split('.')[0]) {
+      audit({
+        type: 'request.rejected',
+        remote: state.remote,
+        status: 'denied',
+        reason: `协议版本不兼容: 客户端 ${proto}`,
+      });
       sendError(ws, req.id, ErrorCodes.PROTOCOL_MISMATCH, `协议版本不兼容: 客户端 ${proto}，服务端 ${PROTOCOL_VERSION}`);
       return;
     }
     state.nonce = generateNonce();
     state.nonceExpiresAt = Date.now() + NONCE_TTL_MS;
-    state.clientId = params?.client_id ?? null;
+    state.clientId = typeof params?.client_id === 'string' ? params.client_id : null;
     // 新一轮握手开始：清除上一轮的认证态与授权
     // （Hub 模式下同一连接会被不同控制端先后复用，必须重置，否则存在越权风险）
     state.authenticated = false;
@@ -147,12 +188,16 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       failOut('挑战已过期，请重新握手');
       return;
     }
+    // ⚠️ B-02（真机实测，P1）：nonce / hmac / signature 都要先做类型校验。
+    //    `params?.nonce !== state.nonce` 对数字、对象等都只会走「不匹配」分支 —— 这步安全；
+    //    真正致命的是下一段：把 `hmac:1` 交给 `verifyHmac` → `Buffer.from(1, 'hex')` 抛
+    //    `ERR_INVALID_ARG_TYPE` → 未捕获 rejection → 进程终止（免认证即可打崩）。
     if (params?.nonce !== state.nonce) {
       log('warn', '握手失败：nonce 不匹配');
       failOut('nonce 不匹配', '请用 hello 返回的 nonce 计算签名');
       return;
     }
-    const clientId = params.client_id ?? '?';
+    const clientId = typeof params.client_id === 'string' ? params.client_id : '?';
     let authorized: string[] | null = null;
     let keyKindUsed = 'ed25519';
 
@@ -163,7 +208,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
         failOut(`调用方未在 ACL 中注册: ${clientId}`, '在被控端 acl.clients 中加入该 client_id 与公钥');
         return;
       }
-      if (!verifyNonce(client.pubkey, state.nonce, params.signature ?? '')) {
+      if (!verifyNonce(client.pubkey, state.nonce, typeof params.signature === 'string' ? params.signature : '')) {
         log('warn', `鉴权失败（Ed25519 验签不通过）client_id=${clientId}`);
         failOut('Ed25519 签名校验失败', '确认用的是该 client_id 对应的私钥');
         return;
@@ -176,10 +221,24 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     } else {
       // v22：优先用「该 client_id 专属的钥匙」，未登记才回落到共享 key。
       // 这样「知道 key A」就只能以 A 的身份进来 —— ACL 的身份维度在 psk 模式下才有意义。
-      const scopedKey = cfg.keys?.[clientId];
+      //
+      // ⚠️ B-03（真机实测，P1）：必须用 **own-property** 判断，不能直接 `cfg.keys?.[clientId]`。
+      //    `client_id:"constructor"` 会沿原型链取到 `Object.prototype.constructor`（一个函数）
+      //    并被当作 HMAC 密钥 → `Buffer.from(function…)` 抛错 → 进程终止。
+      const hasScopedKey = Boolean(cfg.keys && Object.prototype.hasOwnProperty.call(cfg.keys, clientId));
+      const scopedKey = hasScopedKey ? cfg.keys![clientId] : undefined;
       const keyForClient = scopedKey ?? cfg.key;
       const keyKind = scopedKey ? 'scoped' : cfg.keys ? 'shared-fallback' : 'shared';
-      if (!keyForClient || !verifyHmac(keyForClient, state.nonce, params.hmac ?? '')) {
+      // ⚠️ B-02：hmac 同样要做类型校验 + verifyHmac 自身不得把异常泄漏到顶层
+      const hmac = typeof params.hmac === 'string' ? params.hmac : '';
+      let hmacOk = false;
+      try {
+        hmacOk = Boolean(keyForClient) && hmac !== '' && verifyHmac(keyForClient as string, state.nonce, hmac);
+      } catch (err) {
+        log('warn', `鉴权失败（HMAC 计算异常）：${err instanceof Error ? err.message : String(err)}`);
+        hmacOk = false;
+      }
+      if (!hmacOk) {
         log('warn', `鉴权失败 client_id=${clientId} key=${keyKind}`);
         failOut('预共享密钥校验失败', scopedKey
           ? '该 client_id 有专属密钥，需用那把 key'
@@ -220,11 +279,17 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
 
   async function handleInvoke(ws: WebSocket, state: ConnState, req: RpcRequest): Promise<void> {
     if (!state.authenticated) {
+      audit({
+        type: 'request.rejected',
+        remote: state.remote,
+        status: 'denied',
+        reason: '未完成认证即调用能力',
+      });
       sendError(ws, req.id, ErrorCodes.AUTH_REQUIRED, '未完成认证，请先握手');
       return;
     }
     const params = req.params as InvokeParams | undefined;
-    const name = params?.capability ?? '';
+    const name = typeof params?.capability === 'string' ? params.capability : '';
 
     // 能力级 ACL：只要被控端配置了 ACL 即执行（deny 优先 → allow → 默认拒绝）。
     // 注：psk 模式下 client_id 由客户端自报，此为「配置级约束」；对抗恶意调用方仍需 ed25519 绑定身份。
@@ -252,6 +317,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     }
 
     // v3+：按调用方滑动窗口限速（ACL 的 rate_limits 按能力覆盖，未命中回退 max_calls_per_min）
+    // 注：aclPolicy.clients 已在 createAgentCore 里归一成数组（A-01），这里取不到就是 undefined。
     const clientRule = aclPolicy.clients.find((c) => c.client_id === state.clientId);
 
     // v11：来源 IP 白/黑名单 + 生效时段（仅在已配置该 client 规则时生效）
@@ -315,6 +381,14 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     const cap = findCapability(name);
     const handler = capabilityRegistry[name];
     if (!cap || !handler) {
+      audit({
+        type: 'request.rejected',
+        client_id: state.clientId ?? undefined,
+        remote: state.remote,
+        capability: name,
+        status: 'denied',
+        reason: `不支持的能力: ${name}`,
+      });
       sendError(ws, req.id, ErrorCodes.CAPABILITY_NOT_FOUND, `不支持的能力: ${name}`, { capability: name });
       return;
     }
@@ -322,6 +396,15 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     const args = (params?.args ?? {}) as Record<string, unknown>;
     const errors = validate(args, cap.params_schema);
     if (errors.length > 0) {
+      // ⚠️ U-01：拒绝必须留痕（探测行为若不留审计，事后无法复盘被谁、用什么参数试过）
+      audit({
+        type: 'request.rejected',
+        client_id: state.clientId ?? undefined,
+        remote: state.remote,
+        capability: name,
+        status: 'denied',
+        reason: `参数校验失败: ${errors.slice(0, 3).join('; ')}`,
+      });
       sendError(ws, req.id, ErrorCodes.PARAM_INVALID, '参数校验失败', { errors });
       return;
     }
@@ -333,6 +416,7 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       // v12：把连接上下文交给能力处理器（事件订阅需要「谁订阅的」与「往哪推」）
       const data = await handler(finalArgs, {
         owner: state.connId,
+        clientId: state.clientId ?? '',
         emit: (evt: unknown) => send(ws, { jsonrpc: '2.0', method: 'event', params: evt }),
       });
       const duration = Date.now() - started;
@@ -379,10 +463,18 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
     try {
       req = JSON.parse(text) as RpcRequest;
     } catch {
+      audit({ type: 'request.rejected', remote: states.get(ws)?.remote, status: 'denied', reason: '无法解析 JSON' });
       sendError(ws, null, ErrorCodes.PARSE_ERROR, '无法解析 JSON');
       return;
     }
     if (req?.jsonrpc !== '2.0' || typeof req.id !== 'string' || typeof req.method !== 'string') {
+      // 信封非法：可能是扫描器/协议错误，也留一条痕（原实现完全静默）
+      audit({
+        type: 'request.rejected',
+        remote: states.get(ws)?.remote,
+        status: 'denied',
+        reason: `请求信封无效（jsonrpc=${typeof req?.jsonrpc} id=${typeof req?.id} method=${typeof req?.method}）`,
+      });
       sendError(ws, typeof req?.id === 'string' ? req.id : null, ErrorCodes.INVALID_REQUEST, '请求信封无效');
       return;
     }
@@ -401,6 +493,12 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
         return;
       case Methods.Capabilities:
         if (!state.authenticated) {
+          audit({
+            type: 'request.rejected',
+            remote: state.remote,
+            status: 'denied',
+            reason: '未认证即拉取能力清单',
+          });
           sendError(ws, req.id, ErrorCodes.AUTH_REQUIRED, '未完成认证');
           return;
         }
@@ -410,6 +508,13 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
         sendResult(ws, req.id, { pong: true, ts: Date.now() });
         return;
       default:
+        audit({
+          type: 'request.rejected',
+          client_id: state.clientId ?? undefined,
+          remote: state.remote,
+          status: 'denied',
+          reason: `未知方法: ${req.method}`,
+        });
         sendError(ws, req.id, ErrorCodes.METHOD_NOT_FOUND, `未知方法: ${req.method}`);
     }
   }
@@ -481,7 +586,19 @@ export function createAgentCore(cfg: AgentConfig): AgentCore {
       // v2.0.0：任何入站消息都算活跃（空闲断开以"完全静默"为准，不是"没有调用能力"）
       const st = states.get(ws);
       if (st) st.lastActiveAt = Date.now();
-      void handleMessage(ws, raw.toString());
+      // ⚠️ 崩溃链根因（P0/P1 多条共用）：原来这里是 `void handleMessage(...)` ——
+      //    Promise 一旦 reject 就成为 unhandled rejection，Node ≥22 默认**终止进程**。
+      //    「畸形 hello」「畸形 auth」之所以能把被控端打崩，靠的就是这条路径。
+      //    这里显式兜底：任何处理异常只记日志 + 回一个错误响应，绝不冒泡到进程级。
+      void handleMessage(ws, raw.toString()).catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        log('warn', `处理消息时发生未预期异常（已拦截，不影响进程）：${msg}`);
+        try {
+          sendError(ws, null, ErrorCodes.EXECUTION_FAILED, '服务端处理消息时发生未预期异常', { detail: msg });
+        } catch {
+          /* 连接可能已关闭 */
+        }
+      });
     });
     ws.on('close', () => {
       log('info', `连接关闭: ${remote}`);

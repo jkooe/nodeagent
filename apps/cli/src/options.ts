@@ -38,6 +38,11 @@ export function parseOptions(rest: string[]): { opts: Options; positionals: stri
   const { values, positionals } = parseArgs({
     args: rest,
     options: {
+      // ⚠️ 这两个是 L-01 同类问题的「漏网之鱼」，由 cli-options 守卫扫出（v2.0.3）：
+      //    `--help` 原来靠 positionals[0]===undefined 偶然命中；`--no-tls` 则绕过解析器
+      //    直接在 cmd/conn.ts 里扫 `process.argv`。两者都是「能跑，但没接进解析器」。
+      help: { type: 'boolean', default: false },
+      'no-tls': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
       insecure: { type: 'boolean', default: false },
       port: { type: 'string' },
@@ -89,6 +94,12 @@ export function parseOptions(rest: string[]): { opts: Options; positionals: stri
       delay: { type: 'string' },
       // v10 后台任务 / 剪贴板
       'timeout-ms': { type: 'string' },
+      // ⚠️ L-01（v2.0.3 修）：`--timeout` 曾经**没在这里声明**。因为 `strict: false`，
+      //    未声明选项会被当成 boolean 塞进 `values.timeout`（`true`），而它的值
+      //    `30000` 则掉进 `positionals` —— 于是 `--timeout` 静默失效，
+      //    并且**污染位置参数**（可能把子命令/主机名解析错）。
+      //    帮助文本与 `cmd/gui.ts` 的 await 命令用的都是 `--timeout`，故必须显式声明。
+      timeout: { type: 'string' },
       kill: { type: 'boolean', default: false },
       offset: { type: 'string' },
       set: { type: 'string' },
@@ -126,6 +137,8 @@ export function parseOptions(rest: string[]): { opts: Options; positionals: stri
   });
   return {
     opts: {
+      help: Boolean(values['help']),
+      noTls: Boolean(values['no-tls']),
       json: Boolean(values['json']),
       insecure: Boolean(values['insecure']),
       port: values['port'] as string | undefined,
@@ -165,7 +178,9 @@ export function parseOptions(rest: string[]): { opts: Options; positionals: stri
       discoveryPort: values['discovery-port'] as string | undefined,
       node: values['node'] as string | undefined,
       delay: values['delay'] as string | undefined,
-      timeoutMs: values['timeout-ms'] as string | undefined,
+      // 两个写法都接受：`--timeout` 是帮助文本/`await` 命令里的正式写法，
+      // `--timeout-ms` 是早期在 `bg` 命令里引入的别名。二者同时给时以 `--timeout` 为准。
+      timeoutMs: (values['timeout'] ?? values['timeout-ms']) as string | undefined,
       kill: Boolean(values['kill']),
       offset: values['offset'] as string | undefined,
       set: values['set'] as string | undefined,

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   appendFileSync,
   closeSync,
@@ -7,6 +7,7 @@ import {
   openSync,
   readSync,
   readdirSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -26,9 +27,49 @@ const HASH_LIMIT_BYTES = 8 * 1024 * 1024;
 let allowedRoots: string[] = [];
 
 export function setFsRoots(roots: string[] | undefined): void {
-  allowedRoots = (roots ?? []).map((r) => resolve(r));
+  // 白名单根也做一次 realpath 归一：否则「配置里写的是软链」会与后面 realpath 后的路径对不上
+  allowedRoots = (roots ?? []).map((r) => realPathBestEffort(resolve(r)));
 }
 
+/**
+ * 尽力取真实路径（解析符号链接）。
+ *
+ * - 路径存在 → 直接 `realpathSync`
+ * - 不存在（写入场景很常见）→ 向上找到**最近的已存在祖先**做 realpath，再把剩余段拼回去
+ *
+ * 这样即便目标文件本身还不存在，也能正确判断「它最终会落在哪里」，
+ * 从而拦住「用软链接把访问点引到白名单之外」这一类绕过。
+ */
+function realPathBestEffort(abs: string): string {
+  try {
+    return realpathSync.native(abs);
+  } catch {
+    /* 继续向上找 */
+  }
+  const parts: string[] = [];
+  let cur = abs;
+  for (;;) {
+    const parent = dirname(cur);
+    if (parent === cur) return abs; // 到根了仍不存在 → 原样返回
+    parts.unshift(cur.slice(parent.length + (parent.endsWith(sep) ? 0 : 1)));
+    try {
+      const base = realpathSync.native(parent);
+      return parts.length > 0 ? join(base, ...parts) : base;
+    } catch {
+      cur = parent;
+    }
+  }
+}
+
+/**
+ * 路径白名单守卫（v5）。
+ *
+ * ⚠️ 两道防线，缺一不可：
+ *   1. **解析符号链接后的真实路径**再做包含判断 —— 只比较字面路径时，
+ *      `白名单/a_软链 → /etc` 这样的路径能直接穿出去（绕过 `fs_roots`）。
+ *   2. 前缀比较必须带上分隔符（`/root` 不得匹配 `/rootX`），且大小写按平台归一
+ *      （Windows 文件系统不区分大小写）。
+ */
 export function guardPath(input: string): string {
   if (typeof input !== 'string' || input.length === 0) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'path 不能为空');
@@ -36,14 +77,20 @@ export function guardPath(input: string): string {
   const abs = resolve(input);
   if (allowedRoots.length === 0) return abs;
 
-  const ok = allowedRoots.some((root) => {
-    if (abs === root) return true;
+  const real = realPathBestEffort(abs);
+  const norm = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const target = norm(real);
+
+  const ok = allowedRoots.some((rootRaw) => {
+    const root = norm(rootRaw);
+    if (target === root) return true;
     const prefix = root.endsWith(sep) ? root : root + sep;
-    return abs.startsWith(prefix);
+    return target.startsWith(prefix);
   });
   if (!ok) {
     throw new CapabilityError(ErrorCodes.ACL_DENIED, `路径不在允许范围内: ${abs}`, {
       allowed_roots: allowedRoots,
+      resolved: real,
     });
   }
   return abs;
@@ -207,8 +254,10 @@ export async function fsWrite(args: Args): Promise<unknown> {
     if (append) {
       appendFileSync(p, buf);
     } else {
-      // 原子写：先写临时文件再重命名，避免中途失败留下半截文件
-      const tmp = `${p}.nodeagent-tmp-${process.pid}`;
+      // 原子写：先写临时文件再重命名，避免中途失败留下半截文件。
+      // ⚠️ 临时名必须**唯一**：原来只用 PID，同一进程内并发写同一路径（或两个会话同时写）
+      //    会互相踩对方的 tmp（先完成的 rename 走后，后一个 renameSync 会 ENOENT 失败）。
+      const tmp = `${p}.nodeagent-tmp-${process.pid}-${randomBytes(4).toString('hex')}`;
       writeFileSync(tmp, buf);
       renameSync(tmp, p);
     }

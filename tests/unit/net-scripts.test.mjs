@@ -58,8 +58,17 @@ test('apply：不得使用会在 Win11 挂起的 netsh set address', () => {
 
 test('apply(dhcp)：切 DHCP 用原生 cmdlet', () => {
   const s = buildApplyCommand('dhcp', 'Ethernet', { mode: 'dhcp' }, snap);
-  assert.match(s, /Set-NetIPInterface -InterfaceAlias "Ethernet" -Dhcp Enabled/);
+  // ⚠️ 断言方向在 v2.0.3 **翻转过**：原来写的是 `-InterfaceAlias "Ethernet"`（双引号）。
+  //    双引号形态正是 W-01 的根因 —— PS 双引号串会做变量插值与 `$(...)` 展开，
+  //    而 `JSON.stringify` 产出的 `\"` 在 PS 里根本不是转义（PS 用反引号）。
+  //    现在接口名统一走 `psLit()`（单引号字面量，什么都不展开）。
+  //    「CI 断言会过期、而且方向可能反」—— 这条就是活的例子。
+  assert.match(s, /Set-NetIPInterface -InterfaceAlias 'Ethernet' -Dhcp Enabled/);
   assert.match(s, /Set-DnsClientServerAddress/);
+  assert.ok(
+    !/Set-NetIPInterface[^\n]*"/.test(s),
+    '接口名不得再出现在双引号串里（PS 双引号会插值，`${`…`}` 形同注入入口）',
+  );
 });
 
 test('自检：失败时自动执行回滚脚本（自愈）', () => {
@@ -67,7 +76,8 @@ test('自检：失败时自动执行回滚脚本（自愈）', () => {
   assert.match(chk, /Get-NetIPAddress/);
   assert.match(chk, /192\.168\.1\.88/, '应校验目标地址是否真的生效');
   assert.match(chk, /selfcheck FAILED -> auto rollback/);
-  assert.match(chk, /& "C:\/rb\.ps1"/, '失败必须回滚，而不是把机器留在无地址状态');
+  // 同上：路径改为 PS 单引号字面量（原为 `& "C:/rb.ps1"`）
+  assert.match(chk, /& 'C:\/rb\.ps1'/, '失败必须回滚，而不是把机器留在无地址状态');
 });
 
 test('rollback：同样先加后清 + 先清路由（否则回滚自己也会失败）', () => {

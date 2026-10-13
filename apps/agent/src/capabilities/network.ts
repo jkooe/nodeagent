@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { join } from 'node:path';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { psLit as psLitShared, shLit } from '../util/quote.js';
 import { agentDir } from '../config.js';
 import { audit } from '../audit.js';
 import { extractPsError } from '../util/ps-helper.js';
@@ -59,7 +60,7 @@ async function runPsFile(script: string, timeoutMs: number, tag = 'ps'): Promise
   const path = join(dir, `${tag}-${Date.now()}.ps1`);
   writeFileSync(path, withBom(script), 'utf8');
   return execCommand({
-    command: `powershell -NoProfile -ExecutionPolicy Bypass -File ${JSON.stringify(path)}`,
+    command: `powershell -NoProfile -ExecutionPolicy Bypass -File ${psLit(path)}`,
     timeoutMs,
   });
 }
@@ -83,10 +84,10 @@ export function withBom(content: string): string {
  *    曾经用 JSON.stringify（双引号）或手动把 \ 翻倍当转义，结果生成 `C:\\Users\\...`
  *    这种非法路径 → Out-File 失败 → 计划任务退出码 1 且不留日志（真机踩过）。
  *    需要字面量时一律走本函数；需要插值时用双引号但避免反斜杠。
+ *
+ * 注：实现已收敛到 `util/quote.ts`（单一真源），此处保留同名导出以兼容既有引用与测试。
  */
-export function psLit(v: string): string {
-  return `'${v.replace(/'/g, "''")}'`;
-}
+export const psLit = psLitShared;
 
 /**
  * 生成「注册一次性计划任务」的 PowerShell 脚本（唯一实现，两处复用）。
@@ -173,7 +174,7 @@ export interface IfaceSnapshot {
 async function snapshotIface(iface: string): Promise<IfaceSnapshot> {
   const script = `
 $ErrorActionPreference='Continue'
-$a = ${JSON.stringify(iface)}
+$a = ${psLit(iface)}
 $o = [ordered]@{ alias = $a; dhcp = $false; ipv4 = @(); gateway = @(); dns = @() }
 $ipif = Get-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue
 if ($ipif) { $o.dhcp = ($ipif.Dhcp -eq 'Enabled') }
@@ -210,7 +211,7 @@ $o | ConvertTo-Json -Compress -Depth 4
 
 /** 由结构化快照生成**原生 cmdlet** 回滚脚本（不用 netsh set —— 它在 Win11 上会挂起）。 */
 export function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logPath: string): string {
-  const a = JSON.stringify(snap.alias);
+  const a = psLit(snap.alias);
   const L = psLit(logPath);
   const lines = [
     `# nodeagent 自动回滚（生成于 ${new Date().toISOString()}）`,
@@ -229,23 +230,23 @@ export function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logP
     // 同样「先加后清 + 先清默认路由」——否则回滚本身也会踩 already exists（真机事故根因）
     for (const addr of snap.ipv4) {
       lines.push(
-        `  New-NetIPAddress -InterfaceAlias ${a} -IPAddress ${JSON.stringify(addr.ip)} -PrefixLength ${addr.prefix} -ErrorAction SilentlyContinue | Out-Null`,
+        `  New-NetIPAddress -InterfaceAlias ${a} -IPAddress ${psLit(addr.ip)} -PrefixLength ${addr.prefix} -ErrorAction SilentlyContinue | Out-Null`,
       );
     }
     lines.push(`  Get-NetRoute -InterfaceAlias ${a} -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue`);
-    const keep = snap.ipv4.map((x) => JSON.stringify(x.ip)).join(',');
+    const keep = snap.ipv4.map((x) => psLit(x.ip)).join(',');
     lines.push(`  $keep = @(${keep})`);
     lines.push(`  Get-NetIPAddress -InterfaceAlias ${a} -AddressFamily IPv4 -ErrorAction SilentlyContinue |`);
     lines.push(`    Where-Object { $keep -notcontains $_.IPAddress -and $_.PrefixOrigin -ne 'WellKnown' } |`);
     lines.push(`    ForEach-Object { Remove-NetIPAddress -IPAddress $_.IPAddress -InterfaceAlias ${a} -Confirm:$false -ErrorAction SilentlyContinue }`);
     if (snap.gateway[0]) {
       lines.push(
-        `  New-NetRoute -InterfaceAlias ${a} -DestinationPrefix '0.0.0.0/0' -NextHop ${JSON.stringify(snap.gateway[0])} -ErrorAction SilentlyContinue | Out-Null`,
+        `  New-NetRoute -InterfaceAlias ${a} -DestinationPrefix '0.0.0.0/0' -NextHop ${psLit(snap.gateway[0])} -ErrorAction SilentlyContinue | Out-Null`,
       );
     }
     if (snap.dns.length > 0) {
       lines.push(
-        `  Set-DnsClientServerAddress -InterfaceAlias ${a} -ServerAddresses ${snap.dns.map((d) => JSON.stringify(d)).join(',')} -ErrorAction SilentlyContinue`,
+        `  Set-DnsClientServerAddress -InterfaceAlias ${a} -ServerAddresses ${snap.dns.map((d) => psLit(d)).join(',')} -ErrorAction SilentlyContinue`,
       );
     }
     lines.push(`  W 'restored: static'`);
@@ -260,14 +261,14 @@ export function buildRollbackScript(snap: IfaceSnapshot, backupTxt: string, logP
 async function readIfaceWindows(iface: string): Promise<Record<string, unknown>> {
   const script = `
 $ErrorActionPreference='Continue'
-$c = Get-NetIPConfiguration -InterfaceAlias ${JSON.stringify(iface)} -ErrorAction SilentlyContinue
+$c = Get-NetIPConfiguration -InterfaceAlias ${psLit(iface)} -ErrorAction SilentlyContinue
 if (-not $c) { Write-Output '{}'; return }
-$o = [ordered]@{ interface = ${JSON.stringify(iface)} }
+$o = [ordered]@{ interface = ${psLit(iface)} }
 $o.ipv4 = @($c.IPv4Address | ForEach-Object { $_.IPAddress })
 $o.prefix = @($c.IPv4Address | ForEach-Object { $_.PrefixLength })
 $o.gateway = @($c.IPv4DefaultGateway | ForEach-Object { $_.NextHop })
 $o.dns = @($c.DNSServer | Where-Object { $_.AddressFamily -eq 2 } | ForEach-Object { $_.ServerAddresses } | Select-Object -First 4)
-$dhcp = Get-NetIPInterface -InterfaceAlias ${JSON.stringify(iface)} -AddressFamily IPv4 -ErrorAction SilentlyContinue
+$dhcp = Get-NetIPInterface -InterfaceAlias ${psLit(iface)} -AddressFamily IPv4 -ErrorAction SilentlyContinue
 $o.dhcp = ($dhcp.Dhcp -eq 'Enabled')
 $o | ConvertTo-Json -Compress
 `;
@@ -436,7 +437,7 @@ export async function netApply(args: Args): Promise<unknown> {
  * netsh 仅保留用于「读取」与人工恢复用的 dump 备份（对操作者友好）。
  */
 export function buildApplyCommand(mode: string, iface: string, args: Args, snap: IfaceSnapshot): string {
-  const a = JSON.stringify(iface);
+  const a = psLit(iface);
   if (mode === 'command') {
     const cmd = args['command'] as string | undefined;
     if (!cmd) throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'mode=command 需要 command 参数');
@@ -459,7 +460,7 @@ export function buildApplyCommand(mode: string, iface: string, args: Args, snap:
   }
   const prefix = maskToPrefix(mask);
   const dns = (args['dns'] as string[] | undefined) ?? [];
-  const ipLit = JSON.stringify(ip);
+  const ipLit = psLit(ip);
   const lines = [
     `$ErrorActionPreference='Continue'`,
     // 关掉 DHCP（否则设静态地址会与 DHCP 租约打架）
@@ -477,12 +478,12 @@ export function buildApplyCommand(mode: string, iface: string, args: Args, snap:
   ];
   if (gateway) {
     lines.push(
-      `New-NetRoute -InterfaceAlias ${a} -DestinationPrefix '0.0.0.0/0' -NextHop ${JSON.stringify(gateway)} -ErrorAction SilentlyContinue | Out-Null`,
+      `New-NetRoute -InterfaceAlias ${a} -DestinationPrefix '0.0.0.0/0' -NextHop ${psLit(gateway)} -ErrorAction SilentlyContinue | Out-Null`,
     );
   }
   if (dns.length > 0) {
     lines.push(
-      `Set-DnsClientServerAddress -InterfaceAlias ${a} -ServerAddresses ${dns.map((d) => JSON.stringify(d)).join(',')} -ErrorAction SilentlyContinue`,
+      `Set-DnsClientServerAddress -InterfaceAlias ${a} -ServerAddresses ${dns.map((d) => psLit(d)).join(',')} -ErrorAction SilentlyContinue`,
     );
   }
   lines.push(`Write-Output 'static applied'`);
@@ -495,10 +496,10 @@ export function buildApplyCommand(mode: string, iface: string, args: Args, snap:
  * 而调用方还以为变更成功了（真机事故：机器掉到 APIPA 彻底失联）。
  */
 export function buildSelfCheck(iface: string, expectIp: string | null, rollbackScriptPath: string): string {
-  const a = JSON.stringify(iface);
-  const rb = JSON.stringify(rollbackScriptPath);
+  const a = psLit(iface);
+  const rb = psLit(rollbackScriptPath);
   const cond = expectIp
-    ? `$ok = @(Get-NetIPAddress -InterfaceAlias ${a} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq ${JSON.stringify(expectIp)} }).Count -gt 0`
+    ? `$ok = @(Get-NetIPAddress -InterfaceAlias ${a} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -eq ${psLit(expectIp)} }).Count -gt 0`
     : `$ok = @(Get-NetIPAddress -InterfaceAlias ${a} -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.PrefixOrigin -ne 'WellKnown' }).Count -gt 0`;
   return [
     ``,
@@ -551,7 +552,7 @@ async function posixCommandApply(
     'utf8',
   );
   const launched = await execCommand({
-    command: `chmod +x ${JSON.stringify(rollbackPath)} && setsid nohup sh ${JSON.stringify(rollbackPath)} > ${JSON.stringify(join(dir, `rollback-${ts}.log`))} 2>&1 & echo started`,
+    command: `chmod +x ${shLit(rollbackPath)} && setsid nohup sh ${shLit(rollbackPath)} > ${shLit(join(dir, `rollback-${ts}.log`))} 2>&1 & echo started`,
     timeoutMs: 15_000,
   });
 

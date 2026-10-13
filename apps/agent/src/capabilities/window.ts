@@ -1,6 +1,7 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { runPowerShellSmart } from '../util/ps-helper.js';
+import { psLit } from '../util/quote.js';
 import { agentDir } from '../config.js';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -217,14 +218,18 @@ export async function windowFocus(args: Args): Promise<unknown> {
 /**
  * 聚焦脚本主体（不含 prelude）。⚠️ 严禁 exit —— 会杀掉常驻助手进程；
  * 未找到时改为输出 `{"found":false}` 并 return。
+ *
+ * ⚠️⚠️ `title` / `hwnd` 来自控制端，**必须**用 `psLit` 包成 PS 单引号字面量。
+ *     曾用 `JSON.stringify` → 双引号串 + `\"` 被 PS 解析成「字面反斜杠 + 结束引号」
+ *     → 任意命令执行（P0 W-01，真机实测「返回正常业务错误但命令已执行」）。
  */
 function focusBody(title: string | undefined, hwnd: string | undefined): string {
   return `
 $h = [IntPtr]::Zero
-$want = ${JSON.stringify(hwnd ?? '')}
+$want = ${psLit(hwnd ?? '')}
 if ($want -ne '') { $h = [IntPtr][Convert]::ToInt64($want, 16) }
 else {
-  $re = ${JSON.stringify(title ?? '')}
+  $re = ${psLit(title ?? '')}
   $fg = [NAWin32]::GetForegroundWindow()
   $found = [IntPtr]::Zero
   $cb = [NAWin32+EnumProc]{
@@ -348,11 +353,12 @@ export async function screenFind(args: Args): Promise<unknown> {
   // ---------- UIA 引擎 ----------
   const uiaFind = async (): Promise<Record<string, unknown>[]> => {
     const ct = controlType ?? '';
+    // ⚠️ 全部来自控制端，一律 psLit（详见文件顶部 windowFocus 处的 P0 说明）
     const body = `
-$text = ${JSON.stringify(text)}
+$text = ${psLit(text)}
 $limit = ${Number(limit)}
-$ct = ${JSON.stringify(controlType ?? '')}
-$winTitle = ${JSON.stringify(windowTitle ?? '')}
+$ct = ${psLit(controlType ?? '')}
+$winTitle = ${psLit(windowTitle ?? '')}
 # v2.0.0 属性过滤：where 只含 enabled/selected/value/toggle 四类键（白名单式）。
 #
 # ⚠️⚠️ 这里踩过**两次**同一个坑，真机 2026-10-09 连修两轮才通：
@@ -363,7 +369,7 @@ $winTitle = ${JSON.stringify(windowTitle ?? '')}
 #   ✓ 第三版：**PS 单引号字符串字面量**，JSON 内的单引号翻倍成 ''（本行）
 # 并在真机现场验证过：$j = '{"enabled":true}' → ConvertFrom-Json 摊平成哈希表 → OK。
 # 摊平是因为 Test-UiaWhere 依赖 .Keys 遍历，而 PSCustomObject 没有 Keys。
-$whereJson = '${(whereArg ? JSON.stringify(whereArg) : '').replace(/'/g, "''")}'
+$whereJson = ${psLit(whereArg ? JSON.stringify(whereArg) : '')}
 $where = $null
 if ($whereJson -ne '') {
   $where = @{}
@@ -413,7 +419,8 @@ if ($out.Count -eq 0) { Write-Output '[]' } else { $out | ConvertTo-Json -Compre
     const shot = join(tmpDir, `match-${Date.now()}-${Math.random().toString(36).slice(2, 6)}.png`);
     // PowerShell 单引号字面量：不插值（避免路径里的 $ 被展开）、不处理反斜杠转义。
     // 不能用 JSON.stringify —— 它会产出双引号串，而 PS 双引号会做变量插值且把 \ 当字面两个反斜杠。
-    const q = (v: string): string => `'${v.replace(/'/g, "''")}'`;
+    // （统一走 util/quote.ts 的 psLit，避免各文件各写一份实现而漏改）
+    const q = psLit;
 
     // 截图区域：显式 region 优先，否则整块虚拟屏
     const capX = regionArg ? regionArg.x : 'VSX';
@@ -484,7 +491,7 @@ $xv = ${regionArg ? regionArg.x : -1}
 $yv = ${regionArg ? regionArg.y : -1}
 $wv = ${regionArg ? regionArg.width : -1}
 $hv = ${regionArg ? regionArg.height : -1}
-$winRe = ${JSON.stringify(regionArg ? '' : windowTitle ?? '')}
+$winRe = ${psLit(regionArg ? '' : windowTitle ?? '')}
 $x = 0; $y = 0
 $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
 $w = $vs.Width; $h = $vs.Height
@@ -544,11 +551,11 @@ $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
 if ($null -eq $engine) { Write-Output '[]'; return }
 $result = Await ($engine.RecognizeAsync($soft)) ([Windows.Media.Ocr.OcrResult])
 
-$text = ${JSON.stringify(text)}
+$text = ${psLit(text)}
 $limit = ${Number(limit)}
 # Windows OCR 会在中文字符间插入空格（如「我的加速」识别为「我 的 加 速」），
 # 因此匹配一律在「去除空白后」的文本上进行（两边同样处理）。
-$textPlain = ${JSON.stringify(text)}.Replace(' ','')
+$textPlain = (${psLit(text)}).Replace(' ','')
 if ($textPlain -eq '') { $textPlain = ($text -replace '\\s','') }
 $out = New-Object System.Collections.ArrayList
 foreach ($line in $result.Lines) {

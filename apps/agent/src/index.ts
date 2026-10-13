@@ -18,6 +18,63 @@ function listLocalIps(): string[] {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// v2.0.3：进程级最后一道防线（崩溃链兜底）
+// ---------------------------------------------------------------------------
+//
+// ## 为什么需要
+// 真机缺陷链的共同根因：`ws.on('message')` 里用 `void handleMessage(...)` 启动异步处理，
+// 未挂 `.catch`；而全仓**没有任何** `unhandledRejection` 处理器 → Node ≥22 的默认策略是
+// **直接终止进程**。于是一条畸形报文就能把被控端打死（外部只见 `code=1` / 连接断开），
+// 且因为 `verifyHmac`（psk 默认路径）没有 try/catch，连**未认证**的报文都能触发。
+//
+// 根治在源头（`server.ts` 已改 `.catch(...)` + 逐处报文类型校验），这里补的是
+// 「将来某处再漏一个 await」时的兜底 —— 有证据地活着，胜过静默地死。
+//
+// ## 为什么**不**退出进程
+// 被控端是常驻服务，「可用性」优先于「出错即死」。若这里改成 `process.exit(1)`，
+// 就退化回「一条畸形报文打死服务」—— 正是本次要修的东西。
+// 代价（可能带着不一致的状态继续跑）由两点对冲：
+//   ① 源头已有报文校验与 `.catch`；② 这里每次都写审计 + 日志，问题不会被掩盖。
+//
+// ## 为什么要限流审计
+// 畸形报文可以高频重复（扫描/爆破）→ 无限写 `agent.error` 会把审计日志冲爆、把
+// 正常记录挤掉。故日志每次都打（stdout 由控制台的环形缓冲兜底），但**审计按时间窗限流**。
+
+let procErrCount = 0;
+let lastProcErrAuditAt = 0;
+/** 两条 `agent.error` 审计之间的最小间隔 */
+const PROC_ERR_AUDIT_INTERVAL_MS = 10_000;
+
+function reportProcessError(kind: string, detail: string): void {
+  procErrCount += 1;
+  console.error(
+    `[${new Date().toISOString()}] [ERROR] ${kind}（已拦截，进程继续运行；累计 ${procErrCount} 次）：${detail}`,
+  );
+  const now = Date.now();
+  if (now - lastProcErrAuditAt < PROC_ERR_AUDIT_INTERVAL_MS) return;
+  lastProcErrAuditAt = now;
+  audit({
+    type: 'agent.error',
+    status: 'failed',
+    reason: `${kind}: ${detail}（累计 ${procErrCount} 次，审计按 ${PROC_ERR_AUDIT_INTERVAL_MS / 1000}s 限流）`,
+  });
+}
+
+process.on('unhandledRejection', (reason: unknown) => {
+  reportProcessError(
+    '未处理的 Promise 拒绝',
+    reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason),
+  );
+});
+
+process.on('uncaughtException', (err: unknown) => {
+  reportProcessError(
+    '未捕获异常',
+    err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+  );
+});
+
 async function main(): Promise<void> {
   const { config, isNew } = loadAgentConfig();
   initAudit({

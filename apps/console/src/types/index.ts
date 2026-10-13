@@ -204,7 +204,10 @@ export type AuditType =
   | "net.change"
   | "net.deny"
   | "agent.update"
-  | "session.idle_close";
+  | "session.idle_close"
+  // v2.0.3：被拒请求统一留痕（U-01）+ 进程级兜底错误
+  | "request.rejected"
+  | "agent.error";
 
 export interface AuditEntry {
   ts?: number;

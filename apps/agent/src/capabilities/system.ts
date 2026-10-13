@@ -11,6 +11,7 @@ import { readAudit, readAuditAll, verifyAudit, computeAuditHead, anchorAudit, co
 import { computeMetrics } from '../metrics.js';
 import { allPsShellStats } from '../util/ps-helper.js';
 import { startTask } from './task.js';
+import { psLit } from '../util/quote.js';
 
 type Args = Record<string, unknown>;
 
@@ -545,7 +546,9 @@ async function scheduleWindowsRestart(p: RestartParams): Promise<unknown> {
     `$agentStart = (Get-Date).AddMilliseconds(-${Math.max(0, Math.round(process.uptime() * 1000))})`,
     `$cut = $agentStart`,
     `Get-ScheduledTask -TaskName 'nodeagent-selfrestart*' -ErrorAction SilentlyContinue | Where-Object { if ($_.State -ne 'Running') { return $true }; $ti = ($_ | Get-ScheduledTaskInfo -ErrorAction SilentlyContinue); if ($ti -and $ti.LastRunTime -and $ti.LastRunTime -lt $cut) { return $true }; return $false } | Unregister-ScheduledTask -Confirm:$false -ErrorAction SilentlyContinue`,
-    `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '${cmdLine.replace(/'/g, "''")}'`,
+    // ⚠️ 不要手写 `replace(/'/g,"''")` —— 那是「又发明一份 psLit」，两份实现必然漂移。
+    //    PS 里 `\` 不是转义符、双引号串还会插值，故 cmdLine 唯一安全的落法就是单引号字面量。
+    `$a = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ${psLit(cmdLine)}`,
     // 不限时（默认 72h 后强制结束），保证 node 能长期运行
     `$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds 0)`,
     // ① 先试「最高权限」：agent 通常以管理员运行，普通权限的 taskkill 杀不掉它，

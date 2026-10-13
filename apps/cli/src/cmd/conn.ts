@@ -57,7 +57,9 @@ export async function cmdConnect(host: string, opts: Options): Promise<void> {
   const profile: NodeProfile = {
     host,
     port,
-    tls: !process.argv.includes('--no-tls'),
+    // 原来这里直接扫 `process.argv.includes('--no-tls')` —— 绕过了解析器，
+    // 于是「帮助里承诺的选项」与「解析器认识的选项」是两套（L-01 同类）。
+    tls: !opts.noTls,
     insecure: opts.insecure,
     key: opts.key ?? '',
     auth_mode: authMode,

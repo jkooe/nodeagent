@@ -9,12 +9,18 @@
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { NodeAgentClient, runMacro } from '../../packages/client/dist/index.js';
 import { generateKeyPair, findCapability } from '../../packages/protocol/dist/index.js';
+
+// 裸 WebSocket：专门用来发**畸形报文**（正常路径一律走 NodeAgentClient）。
+// pnpm 的严格隔离下 `ws` 不在本目录的解析链上，故按包名从 client 包的上下文里取。
+const requireFromClient = createRequire(join(dirname(fileURLToPath(import.meta.url)), '../../packages/client/package.json'));
+const RawWebSocket = requireFromClient('ws');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '../..');
@@ -104,6 +110,163 @@ async function connect(key = KEY) {
   const c = new NodeAgentClient({ url: URL, key, clientId: 'e2e_mac' });
   await c.connect();
   return c;
+}
+
+// ---------------------------------------------------------------------------
+// v2.0.3 硬化回归的辅助设施
+// ---------------------------------------------------------------------------
+
+/** 启动一个**指定端口 + 指定配置片段**的被控端（独立 HOME，避免污染真实配置）。 */
+function startAgentOn(port, extra = {}) {
+  const dataDir = mkdtempSync(join(tmpdir(), `nodeagent-e2e-${port}-`));
+  writeFileSync(
+    join(dataDir, 'agent.json'),
+    JSON.stringify({
+      node_id: `e2e_${port}`,
+      host: '127.0.0.1',
+      port,
+      tls: false,
+      key: KEY,
+      log_level: 'info',
+      ...extra,
+    }),
+  );
+  const child = spawn(process.execPath, [join(root, 'apps/agent/dist/index.js')], {
+    env: { ...process.env, NODEAGENT_HOME: dataDir, HOME: dataDir, USERPROFILE: dataDir },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stdout.on('data', (d) => process.stdout.write(`[agent:${port}] ${d}`));
+  child.stderr.on('data', (d) => process.stderr.write(`[agent:${port}:err] ${d}`));
+  child.on('exit', (code, signal) => {
+    console.log(`\n⚠️  [agent:${port} 进程退出] code=${code} signal=${signal}\n`);
+  });
+  return child;
+}
+
+/** 等某个端口上的被控端就绪（被控端提前退出则立即失败）。 */
+async function waitReadyOn(port, timeoutMs = 30_000, child = null) {
+  const url = `ws://127.0.0.1:${port}`;
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = null;
+  while (Date.now() < deadline) {
+    if (child && child.exitCode !== null) {
+      throw new Error(`被控端(port ${port})已退出 code=${child.exitCode}，请查看上方 agent 输出`);
+    }
+    try {
+      const c = new NodeAgentClient({ url, key: KEY, clientId: 'probe' });
+      await c.connect();
+      c.close();
+      return url;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  throw new Error(`被控端(port ${port})未在超时内就绪：${lastErr?.message ?? ''}`);
+}
+
+/** 裸 WebSocket 连接（只用于发畸形报文）。 */
+function rawConnect(url) {
+  return new Promise((resolve, reject) => {
+    const sock = new RawWebSocket(url, { rejectUnauthorized: false });
+    const timer = setTimeout(() => reject(new Error('裸连接超时')), 8000);
+    sock.on('open', () => {
+      clearTimeout(timer);
+      resolve(sock);
+    });
+    sock.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+}
+
+/**
+ * 发一帧，等**第一帧**回复（超时或非 JSON 回复都返回 `null`）。
+ *
+ * 注意：畸形报文**可能没有回复**（例如根本不是 JSON），所以这里不把「无回复」当成失败 ——
+ * 判据一律落在「进程还活着吗 / 之后还能正常干活吗」（见 `assertProcessAlive`）。
+ */
+function sendOnce(sock, frame, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    const onMsg = (data) => {
+      cleanup();
+      try {
+        resolve(JSON.parse(data.toString()));
+      } catch {
+        resolve(null);
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(null);
+    }, timeoutMs);
+    function cleanup() {
+      clearTimeout(timer);
+      sock.off('message', onMsg);
+    }
+    sock.on('message', onMsg);
+    sock.send(typeof frame === 'string' ? frame : JSON.stringify(frame));
+  });
+}
+
+/**
+ * 「进程还活着」——**唯一可信的崩溃判据**。
+ *
+ * ⚠️ 为什么不能只看接口响应：真机缺陷里最险的形态正是「接口返回了一个正常业务错误，
+ *    但进程已经死了 / 命令已经执行了」（W-01、A-01）。只看响应会把缺陷判成通过。
+ *    故任何「不该崩」的用例都必须落到这里。
+ */
+function assertProcessAlive(child, label) {
+  assert.equal(
+    child.exitCode,
+    null,
+    `${label}：被控端进程不应退出（exitCode=${child.exitCode}）`,
+  );
+}
+
+/** 收尾校验：进程不但「没死」，还得**还能干活**。 */
+async function assertStillServing(port, label, expectedFailure = null) {
+  const c = new NodeAgentClient({ url: `ws://127.0.0.1:${port}`, key: KEY, clientId: 'e2e_mac' });
+  await c.connect();
+  const r = await c.invoke('system.info').then(
+    (x) => ({ ok: x }),
+    (e) => ({ err: e }),
+  );
+  c.close();
+  if (expectedFailure) {
+    // 「全拒」配置下，「还能干活」表现为**收到一个干净的、可解释的业务拒绝** ——
+    // 而不是连接失败 / 超时 / 进程已退出。
+    const name = r.err?.name ?? r.err?.code ?? r.ok?.error?.name;
+    assert.equal(
+      name,
+      expectedFailure,
+      `${label}：应返回 ${expectedFailure}（证明进程仍在正常处理请求），实际 ${JSON.stringify(
+        r.err?.message ?? r.ok,
+      )}`,
+    );
+    return;
+  }
+  assert.ok(r.ok && r.ok.status === 'ok', `${label}：之后应仍能正常调用能力，实际 ${JSON.stringify(r.err?.message ?? r.ok)}`);
+}
+
+/**
+ * 调用一个**预期失败**的能力，把两种失败形态归一成 `{name,message}`；真的成功了返回 `null`。
+ *
+ * ⚠️ 被控端有**两种**失败形态，测试必须都认：
+ *   - **协议级**错误（未认证 / ACL 拒绝 / 未知能力）→ JSON-RPC error 帧 → 客户端 **throw**；
+ *   - **能力内部**抛的 `CapabilityError`（参数非法等）→ 归一成 `{status:'failed', error}` 信封 → **不抛**。
+ *   真机实测（v2.0.3）：`monitor.report` 的 id 穿越、`screen.capture` 的超大 region 都走**后者**。
+ *   只判「抛没抛」会把它们全误判成「没有被拒绝」。
+ */
+async function expectFailure(client, capability, args = {}) {
+  try {
+    const r = await client.invoke(capability, args);
+    if (r && r.status === 'failed' && r.error) return { name: r.error.name, message: r.error.message };
+    return null;
+  } catch (e) {
+    return { name: e?.name ?? e?.code, message: e?.message ?? String(e) };
+  }
 }
 
 /** TLS 场景：被控端以 wss 启动，控制端以自签证书 + insecure 连接。 */
@@ -1183,6 +1346,247 @@ async function testContractShapes() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// v2.0.3 硬化回归（针对 2026-10-13 实测出的 18 条缺陷）
+//
+// 方法学（铁律 19 / 21）：
+//  - **不能只看接口响应**。真机缺陷里最险的形态是「接口返回了正常业务错误，但进程已经死了 /
+//    命令已经执行了」（W-01、A-01）。所以「不该崩」的用例，判据一律落到
+//    `assertProcessAlive` + 「之后还能正常调用能力」。
+//  - **对照组要逐条推演**（铁律 20）：A-02 既要有「空 clients → 拒绝」，也要有
+//    「有一个获授权的 client → 放行」，否则「一律拒绝」这种错误实现也能骗过测试。
+// ---------------------------------------------------------------------------
+
+/**
+ * ⚠️ 每个场景**各占一个端口**，不要复用。
+ *    复用会踩「上一块的进程刚 kill、端口还没释放，下一块的新实例 bind 失败退出，
+ *    而 waitReadyOn 连上的是**上一块残留的**那个实例」——于是断言的其实是别人的配置
+ *    （真踩过：对照组被上一块的空 clients 配置拒了，报「调用方未注册」）。
+ *    独立端口把这个竞态从根上消掉，比加 sleep 可靠。
+ */
+const HARDEN_PORTS = {
+  aclMissingClients: 18810,
+  aclEmptyClients: 18811,
+  aclAllowControl: 18812,
+  keysProto: 18813,
+};
+
+/** B-01 / B-02 / 崩溃链：畸形报文不得打死被控端（且必须留下审计）。 */
+async function testMalformedFrames(agent) {
+  const cases = [
+    {
+      name: 'B-01 畸形 hello（protocol 传数字）',
+      frame: { jsonrpc: '2.0', id: 'h1', method: 'hello', params: { protocol: 123, client_id: 'x' } },
+      expect: 'E_PARAM_INVALID',
+    },
+    {
+      name: 'B-01b 畸形 hello（protocol 传对象）',
+      frame: { jsonrpc: '2.0', id: 'h2', method: 'hello', params: { protocol: { a: 1 } } },
+      expect: 'E_PARAM_INVALID',
+    },
+    {
+      name: 'B-02 畸形 auth（hmac 传数字）',
+      frame: { jsonrpc: '2.0', id: 'a1', method: 'auth', params: { nonce: 'n', client_id: 'x', hmac: 1 } },
+      expect: null, // nonce 先不匹配 → 走 AUTH_FAILED 分支，同样不得崩
+    },
+    {
+      name: 'B-02b 畸形 auth（hmac 传对象 + nonce 为 null）',
+      frame: { jsonrpc: '2.0', id: 'a2', method: 'auth', params: { nonce: null, client_id: 'x', hmac: { k: 1 } } },
+      expect: null,
+    },
+    {
+      name: '未认证直接 invoke（U-01：必须留审计且不崩）',
+      frame: { jsonrpc: '2.0', id: 'i1', method: 'invoke', params: { capability: 'system.info', args: {} } },
+      expect: 'E_AUTH_REQUIRED',
+    },
+    {
+      name: '畸形 invoke（capability 传数字）',
+      frame: { jsonrpc: '2.0', id: 'i2', method: 'invoke', params: { capability: 42, args: {} } },
+      expect: 'E_AUTH_REQUIRED',
+    },
+  ];
+
+  for (const c of cases) {
+    const sock = await rawConnect(URL);
+    const resp = await sendOnce(sock, c.frame);
+    sock.close();
+    // ① 进程必须还活着（这是本组用例的**主判据**）
+    assertProcessAlive(agent, c.name);
+    // ② 有确定性预期的，顺带核对错误名
+    if (c.expect) {
+      assert.ok(resp && resp.error, `${c.name}：应返回错误帧，实际 ${JSON.stringify(resp)}`);
+      assert.equal(resp.error.name, c.expect, `${c.name}：错误名不符（${JSON.stringify(resp.error)}）`);
+    }
+  }
+
+  // 不是 JSON 的裸帧：解析失败也必须只记审计、不崩
+  {
+    const sock = await rawConnect(URL);
+    const resp = await sendOnce(sock, 'not-json-at-all{{{');
+    sock.close();
+    assertProcessAlive(agent, '非 JSON 裸帧');
+    assert.ok(resp && resp.error, `非 JSON 裸帧：应返回 PARSE_ERROR，实际 ${JSON.stringify(resp)}`);
+    assert.equal(resp.error.name, 'E_PARSE_ERROR');
+  }
+
+  // ③ 收尾：不是「没死」就行，还得**还能干活**
+  await assertStillServing(PORT, '畸形报文组');
+}
+
+/**
+ * A-01 / A-02：ACL 归一化。
+ *
+ * 真机缺陷回顾：`{"acl":{"default_effect":"deny"}}`（省略空的 clients，很自然的写法）
+ * 原来会让**每一条 invoke 都崩掉被控端进程**；而 `clients: []` 更糟 —— 整段 ACL 校验被
+ * `Boolean(clients.length)` 判为 false → **fail-open 全放行**（配置写着默认拒绝却全通）。
+ * 正确语义：空 clients = 没有任何调用方被授权 = 拒绝一切（由 default_effect 决定）。
+ */
+async function testAclNormalization() {
+  // ① A-01：只写 default_effect，省略 clients
+  {
+    const port = HARDEN_PORTS.aclMissingClients;
+    const child = startAgentOn(port, { acl: { default_effect: 'deny' } });
+    try {
+      await waitReadyOn(port, 30_000, child);
+      const url = `ws://127.0.0.1:${port}`;
+      const c = new NodeAgentClient({ url, key: KEY, clientId: 'e2e_mac' });
+      await c.connect();
+      // 握手能过（psk），但能力级 ACL 应拒绝一切
+      const denied = await c.invoke('system.info').then(
+        () => null,
+        (err) => err,
+      );
+      assert.ok(denied, 'A-01：省略 clients 且 default_effect=deny 时应拒绝调用');
+      assert.equal(denied.name ?? denied.code, 'E_ACL_DENIED', `A-01：期望 E_ACL_DENIED，实际 ${denied.message}`);
+      c.close();
+      // 主判据：**没有崩**；且之后仍能拿到干净的业务拒绝（= 进程在正常处理请求）
+      assertProcessAlive(child, 'A-01');
+      await assertStillServing(port, 'A-01', 'E_ACL_DENIED');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }
+
+  // ② A-02：显式空 clients（原来 fail-open）
+  {
+    const port = HARDEN_PORTS.aclEmptyClients;
+    const child = startAgentOn(port, { acl: { default_effect: 'deny', clients: [] } });
+    try {
+      await waitReadyOn(port, 30_000, child);
+      const url = `ws://127.0.0.1:${port}`;
+      const c = new NodeAgentClient({ url, key: KEY, clientId: 'e2e_mac' });
+      await c.connect();
+      const denied = await c.invoke('system.info').then(
+        () => null,
+        (err) => err,
+      );
+      assert.ok(denied, 'A-02：空 clients + default_effect=deny 必须拒绝（原实现是 fail-open 全放行）');
+      assert.equal(denied.name ?? denied.code, 'E_ACL_DENIED', `A-02：期望 E_ACL_DENIED，实际 ${denied.message}`);
+      c.close();
+      assertProcessAlive(child, 'A-02');
+      await assertStillServing(port, 'A-02', 'E_ACL_DENIED');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }
+
+  // ③ A-02 对照组：有一个获授权的 client → 必须放行。
+  //    没有这一组，「一律拒绝」这种明显过头的实现也能骗过上面两条。
+  {
+    const port = HARDEN_PORTS.aclAllowControl;
+    const child = startAgentOn(port, {
+      acl: { default_effect: 'deny', clients: [{ client_id: 'e2e_mac', pubkey: 'x', allow: ['system.info'] }] },
+    });
+    try {
+      await waitReadyOn(port, 30_000, child);
+      const url = `ws://127.0.0.1:${port}`;
+      const c = new NodeAgentClient({ url, key: KEY, clientId: 'e2e_mac' });
+      await c.connect();
+      const r = await c.invoke('system.info');
+      assert.equal(r.status, 'ok', `A-02 对照组：获授权的 client 应被放行，实际 ${JSON.stringify(r)}`);
+      c.close();
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }
+
+  // ④ B-03：`keys: {}` + `client_id: "constructor"` —— 原型链取值曾让进程崩溃
+  {
+    const port = HARDEN_PORTS.keysProto;
+    const child = startAgentOn(port, { keys: {} });
+    try {
+      await waitReadyOn(port, 30_000, child);
+      const url = `ws://127.0.0.1:${port}`;
+      const sock = await rawConnect(url);
+      // 先正常握手拿 nonce（不解析，只为了走到 auth 分支）
+      const hello = await sendOnce(sock, {
+        jsonrpc: '2.0',
+        id: 'h',
+        method: 'hello',
+        params: { protocol: '1.0', client_id: 'constructor' },
+      });
+      assert.ok(hello?.result?.nonce, `B-03：hello 应返回 nonce，实际 ${JSON.stringify(hello)}`);
+      const authResp = await sendOnce(sock, {
+        jsonrpc: '2.0',
+        id: 'a',
+        method: 'auth',
+        params: { nonce: hello.result.nonce, client_id: 'constructor', hmac: '00' },
+      });
+      sock.close();
+      assert.ok(authResp && authResp.error, `B-03：应返回鉴权失败，实际 ${JSON.stringify(authResp)}`);
+      assertProcessAlive(child, 'B-03');
+      assert.equal(
+        child.exitCode,
+        null,
+        'B-03：client_id=constructor 不得沿原型链取到 Object.prototype.constructor 而崩溃',
+      );
+      await assertStillServing(port, 'B-03');
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }
+}
+
+/** M-01/M-02（monitor id 路径穿越）+ S-01（region 无上界）：参数必须在落盘/分配内存之前被挡住。 */
+async function testInputBounds() {
+  const c = await connect();
+  try {
+    // M-01：用 id 穿越到数据目录之外去读（能力名是 `monitor.*`，不是 `system.monitor.*`）
+    for (const bad of ['../../agent', '..%2f..%2fagent', 'a/b', '', 'x'.repeat(65)]) {
+      const err = await expectFailure(c, 'monitor.report', { id: bad });
+      assert.ok(err, `M-01：monitor.report 的 id=${JSON.stringify(bad)} 应被拒绝`);
+      assert.equal(err.name, 'E_PARAM_INVALID', `M-01：期望 E_PARAM_INVALID，实际 ${err.message}`);
+    }
+    // M-02：删除同理（真删不到数据目录外的东西）
+    const delErr = await expectFailure(c, 'monitor.delete', { id: '../../agent.json' });
+    assert.ok(delErr, 'M-02：monitor.delete 的穿越 id 应被拒绝');
+    assert.equal(delErr.name, 'E_PARAM_INVALID', `M-02：期望 E_PARAM_INVALID，实际 ${delErr.message}`);
+
+    // S-01：region 无上界曾可让被控端 OOM（100000×100000 ≈ 40GB 位图）
+    for (const region of [
+      { x: 0, y: 0, width: 100000, height: 100000 },
+      { x: 0, y: 0, width: 20000, height: 10 },
+      { x: 0, y: 0, width: 10000, height: 10000 },
+    ]) {
+      const err = await expectFailure(c, 'screen.capture', { region, format: 'jpeg' });
+      assert.ok(err, `S-01：region ${region.width}×${region.height} 应被拒绝`);
+      assert.equal(err.name, 'E_PARAM_INVALID', `S-01：期望 E_PARAM_INVALID，实际 ${err.message}`);
+    }
+
+    // 边界内的 region 不该被误伤（否则「一刀切拒绝」也能骗过上面三条）
+    const okRegion = await expectFailure(c, 'screen.capture', {
+      region: { x: 0, y: 0, width: 64, height: 64 },
+      format: 'jpeg',
+    });
+    assert.ok(
+      okRegion === null || okRegion.name !== 'E_PARAM_INVALID',
+      `S-01 对照组：小 region 不应被判 PARAM_INVALID，实际 ${JSON.stringify(okRegion)}`,
+    );
+  } finally {
+    c.close();
+  }
+}
+
 async function main() {
   console.log('\nnodeagent 端到端测试\n');
   const agent = startAgent();
@@ -1391,6 +1795,13 @@ async function main() {
 
     // ---------- 契约形状（agent 实现 ↔ 协议契约）----------
     await test('契约形状：只读能力返回字段与 manifest returns_schema 一致', testContractShapes);
+
+    // ---------- v2.0.3 硬化回归（2026-10-13 实测缺陷）----------
+    await test('v2.0.3 畸形报文不得打死被控端（B-01/B-02 + 崩溃链 + U-01 审计）', () =>
+      testMalformedFrames(agent),
+    );
+    await test('v2.0.3 ACL 归一化：省略 clients 不崩 / 空 clients 不 fail-open / B-03 原型链', testAclNormalization);
+    await test('v2.0.3 参数上界：monitor id 穿越（M-01/02）+ region 上界（S-01）', testInputBounds);
   } finally {
     agent.kill('SIGTERM');
     await new Promise((r) => setTimeout(r, 300));

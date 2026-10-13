@@ -17,8 +17,8 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { connect } from 'node:net';
-import { exec } from 'node:child_process';
-import { join } from 'node:path';
+import { exec, execFile } from 'node:child_process';
+import { join, resolve as resolvePath, sep } from 'node:path';
 import { homedir, totalmem, freemem, cpus } from 'node:os';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { logQuery, type LogLine } from './log.js';
@@ -60,6 +60,35 @@ function monitorDir(): string {
   return d;
 }
 
+/**
+ * 校验监控 id：**唯一入口**，四个命令（start/report/stop/delete）都必须先过它。
+ *
+ * ⚠️ M-01/M-02（真机实测）：`monitor.report` / `monitor.delete` 曾经**不校验 id**
+ *    就直接 `join(monitorDir(), id + '.jsonl')` → `id:"../escape-target"` 可读/删
+ *    数据目录外的任意 `.jsonl` 文件（路径穿越）。
+ *    这里除了字符白名单，还做一次**解析后前缀比对**（`..` 与符号链接都拦得住）。
+ */
+function safeMonitorId(raw: unknown): string {
+  const id = typeof raw === 'string' ? raw.trim() : '';
+  if (!id) throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需要 id');
+  if (!/^[\w.-]{1,64}$/.test(id) || id.includes('..')) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'id 只允许字母数字与 . _ -（≤64 字符，不含 ..）', {
+      got: id,
+    });
+  }
+  return id;
+}
+
+/** 监控样本文件路径 —— id 已在 safeMonitorId 校验过，这里再兜一次「必须在 monitors 目录内」。 */
+function monitorFile(id: string): string {
+  const dir = resolvePath(monitorDir());
+  const file = resolvePath(dir, `${id}.jsonl`);
+  if (!file.startsWith(dir + sep)) {
+    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'id 解析后越出 monitors 目录', { id });
+  }
+  return file;
+}
+
 // ---------------- 采样器 ----------------
 
 /** port：TCP 连通性 + 握手耗时（跨平台，无额外依赖）。 */
@@ -81,11 +110,11 @@ function samplePort(host: string, port: number, timeoutMs: number): Promise<Samp
 /** process：按名判断存活（Windows tasklist / POSIX ps，与 events.ts 同策略）。 */
 function sampleProcess(name: string): Promise<Sample> {
   return new Promise((resolve) => {
-    const cmd =
-      process.platform === 'win32'
-        ? `tasklist /FI "IMAGENAME eq ${name}" /NH`
-        : `ps -axo pid=,comm= | grep -i "${name}" | grep -v grep`;
-    exec(cmd, { timeout: 8000 }, (err, stdout) => {
+    // ⚠️ D-02（真机实测）：原来把 `name` 拼进 `tasklist /FI "IMAGENAME eq ${name}"` 与
+    //    `ps … | grep -i "${name}"`，payload `zzz"; touch /tmp/m…; #` 会被 shell 执行。
+    //    正解：**不经过 shell** —— Windows 用 execFile 传参数数组，POSIX 直接把 ps 输出
+    //    交给 JS 过滤（不再 grep）。
+    const collect = (stdout: string, err: Error | null): void => {
       const lines = stdout
         .split('\n')
         .map((l) => l.trim())
@@ -96,7 +125,28 @@ function sampleProcess(name: string): Promise<Sample> {
           return m ? Number(m[1]) : null;
         })
         .filter((x): x is number => x !== null);
-      resolve({ ts: Date.now(), alive: pids.length > 0, pids, ...(err && pids.length === 0 ? { error: String(err.message) } : {}) });
+      resolve({
+        ts: Date.now(),
+        alive: pids.length > 0,
+        pids,
+        ...(err && pids.length === 0 ? { error: String(err.message) } : {}),
+      });
+    };
+
+    if (process.platform === 'win32') {
+      // 无 shell：name 作为单个参数传入，`"` `;` `&` 等都不再具特殊含义
+      execFile('tasklist', ['/FI', `IMAGENAME eq ${name}`, '/NH'], { timeout: 8000 }, (err, stdout) =>
+        collect(stdout ?? '', err),
+      );
+      return;
+    }
+    execFile('ps', ['-axo', 'pid=,comm='], { timeout: 8000 }, (err, stdout) => {
+      const needle = name.toLowerCase();
+      const filtered = (stdout ?? '')
+        .split('\n')
+        .filter((l) => l.toLowerCase().includes(needle))
+        .join('\n');
+      collect(filtered, err);
     });
   });
 }
@@ -171,15 +221,15 @@ export async function monitorStart(args: Args): Promise<unknown> {
     });
   }
 
-  const id = (args['id'] as string | undefined)?.trim() || `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const id =
+    (args['id'] as string | undefined)?.trim() ||
+    `m_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  safeMonitorId(id); // 与 report/delete 同一套校验（防路径穿越 + 统一口径）
   if (monitors.has(id)) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, `监控 id 已存在: ${id}`, { hint: '换个 id，或先 monitor.stop' });
   }
-  if (!/^[\w.-]{1,64}$/.test(id)) {
-    throw new CapabilityError(ErrorCodes.PARAM_INVALID, 'id 只允许字母数字与 . _ -（≤64 字符）', { got: id });
-  }
 
-  const file = join(monitorDir(), `${id}.jsonl`);
+  const file = monitorFile(id);
   const rec: MonitorRecord = {
     id, source, target, intervalMs, createdAt: Date.now(), samples: 0, file,
     timer: setInterval(() => { void tick(rec); }, intervalMs),
@@ -214,10 +264,9 @@ async function tick(rec: MonitorRecord): Promise<void> {
 }
 
 export async function monitorReport(args: Args): Promise<unknown> {
-  const id = args['id'] as string;
-  if (!id) throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需要 id');
+  const id = safeMonitorId(args['id']);
   const rec = monitors.get(id);
-  const file = join(monitorDir(), `${id}.jsonl`);
+  const file = monitorFile(id);
   if (!rec && !existsSync(file)) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, `没有这个监控: ${id}`, { running: [...monitors.keys()] });
   }
@@ -313,8 +362,7 @@ function summarize(samples: Sample[], source: MonitorSource): Record<string, unk
 }
 
 export async function monitorStop(args: Args): Promise<unknown> {
-  const id = args['id'] as string;
-  if (!id) throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需要 id');
+  const id = safeMonitorId(args['id']);
   const rec = monitors.get(id);
   if (!rec) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, `没有正在运行的监控: ${id}`, { running: [...monitors.keys()] });
@@ -346,12 +394,11 @@ export async function monitorList(_args: Args): Promise<unknown> {
 
 /** 供 monitor.delete：删除历史文件（不影响运行中的实例）。 */
 export async function monitorDelete(args: Args): Promise<unknown> {
-  const id = args['id'] as string;
-  if (!id) throw new CapabilityError(ErrorCodes.PARAM_INVALID, '需要 id');
+  const id = safeMonitorId(args['id']);
   if (monitors.has(id)) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, '该监控仍在运行，请先 stop', { hint: `monitor.stop {"id":"${id}"}` });
   }
-  const file = join(monitorDir(), `${id}.jsonl`);
+  const file = monitorFile(id);
   if (!existsSync(file)) {
     throw new CapabilityError(ErrorCodes.PARAM_INVALID, `没有历史文件: ${id}`);
   }

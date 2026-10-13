@@ -122,6 +122,11 @@ export function normalizeIp(remote: string | undefined | null): string {
 export function ipMatchesCidr(ip: string, cidr: string): boolean {
   const target = cidr.includes('/') ? cidr : `${cidr}/32`;
   const [net, bitsRaw] = target.split('/');
+  // ⚠️ F-01（实测复现）：原来只做 `Number.isFinite(Number(bitsRaw))`，
+  //    而 `Number('') === 0` → `10.0.0.0/`（掩码缺失）会被当成 `/0` = **匹配全部**，
+  //    一条本该拦住的 CIDR 规则变成放行任意来源（ACL 静默失效）。
+  //    这里要求掩码是**非空纯数字**，且长度合理。
+  if (typeof bitsRaw !== 'string' || !/^\d{1,2}$/.test(bitsRaw)) return false;
   const bits = Number(bitsRaw);
   if (!net || !Number.isFinite(bits)) return false;
   // 仅处理 IPv4（IPv6 或主机名直接不匹配，避免误放行）

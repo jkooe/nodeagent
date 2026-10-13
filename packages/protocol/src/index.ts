@@ -10,3 +10,4 @@ export * from './capabilities.js';
 export * from './net.js';
 export * from './hotkeys.js';
 export * from './audit-anchor.js';
+export * from './audit-types.js';

@@ -1,5 +1,6 @@
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { psLit } from '../util/quote.js';
 
 type Args = Record<string, unknown>;
 
@@ -108,7 +109,9 @@ export async function appInstall(args: Args): Promise<unknown> {
     );
   }
 
-  const target = id ? `--id ${quote(id)} --exact` : `${quote(pkg)}`;
+  // ⚠️ package / id 来自控制端，且命令经 `powershell.exe -Command` 执行
+  // → 必须用 PS 单引号字面量（旧的 `"…"` + `\"` 写法可被 `;` / `$(…)` 逃逸，同类 P0）。
+  const target = id ? `--id ${psLit(id)} --exact` : `${psLit(pkg)}`;
   const flags = [
     silent ? '--silent' : '',
     '--accept-package-agreements',
@@ -132,10 +135,6 @@ export async function appInstall(args: Args): Promise<unknown> {
     source: 'winget',
     detail: (r.stdout + (r.stderr ? `\n${r.stderr}` : '')).slice(-2000),
   };
-}
-
-function quote(s: string): string {
-  return `"${s.replace(/"/g, '\\"')}"`;
 }
 
 function extractVersion(output: string): string | null {

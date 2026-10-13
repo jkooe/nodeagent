@@ -60,6 +60,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  // ⚠️ `--help` 是**选项**、不是位置参数。
+  //    parseArgs 开了 `strict: false`，`--help` / `-h` 会被收进 `values`（作 boolean），
+  //    `positionals` 里压根没有它 —— 原来靠「`positionals[0] === undefined` 时打印帮助」
+  //    **偶然**蒙对，一旦前面多一个位置参数就会掉进「未知命令」。
+  //    L-01 总闸守卫（tests/unit/cli-options.test.mjs）扫出这类「承诺了却没接上」的选项。
+  if (opts.help) {
+    console.log(HELP);
+    return;
+  }
+
   switch (command) {
     case 'connect': {
       const host = positionals[0];
