@@ -111,7 +111,20 @@ fn resolve_agent_paths(app: &AppHandle, state: &AppState) -> Result<AgentPaths, 
 async fn ensure_sidecar(app: &AppHandle, state: &AppState) -> Result<Arc<Sidecar>, String> {
     let mut guard = state.sidecar.lock().await;
     if let Some(sc) = guard.as_ref() {
-        return Ok(Arc::clone(sc));
+        if sc.is_alive() {
+            return Ok(Arc::clone(sc));
+        }
+        // ⚠️ 缓存里那个 sidecar **已经退出**，绝不能继续复用。
+        //
+        // 为什么以前没发现：往已退出进程的管道里写，在 Windows 上未必立刻报错
+        // （管道缓冲区吞下就返回成功），于是请求会一路干等到 `request` 的超时。
+        // 真机实证（2026-10-13，Windows 11 ARM64）：控制台从 10-12 起一直开着，
+        // 其 sidecar 早已退出；用户点「检查更新」等满 45 秒，界面报
+        // 「检查更新失败：check_update 超时」—— 而同一台机器上**手工拉起 sidecar
+        // 跑同一个请求只要 7 秒**（两相对照即锁定「复用死实例」）。
+        // 丢掉缓存往下走，重新拉起一个。
+        eprintln!("[sidecar] 检测到已退出的实例，正在重建");
+        *guard = None;
     }
 
     // 打包后 node 与 sidecar.mjs 随 resource 分发；开发期用系统 node + 仓库内脚本

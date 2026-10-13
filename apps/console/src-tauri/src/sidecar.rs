@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -46,6 +46,15 @@ pub struct Sidecar {
     stdin: tokio::sync::Mutex<ChildStdin>,
     pending: Pending,
     next_id: AtomicU64,
+    /// 「本实例已不可用」的标记（stdout 关闭 / 写入失败）。
+    ///
+    /// ⚠️ 为什么不能只靠 `child.try_wait()`：往**已退出进程的管道**里写在 Windows 上
+    /// 未必立刻报错（管道缓冲区吞下就返回成功），于是请求会一路干等到 `request` 的超时。
+    /// 真机实证（2026-10-13，Windows 11 ARM64）：sidecar 早已退出，控制台却仍复用缓存里的
+    /// `Arc<Sidecar>`，点「检查更新」等满 45 秒 → 界面显示「检查更新失败：check_update 超时」；
+    /// 而同一台机器上**手工拉起 sidecar 跑同一个请求只要 7 秒**。
+    /// 所以判定「它死了」要多路取证：进程状态 ∨ stdout EOF ∨ 写入失败。
+    dead: Arc<AtomicBool>,
 }
 
 impl Sidecar {
@@ -71,10 +80,12 @@ impl Sidecar {
         let stderr = child.stderr.take().ok_or("sidecar stderr 不可用")?;
 
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let dead = Arc::new(AtomicBool::new(false));
 
         // stdout：逐行读，分派「响应」与「通知」
         {
             let pending = Arc::clone(&pending);
+            let dead = Arc::clone(&dead);
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -124,6 +135,16 @@ impl Sidecar {
                         on_event(evt);
                     }
                 }
+
+                // 走到这里 = stdout 关闭（EOF 或读取出错）= sidecar 进程已结束。
+                dead.store(true, Ordering::SeqCst);
+                // 顺手唤醒**所有还在等响应**的请求，让它们立刻失败，
+                // 而不是干等各自的 timeout（check_update 45s / download 320s）。
+                // 没有这一步，sidecar 死掉的那一刻就会有请求白等好几分钟。
+                let mut waiting = pending.lock().unwrap();
+                for (_, tx) in waiting.drain() {
+                    let _ = tx.send(Err("sidecar 已退出（stdout 关闭），请重试".to_string()));
+                }
             });
         }
 
@@ -140,11 +161,34 @@ impl Sidecar {
             stdin: tokio::sync::Mutex::new(stdin),
             pending,
             next_id: AtomicU64::new(1),
+            dead,
         }))
+    }
+
+    /// 本实例是否仍然可用（子进程还在跑，且未被判定失效）。
+    ///
+    /// `try_wait()` 返回 `Ok(None)` = 仍在运行；返回 `Some(_)` = 已退出。
+    /// 任何拿不准的情况一律按「不可用」处理 —— 宁可付一次 sidecar 冷启动的代价，
+    /// 也不要让用户的每个操作都干等到 timeout（那正是真机上报「更新失败」的形态）。
+    pub fn is_alive(&self) -> bool {
+        if self.dead.load(Ordering::SeqCst) {
+            return false;
+        }
+        let mut guard = self.child.lock().unwrap();
+        match guard.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false, // shutdown() 已经把 child 取走了
+        }
     }
 
     /// 发一个请求并等响应（`timeout_secs` 兜底，避免 sidecar 卡住时本壳一起挂）。
     pub async fn request(&self, method: &str, params: Value, timeout_secs: u64) -> Result<Value, String> {
+        // 入口先判存活 —— 这是「秒失败」的那一道。
+        // 只靠写入报错是不够的：Windows 上往已关闭的管道写可能被缓冲区吞掉而"成功"，
+        // 之后就会一路干等到 timeout（真机形态：check_update 45s）。宁可在入口直接拒绝。
+        if !self.is_alive() {
+            return Err(format!("sidecar 不可用（进程已退出），{method} 已放弃"));
+        }
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -152,11 +196,20 @@ impl Sidecar {
         let msg = json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params });
         {
             let mut stdin = self.stdin.lock().await;
-            stdin
-                .write_all(format!("{msg}\n").as_bytes())
-                .await
-                .map_err(|e| format!("写入 sidecar 失败：{e}"))?;
-            stdin.flush().await.map_err(|e| format!("flush sidecar 失败：{e}"))?;
+            // 写入/刷新失败 = 管道对面没人了 → 立刻置 dead，让下一次 ensure_sidecar 重建。
+            // 否则后续每个请求都会重演「写进去、永远没响应、干等到超时」。
+            if let Err(e) = stdin.write_all(format!("{msg}\n").as_bytes()).await {
+                self.dead.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "写入 sidecar 失败：{e}（sidecar 可能已退出，下次操作会自动重建）"
+                ));
+            }
+            if let Err(e) = stdin.flush().await {
+                self.dead.store(true, Ordering::SeqCst);
+                return Err(format!(
+                    "flush sidecar 失败：{e}（sidecar 可能已退出，下次操作会自动重建）"
+                ));
+            }
         }
 
         match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), rx).await {
@@ -177,6 +230,7 @@ impl Sidecar {
         // MutexGuard 会存活到 if 块结束 → 跨 await 持有 std Mutex（clippy::await_holding_lock，
         // 且真会阻塞 executor）。
         let child = self.child.lock().unwrap().take();
+        self.dead.store(true, Ordering::SeqCst); // 主动关闭同样视为不可用
         if let Some(mut child) = child {
             let _ = child.kill().await;
         }
@@ -311,5 +365,77 @@ mod tests {
             Ok(v) => panic!("未连接时 invoke 应失败，实际返回：{v}"),
         }
         sc.shutdown().await;
+    }
+
+    // -----------------------------------------------------------------------
+    // 「sidecar 退出后不得被复用」—— 2026-10-13 真机缺陷
+    //
+    // 现象：控制台点「检查更新」等满 45 秒，界面报「check_update 超时」；
+    //       而同一台机器上手工拉起 sidecar 跑同一个请求只要 7 秒。
+    // 根因：控制台缓存里的 Arc<Sidecar> 指向早已退出的子进程，
+    //       ensure_sidecar 只判「缓存里有没有」，不判「那进程还活着没」。
+    // -----------------------------------------------------------------------
+
+    /// 把 sidecar 的子进程直接杀掉，模拟真机上它意外退出。
+    fn kill_child(sc: &Sidecar) {
+        let mut guard = sc.child.lock().unwrap();
+        if let Some(child) = guard.as_mut() {
+            let _ = child.start_kill();
+        }
+    }
+
+    /// 等 is_alive 变为 false（stdout 任务观察到 EOF 会置 dead）。
+    async fn wait_dead(sc: &Sidecar) {
+        for _ in 0..150 {
+            if !sc.is_alive() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn 启动后_is_alive_应为真_shutdown_后应为假() {
+        let sc = Sidecar::spawn(&node_bin(), &dev_sidecar_src(), Arc::new(|_| {}))
+            .expect("sidecar 应能启动");
+        assert!(sc.is_alive(), "刚启动的 sidecar 应判为存活");
+        sc.shutdown().await;
+        assert!(!sc.is_alive(), "shutdown 之后必须判为不存活");
+    }
+
+    #[tokio::test]
+    async fn 子进程被杀后_is_alive_必须变假() {
+        let sc = Sidecar::spawn(&node_bin(), &dev_sidecar_src(), Arc::new(|_| {}))
+            .expect("sidecar 应能启动");
+        assert!(sc.is_alive());
+
+        kill_child(&sc);
+        wait_dead(&sc).await;
+
+        assert!(
+            !sc.is_alive(),
+            "子进程已退出，is_alive 仍为真 → ensure_sidecar 会继续复用死实例（就是真机那个缺陷）"
+        );
+    }
+
+    #[tokio::test]
+    async fn 对已退出的_sidecar_发请求必须秒失败而不是干等超时() {
+        let sc = Sidecar::spawn(&node_bin(), &dev_sidecar_src(), Arc::new(|_| {}))
+            .expect("sidecar 应能启动");
+
+        kill_child(&sc);
+        wait_dead(&sc).await;
+
+        // 故意给 30 秒超时：正确实现应当在入口就拒绝（毫秒级）。
+        // 首版缺陷的表现恰恰是「干等到超时」，所以这里**断言耗时**而不只是断言出错。
+        let t0 = std::time::Instant::now();
+        let r = sc.request("state", json!({}), 30).await;
+        let cost = t0.elapsed();
+
+        assert!(r.is_err(), "对已退出的 sidecar 发请求必须失败");
+        assert!(
+            cost < std::time::Duration::from_secs(5),
+            "应快速失败，实际耗时 {cost:?} —— 若接近 30s 说明仍在干等超时"
+        );
     }
 }
