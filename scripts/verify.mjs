@@ -268,6 +268,8 @@ async function main() {
     const c = await connect();
     const r = await c.invoke('screen.info');
     c.close();
+    // 平台未实现（如 Linux 无 GUI 后端）→ 跳过，不算失败
+    if (r.status !== 'ok' && r.error?.name === 'E_UNSUPPORTED_PLATFORM') return 'skip';
     assertOk(r, 'screen.info');
     if (!Array.isArray(r.data.displays) || r.data.displays.length === 0) throw new Error('未返回显示器');
     const d = r.data.displays[0];
@@ -290,6 +292,7 @@ async function main() {
     c.close();
     if (r.status === 'ok') return '已开启输入控制';
     if (r.error?.name === 'E_CAPABILITY_DISABLED') return '默认禁用（安全）';
+    if (r.error?.name === 'E_UNSUPPORTED_PLATFORM') return 'skip';   // 该平台无输入实现
     throw new Error(`异常响应: ${JSON.stringify(r.error)}`);
   });
 

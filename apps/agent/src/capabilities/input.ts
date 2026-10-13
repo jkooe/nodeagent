@@ -7,6 +7,7 @@ import {
 } from './input-script.js';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { PS_DPI_AWARE } from '../util/dpi.js';
+import { assertGuiPlatform } from '../util/platform.js';
 
 type Args = Record<string, unknown>;
 
@@ -256,6 +257,7 @@ const MOUSE_FLAGS: Record<string, { down: number; up: number }> = {
 };
 
 export async function mouseMove(args: Args): Promise<unknown> {
+  assertGuiPlatform('input.mouseMove');
   assertAllowed('input.mouse.move');
   requireWindows('input.mouse.move');
   const x = args['x'] as number;
@@ -283,6 +285,7 @@ export async function mouseMove(args: Args): Promise<unknown> {
 }
 
 export async function mouseClick(args: Args): Promise<unknown> {
+  assertGuiPlatform('input.mouseClick');
   assertAllowed('input.mouse.click');
   requireWindows('input.mouse.click');
   const button = (args['button'] as string) ?? 'left';
@@ -314,6 +317,7 @@ export async function mouseClick(args: Args): Promise<unknown> {
 }
 
 export async function mouseScroll(args: Args): Promise<unknown> {
+  assertGuiPlatform('input.mouseScroll');
   assertAllowed('input.mouse.scroll');
   requireWindows('input.mouse.scroll');
   const delta = args['delta'] as number;
@@ -333,6 +337,7 @@ export async function mouseScroll(args: Args): Promise<unknown> {
  * 用于拖文件、框选、拖动滑块/窗口。整段动作在一次进程内完成（避免多次 spawn 抖动）。
  */
 export async function mouseDrag(args: Args): Promise<unknown> {
+  assertGuiPlatform('input.mouseDrag');
   assertAllowed('input.mouse.drag');
   requireWindows('input.mouse.drag');
   const x1 = args['from_x'] as number;

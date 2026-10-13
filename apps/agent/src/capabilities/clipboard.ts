@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
+import { assertGuiPlatform } from '../util/platform.js';
 
 type Args = Record<string, unknown>;
 
@@ -79,6 +80,8 @@ async function writeClipboardWindows(b64: string, expect: string): Promise<void>
 // ---------------- clip.get ----------------
 
 export async function clipGet(args: Args = {}): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端未实现）
+  assertGuiPlatform('clipboard.get');
   const format = (args['format'] as string | undefined) ?? 'auto';
 
   if (IS_WINDOWS) {
@@ -132,6 +135,8 @@ async function getImageWindows(): Promise<Record<string, unknown> | null> {
 // ---------------- clip.set ----------------
 
 export async function clipSet(args: Args): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端未实现）
+  assertGuiPlatform('clipboard.set');
   const image = args['image_base64'] as string | undefined;
   const text = args['text'] as string | undefined;
 

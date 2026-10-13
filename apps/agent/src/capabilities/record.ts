@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { PS_DPI_AWARE } from '../util/dpi.js';
+import { assertGuiPlatform } from '../util/platform.js';
 
 type Args = Record<string, unknown>;
 
@@ -88,6 +89,8 @@ async function tryMuxMp4(dir: string, fps: number): Promise<string | null> {
  * —— 避免把大体积视频塞进单条 RPC 响应。
  */
 export async function screenRecord(args: Args): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端需 X11/Wayland 后端，尚未实现）
+  assertGuiPlatform('screen.record');
   if (!IS_WINDOWS) {
     throw new CapabilityError(ErrorCodes.UNSUPPORTED_PLATFORM, 'screen.record 当前仅支持 Windows 被控端', {
       platform: process.platform,

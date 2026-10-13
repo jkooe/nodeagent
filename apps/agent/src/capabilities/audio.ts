@@ -2,6 +2,7 @@ import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { runPowerShellSmart } from '../util/ps-helper.js';
 import { shLit } from '../util/quote.js';
+import { assertGuiPlatform } from '../util/platform.js';
 
 type Args = Record<string, unknown>;
 
@@ -163,6 +164,8 @@ async function macState(): Promise<{ muted: boolean; volume: number }> {
 const AUDIO_BACKEND_WIN = 'NAudio/CoreAudioAPI';
 
 export async function audioGet(_args: Args): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端未实现）
+  assertGuiPlatform('audio.get');
   if (IS_WINDOWS) {
     const state = parseAudioState(await runWindows('[NAAudio]::Get()'));
     return { ...state, platform: 'windows', backend: AUDIO_BACKEND_WIN };
@@ -178,6 +181,8 @@ export async function audioGet(_args: Args): Promise<unknown> {
 // ---------------- system.audio.set ----------------
 
 export async function audioSet(args: Args): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端未实现）
+  assertGuiPlatform('audio.set');
   const muteArg = args['mute'];
   const volumeArg = args['volume'];
   const hasMute = typeof muteArg === 'boolean';

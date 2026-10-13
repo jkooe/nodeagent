@@ -2,6 +2,7 @@ import { CapabilityError, ErrorCodes } from '@nodeagent/protocol';
 import { IS_WINDOWS, execCommand } from '../util/exec.js';
 import { shLit } from '../util/quote.js';
 import { PS_DPI_AWARE } from '../util/dpi.js';
+import { assertGuiPlatform } from '../util/platform.js';
 
 type Args = Record<string, unknown>;
 
@@ -82,6 +83,8 @@ async function listDisplays(): Promise<Display[]> {
 }
 
 export async function screenInfo(_args: Args): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端需 X11/Wayland 后端，尚未实现）
+  assertGuiPlatform('screen.info');
   const displays = await listDisplays();
   return {
     displays: displays.map(({ id, name, width, height, is_primary, scale }) => ({
@@ -115,6 +118,8 @@ interface CaptureResult {
 }
 
 export async function screenCapture(args: Args): Promise<unknown> {
+  // 该能力仅在 Windows/macOS 有实现（Linux 端需 X11/Wayland 后端，尚未实现）
+  assertGuiPlatform('screen.capture');
   const opts: CaptureOpts = {
     display_id: (args['display_id'] as number) ?? 0,
     format: (args['format'] as 'png' | 'jpeg') ?? 'jpeg',
