@@ -1,6 +1,6 @@
 [package]
 name = "nodeagent-console"
-version = "2.0.2"
+version = "2.0.3"
 description = "nodeagent 桌面控制台（主控 + 被控一体，含本机服务托管）"
 authors = ["jkooe"]
 edition = "2021"
