@@ -10,6 +10,7 @@ import { loadAgentConfig } from '../config.js';
 import { readAudit, readAuditAll, verifyAudit, computeAuditHead, anchorAudit, compareWithAnchors } from '../audit.js';
 import { computeMetrics } from '../metrics.js';
 import { allPsShellStats } from '../util/ps-helper.js';
+import { lkgStatus } from '../lkg.js';
 import { startTask } from './task.js';
 import { psLit } from '../util/quote.js';
 
@@ -151,6 +152,10 @@ export async function systemInfo(args: Args): Promise<unknown> {
     network: {
       allow_from: configAllowFrom(),
     },
+    // 交付流水线 §6：最后已知可用版本（回滚锚点）。
+    // matches=false 表示「当前版本还没被证明能启动」—— 刚更新完、尚未完成一次成功
+    // 启动时会是这种情况，控制端应据此暂缓向其余设备放量。
+    lkg: lkgStatus(),
   };
 
   if (fields && fields.length > 0) {

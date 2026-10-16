@@ -7,6 +7,7 @@ import { createAgentServer } from './server.js';
 import { initAudit, audit, auditFilePath } from './audit.js';
 import { startBeacon, DEFAULT_DISCOVERY_PORT, type Beacon } from './discovery.js';
 import { startHubClient, type HubClient } from './hub-mode.js';
+import { recordLKG } from './lkg.js';
 
 function listLocalIps(): string[] {
   const out: string[] = [];
@@ -133,6 +134,11 @@ async function main(): Promise<void> {
     },
     (msg) => console.log(`[WARN] ${msg}`),
   );
+  // 交付流水线 §6：此刻脚本已加载、配置已读、证书已签、端口已绑、心跳已起 ——
+  // 走到这里说明「这个版本至少能启动」，故记为最后已知可用版本（LKG）。
+  // 注意**不在更新写完时就记**：那会把尚未验证的版本当成已知可用，LKG 就失去意义。
+  recordLKG();
+
   console.log('');
   console.log('  nodeagent 被控端已启动');
   console.log('  ─────────────────────────────────────────────');

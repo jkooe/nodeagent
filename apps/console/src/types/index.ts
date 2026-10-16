@@ -109,6 +109,29 @@ export interface SystemInfo {
   ps_helper?: PsHelperInfo;
   network?: NetworkInfo;
   build?: BuildInfo;
+  /** 最后已知可用版本 LKG（交付流水线 §6 回滚锚点） */
+  lkg?: LkgInfo;
+}
+
+/**
+ * 最后已知可用版本（Last-Known-Good）。
+ *
+ * 只在「本次启动真正起来了」之后才由被控端写入 ——
+ * 故 `matches=false` 意味着当前版本**尚未被证明能启动**（刚更新完、还没完成一次成功启动），
+ * 界面应据此提示「暂缓向其余设备放量」。
+ */
+export interface LkgInfo {
+  lkg?: {
+    hash?: string;
+    bytes?: number;
+    script_path?: string;
+    recorded_at?: number;
+    node_version?: string;
+    platform?: string;
+  };
+  current_hash?: string;
+  matches?: boolean;
+  byte_delta?: number;
 }
 
 /**

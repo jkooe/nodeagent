@@ -316,4 +316,5 @@ jobs:
             apps/console/src-tauri/target/release/bundle/nsis/*.exe
           # 一条架构没产出就报错，避免「jobs 全绿但产物不全」
           if-no-files-found: error
-          retention-days: 30
+          # 交付流水线 §4：CI artifact 公开可下载，留存越久暴露面越大，30 → 7
+          retention-days: 7

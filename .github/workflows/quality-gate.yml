@@ -1,0 +1,108 @@
+# 交付流水线左移门禁（见 docs/DELIVERY-PIPELINE.md §1 §2 §8）
+#
+# 本文件只做「快且能阻断」的检查：密钥、依赖漏洞、类型、覆盖率、提交规范。
+# 真机链路（install.cmd / control.cmd 双击、Windows 能力）留在 windows-e2e.yml
+# —— 那一环跑得慢但价值最高，不可被这条更快的流水线替代。
+#
+# ⚠️ 阈值说明（别照搬通用 80%）：详见 docs/DELIVERY-PIPELINE.md §2。
+#    全量覆盖率当前基线约 66.9%，故全量只观测；阻断只针对**变更文件**（≥70%）。
+
+name: Quality Gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ① 代码审计：密钥 + 依赖漏洞
+  audit:
+    name: 代码审计（密钥 + 依赖）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # gitleaks 扫历史提交，需要完整历史
+          fetch-depth: 0
+
+      # 密钥扫描：nodeagent 的密钥面比一般项目大 ——
+      # PSK、Ed25519 私钥、TLS 自签证书、PSK.txt、agent.json
+      - name: 密钥与敏感信息扫描
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: pnpm install --frozen-lockfile
+
+      # 依赖漏洞：High 及以上阻断
+      - name: 依赖漏洞扫描（SCA）
+        run: pnpm audit --audit-level=high
+
+  # ② 质量门禁：类型 + 覆盖率
+  gate:
+    name: 质量门禁（类型 + 覆盖率）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # 覆盖率门禁要算「变更文件」，需与基线做 diff
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      # 单测 import 的是 dist/（编译产物），必须先构建，否则覆盖率全空
+      - run: pnpm -r build
+
+      - name: 采集覆盖率
+        run: |
+          mkdir -p coverage
+          node --test --experimental-test-coverage \
+               --test-reporter=lcov \
+               --test-reporter-destination=coverage/lcov.info \
+               "tests/unit/**/*.test.mjs"
+
+      - name: 覆盖率门禁
+        run: node scripts/ci/check-coverage.mjs --lcov coverage/lcov.info --base origin/main --threshold 70
+
+      # coverage/ 已在 .gitignore 中，此处留档便于人工查看
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage/
+          retention-days: 7
+
+  # ③ 提交信息规范
+  commits:
+    name: 提交信息规范
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 校验 Conventional Commits
+        run: node scripts/ci/check-commit-msg.mjs --base ${{ github.event.pull_request.base.sha }}

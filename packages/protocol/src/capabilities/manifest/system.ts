@@ -53,6 +53,14 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
             'v18 构建指纹：hash（运行中 agent 脚本的 sha256 前 12 位，部署校验用）、bytes、mtime_ms、' +
             'node（运行时版本）、started_at、uptime_ms',
         },
+        lkg: {
+          type: 'object',
+          description:
+            '最后已知可用版本 LKG（交付流水线 §6 回滚锚点）：lkg（记录，含 hash/bytes/script_path/' +
+            'recorded_at）、current_hash、matches、byte_delta。' +
+            'matches=false 表示当前版本**尚未被证明能启动**（刚更新完、还没完成一次成功启动），' +
+            '控制端应据此暂缓向其余设备放量。仅在「本次启动真正起来了」之后才写入。',
+        },
       },
     },
   },
