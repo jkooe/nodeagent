@@ -294,6 +294,33 @@ export const SYSTEM_CAPABILITIES: CapabilityDescriptor[] = [
     },
   },
   {
+    name: CapabilityNames.AuditL2,
+    version: '1.0',
+    description:
+      'L2 **系统级审计兜底**：采集操作系统自己的审计事件（Windows Security 日志），补 L1 结构上记不到的那块 —— ' +
+      'L1 只看得见经过 agent RPC 的调用，攻击者绕过 agent 直接操作、或把 agent 停掉时 L1 全盲。' +
+      'action: status=查策略是否启用 / enable=开启（需管理员）/ collect=拉取并归一化落盘 / verify=校验 L2 链。' +
+      '⚠️ 信任边界：采集器与 agent 同权限，本地 audit-l2.log 只是**归一化副本**，' +
+      '真正的防篡改依赖把记录**转发出机**（与 SECURITY.md §4.8 锚定同一思路）。' +
+      '当前仅落地 Windows；Linux（auditd）需预装、macOS（ESF）受 Apple entitlement 限制，均未实现。',
+    risk: 'medium',
+    params_schema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['status', 'enable', 'collect', 'verify'],
+          default: 'status',
+          description: 'status / enable / collect / verify',
+        },
+        since: { type: 'integer', description: 'collect 的起始时间（Unix ms），默认 24 小时内' },
+        limit: { type: 'integer', minimum: 1, maximum: 5000, default: 1000, description: 'collect 条数上限' },
+      },
+      additionalProperties: false,
+    },
+    returns_schema: { type: 'object' },
+  },
+  {
     name: CapabilityNames.Metrics,
     version: '1.0',
     description:

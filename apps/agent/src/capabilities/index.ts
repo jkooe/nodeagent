@@ -1,6 +1,7 @@
 import { CapabilityNames } from '@nodeagent/protocol';
 import type { AgentConfig } from '../config.js';
 import { systemInfo, systemStatus, processList, serviceList, shellExec, auditList, auditVerify, auditHead, auditAnchor, metricsReport, agentRestart } from './system.js';
+import { auditL2 } from './audit-l2.js';
 import { appList, appInstall } from './app.js';
 import { screenInfo, screenCapture } from './screen.js';
 import { windowList, windowFocus, screenFind } from './window.js';
@@ -79,6 +80,8 @@ export function createCapabilityRegistry(cfg: AgentConfig): Record<string, Capab
     // v2.0.0 审计链外部锚定（防整链重写）
     [CapabilityNames.AuditHead]: auditHead,
     [CapabilityNames.AuditAnchor]: auditAnchor,
+    // L2 系统级审计兜底（见 docs/AUDIT-L2.md）
+    [CapabilityNames.AuditL2]: auditL2,
     // v13 成功指标
     [CapabilityNames.Metrics]: metricsReport,
     // v5 文件传输

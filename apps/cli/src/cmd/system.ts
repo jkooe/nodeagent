@@ -231,6 +231,51 @@ export async function cmdAuditAnchor(opts: Options): Promise<void> {
   );
 }
 
+/**
+ * L2 系统级审计兜底（见 docs/AUDIT-L2.md）。
+ *   nodeagent audit l2 [status|enable|collect|verify] [--since <ms>] [--limit N]
+ */
+export async function cmdAuditL2(action: string | undefined, opts: Options): Promise<void> {
+  const args: Record<string, unknown> = { action: action ?? 'status' };
+  if (opts.since !== undefined) args['since'] = Number(opts.since);
+  if (opts.limit !== undefined) args['limit'] = Number(opts.limit);
+
+  await withClient((c) =>
+    callAndPrint(c, CapabilityNames.AuditL2, args, opts.json, (data) => {
+      const d = data as Record<string, unknown>;
+      if (d['collected'] !== undefined) {
+        console.log(`✓ 已采集 ${d['collected']} 条，写入 ${d['written']} 条`);
+        console.log(`  文件：${d['file']}`);
+        if (typeof d['note'] === 'string') console.log(`  ⚠️ ${d['note']}`);
+        return;
+      }
+      if (d['ok'] !== undefined) {
+        const ok = d['ok'] === true;
+        const broken = d['broken_at'] as { line: number; reason: string } | undefined;
+        console.log(
+          ok
+            ? `✓ L2 链完整（校验 ${d['checked']} 条）`
+            : `✗ L2 链异常：第 ${broken?.line} 行 —— ${broken?.reason}`,
+        );
+        return;
+      }
+      if (d['enabled'] === true) {
+        console.log(`✓ 已启用 Windows 审计策略：${(d['policies'] as string[]).join(' / ')}`);
+        if (typeof d['hint'] === 'string') console.log(`  ${d['hint']}`);
+        return;
+      }
+      // status
+      console.log(`平台               : ${d['platform']}`);
+      console.log(`审计策略           : ${d['auditpol']}`);
+      console.log(`已禁用旧式策略覆盖 : ${d['legacy_policy_disabled'] ? '是' : '否（⚠️ 会导致 4688 不产生）'}`);
+      console.log(`记录命令行         : ${d['cmdline_logging'] ? '是' : '否（只能看到进程名）'}`);
+      console.log(`Sysmon             : ${d['sysmon_installed'] ? '已安装（可并用）' : '未安装（不自动下载）'}`);
+      console.log(`L2 文件            : ${d['file']}${d['file_exists'] ? '' : '（尚未生成）'}`);
+      if (typeof d['note'] === 'string') console.log(`⚠️ ${d['note']}`);
+    }),
+  );
+}
+
 export async function cmdAuditVerify(opts: Options): Promise<void> {
   await withClient((c) =>
     callAndPrint(c, CapabilityNames.AuditVerify, {}, opts.json, (data) => {

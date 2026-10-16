@@ -59,11 +59,13 @@ test('清单：v7~v11 新能力均已登记', () => {
     'system.agent.update',
     'system.audio.get',
     'system.audio.set',
+    // L2 系统级审计兜底（2026-10-17，见 docs/AUDIT-L2.md）
+    'system.audit.l2',
   ];
   for (const name of expected) {
     assert.ok(findCapability(name), `缺少 ${name}`);
   }
-  assert.equal(CAPABILITY_MANIFEST.length, 51, '当前应有 51 项能力');
+  assert.equal(CAPABILITY_MANIFEST.length, 52, '当前应有 52 项能力');
 });
 
 // ---------- 参数校验（新能力） ----------

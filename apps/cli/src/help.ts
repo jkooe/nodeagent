@@ -14,6 +14,11 @@ export const HELP = `nodeagent —— 跨机 AI 接管框架（控制端 CLI）
   nodeagent audit [--limit 20] [--type invoke|auth|acl|agent] [--client-id X] [--since <ms>]
                                       查询被控端审计日志 (v3+)
   nodeagent audit verify              校验审计链完整性（防篡改检测）(v11)
+  nodeagent audit l2 [status|enable|collect|verify] [--since <ms>] [--limit N]
+                                      L2 系统级审计兜底：采集 OS 自身审计事件，
+                                      补 L1 记不到的那块（agent 被停/被绕过时）(见 docs/AUDIT-L2.md)
+                                      仅 Windows 已落地；Linux 需预装 auditd；
+                                      macOS ESF 受 Apple entitlement 限制不可用
   nodeagent metrics [--since <ms>]    成功指标：闭环率/装软件率/P95/拦截率 (v13)
   nodeagent audio [get]                 查看被控端静音状态与主音量 (v17)
   nodeagent audio set [--mute on|off] [--volume 0-100]   设置静音 / 音量

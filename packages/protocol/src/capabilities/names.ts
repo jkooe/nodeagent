@@ -49,6 +49,8 @@ export const CapabilityNames = {
   AuditVerify: 'system.audit.verify',
   AuditHead: 'system.audit.head',
   AuditAnchor: 'system.audit.anchor',
+  /** L2 系统级审计兜底（2026-10-17，见 docs/AUDIT-L2.md） */
+  AuditL2: 'system.audit.l2',
   Metrics: 'system.metrics',
   // v19 拉取式自更新
   AgentUpdate: 'system.agent.update',
