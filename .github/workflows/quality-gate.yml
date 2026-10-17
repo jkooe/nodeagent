@@ -76,19 +76,21 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # ⚠️ 必须先构建 `@nodeagent/protocol` 再查类型（2026-10-17）
-      # 各包 import 的是 `@nodeagent/protocol` 的**类型产物**（dist/*.d.ts）。
-      # CI 里全新检出、没有 dist，直接 typecheck 会集体报
-      # `TS2307: Cannot find module '@nodeagent/protocol'` —— 而本地因为 dist 还在，
-      # 看不出问题（典型的「本地绿 / CI 红」）。
-      # 只构建 protocol 而不跑全量 build：够用且快，全量 build 留给下一步。
-      - name: 构建 protocol 类型产物
-        run: pnpm --filter @nodeagent/protocol build
+      # ⚠️ 必须先全量构建，再查类型（2026-10-17）
+      #
+      # 各包 import 的是**同仓其它包的编译产物**（dist/*.d.ts），依赖链是
+      # `protocol → client → cli / mcp / agent`。CI 全新检出没有 dist，
+      # 直接 typecheck 会逐层报 `TS2307: Cannot find module '@nodeagent/xxx'`；
+      # 而本地因为 dist 还在，完全看不出来 —— 典型「本地绿 / CI 红」。
+      #
+      # 一开始只想「只构建 protocol 就够」，实测不够：cli 又报找不到 `@nodeagent/client`。
+      # 与其逐个补依赖（下次加包还会漏），不如直接用 `-r build` 把整条链建出来。
+      # 顺带：单测 import 的也是 dist/，这一步同时保证了覆盖率不为空（原步骤在 typecheck 之后，
+      # 顺序本就矛盾 —— 既然后面也要 build，不如提前一次到位）。
+      - name: 构建 workspace（typecheck 与单测都依赖 dist）
+        run: pnpm -r build
 
       - run: pnpm typecheck
-
-      # 单测 import 的是 dist/（编译产物），必须先构建，否则覆盖率全空
-      - run: pnpm -r build
 
       - name: 采集覆盖率
         run: |
