@@ -1,0 +1,25 @@
+# gitleaks 误报台账（按指纹精确忽略，不影响任何规则）
+#
+# ## 为什么用 .gitleaksignore 而不是 .gitleaks.toml 的 allowlist
+# - `.gitleaks.toml` 的顶层 `[allowlist].paths = ['tests/**']` 会对**所有规则**放行，
+#   于是 `private-key`（私钥块）、`aws-access-token` 等在测试目录下也失效 ——
+#   而「为了造样本把真实私钥贴进 fixture」恰恰是最常见的泄露方式。
+# - `[[rules]]` 重定义 `generic-api-key` 会**替换**内置规则（gitleaks 要求重写 regex），
+#   等于自己维护一份正则，反而更容易漏。
+# - 指纹是 `<commit>:<file>:<rule>:<line>`，**只忽略这一条**，其余一概照旧。
+#
+# ## 逐条核对记录（2026-10-17）
+# 4 条命中全部位于测试文件，值均为明显的递增占位（含 `0123456789abcdef` 模式）：
+#   sec-e2e-key-0123456789abcdef0123456789
+#   test-key-0123456789abcdef
+#   fs-key-0123456789abcdef0123456789abcdef
+#   e2e-test-key-0123456789abcdef0123456789abcdef
+# 已逐一核对：**均不等于被控端真实 PSK，均不含 64 位十六进制串** → 判定为误报。
+#
+# ## 若日后有人在此文件里追加指纹
+# 必须先做同样的核对：确认该值不是真实凭据。**这个文件不是「让 CI 变绿」的开关。**
+#
+0d59d6032b96c42f9eda380c4b6c2e95d253f856:tests/e2e/run.mjs:generic-api-key:906
+f4c605cc6d26e85c81b50e10da3a466f755d8221:tests/unit/hmac.test.mjs:generic-api-key:6
+4ff1b4fd9021755d7ed060da5baadc5618dcbc3d:tests/e2e/run.mjs:generic-api-key:30
+77c024703abf5ac07e63f73c551f623539ff0856:tests/e2e/run.mjs:generic-api-key:21
