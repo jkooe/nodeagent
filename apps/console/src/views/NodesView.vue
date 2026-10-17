@@ -22,7 +22,7 @@ const nodeStore = useNodeStore();
 const msg = useMessage();
 
 const newName = ref("");
-const newUrl = ref("ws://127.0.0.1:8765");
+const newUrl = ref("wss://127.0.0.1:8765");
 const newKey = ref("");
 
 async function doConnect() {
@@ -73,7 +73,7 @@ const capGroups = computed(() => {
     <n-card title="连接被控端" size="small">
       <n-space vertical>
         <n-input-group>
-          <n-input v-model:value="conn.url" placeholder="ws://127.0.0.1:8765" style="flex: 3" />
+          <n-input v-model:value="conn.url" placeholder="wss://127.0.0.1:8765" style="flex: 3" />
           <n-input
             v-model:value="conn.key"
             type="password"

@@ -18,7 +18,8 @@ export const WINDOWS_ONLY_CAPS = ["app.list", "app.install", "system.service.lis
 
 export const useConnStore = defineStore("conn", () => {
   const state = ref<string>("closed");
-  const url = ref(localStorage.getItem("na.url") || "ws://127.0.0.1:8765");
+  // 默认 wss：被控端默认 tls=true（明文 ws 连 TLS 端口必然握手失败，2026-10-17 真机踩过）
+  const url = ref(localStorage.getItem("na.url") || "wss://127.0.0.1:8765");
   const key = ref(localStorage.getItem("na.key") || "");
   const info = ref<ConnectInfo | null>(null);
   const logs = ref<string[]>([]);

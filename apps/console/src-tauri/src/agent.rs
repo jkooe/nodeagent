@@ -371,7 +371,17 @@ pub fn read_agent_config(data_dir: &Path) -> Value {
         // 它本来就在用户本机的 600 文件里，不构成额外暴露面。
         "key": key,
         "port_in_use": port_in_use(port as u16),
-        "url": format!("ws://127.0.0.1:{port}"),
+        // ⚠️ 协议必须跟随 `tls`（2026-10-17 真机：「连接本机」必失败）
+        //
+        // 原实现硬编码 `ws://`，而 agent 默认 `tls: true` —— 于是控制台
+        // 用**明文 WebSocket** 去连一个**只接受 TLS** 的端口：
+        // 服务端等 TLS ClientHello，收到的却是 HTTP GET，握手当场失败。
+        // 被控端审计里连一条记录都不会出现（根本没进到鉴权层），
+        // 用户只看到一句「连接失败」。
+        //
+        // 这类错误的特征是「配置看起来都对、密钥也对、就是连不上」——
+        // 因为问题不在鉴权，在**协议层**。
+        "url": format!("{}://127.0.0.1:{port}", if tls { "wss" } else { "ws" }),
     })
 }
 
@@ -918,6 +928,40 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// 「连接本机」用的地址必须跟随 `tls` 开关。
+    ///
+    /// 真机缺陷：原实现硬编码 `ws://`，而 agent 默认 `tls: true` ——
+    /// 明文 WebSocket 去连只接受 TLS 的端口，握手当场失败，
+    /// 被控端审计里连一条记录都没有（根本没进到鉴权层）。
+    /// 特征是「配置看着全对、密钥也对、就是连不上」。
+    #[test]
+    fn 连接地址应跟随tls开关而非硬编码ws() {
+        let dir = tmp_dir("cfg-tls");
+        let p = dir.join("agent.json");
+
+        std::fs::write(
+            &p,
+            r#"{"node_id":"win","port":9000,"key":"k","auth_mode":"psk","tls":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_agent_config(&dir)["url"],
+            json!("wss://127.0.0.1:9000"),
+            "tls=true 时必须给 wss，否则连上才怪"
+        );
+
+        std::fs::write(
+            &p,
+            r#"{"node_id":"win","port":9000,"key":"k","auth_mode":"psk","tls":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_agent_config(&dir)["url"],
+            json!("ws://127.0.0.1:9000"),
+            "tls=false 时必须给 ws"
+        );
     }
 
     /// 状态自愈：真机上曾出现「进程已起、界面永远显示启动中」，
