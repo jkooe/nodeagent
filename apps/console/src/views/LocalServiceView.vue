@@ -37,6 +37,8 @@ const copied = ref<string | null>(null);
 const cfg = computed(() => agent.status?.config ?? null);
 const proc = computed(() => agent.process);
 const busy = computed(() => agent.busy);
+/** 更新检查/下载独立忙标志 —— 网络类操作不该锁住启停按钮（见 stores/agent.ts 注释） */
+const updateBusy = computed(() => agent.updateBusy);
 
 /** 最近 6 行日志（完整日志在「服务日志」页）。 */
 const recent = computed(() => logs.lines.slice(-6));
@@ -308,13 +310,13 @@ function openRelease() {
             </div>
 
             <n-space style="margin-top: 12px">
-              <n-button size="small" :loading="busy" @click="doCheckUpdate">检查更新</n-button>
+              <n-button size="small" :loading="updateBusy" @click="doCheckUpdate">检查更新</n-button>
               <n-popconfirm :show-icon="false" @positive-click="doApplyUpdate">
                 <template #trigger>
                   <n-button
                     size="small"
                     type="primary"
-                    :disabled="!agent.update?.agent_has_update || busy"
+                    :disabled="!agent.update?.agent_has_update || updateBusy"
                   >
                     更新被控端
                   </n-button>

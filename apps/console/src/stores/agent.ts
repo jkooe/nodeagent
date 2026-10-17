@@ -33,7 +33,10 @@ export const useAgentStore = defineStore("agent", () => {
   const status = ref<AgentStatus | null>(null);
   const sysInfo = ref<ConsoleSystemInfo | null>(null);
   const update = ref<UpdateInfo | null>(null);
+  /** 启停/设置等毫秒级操作的全局忙标志（**不要**给网络类操作复用，见 checkUpdate 注释） */
   const busy = ref(false);
+  /** 更新检查/下载专用忙标志 —— 与 `busy` 隔离，避免慢操作锁死整页按钮 */
+  const updateBusy = ref(false);
   const error = ref<string | null>(null);
   const bound = ref(false);
 
@@ -110,9 +113,19 @@ export const useAgentStore = defineStore("agent", () => {
     return run(() => api.settingsSet(patch));
   }
 
-  /** 检查更新。 */
+  /**
+   * 检查更新。
+   *
+   * ⚠️ **刻意不用全局 `busy`**（2026-10-17 真机缺陷）：
+   * `check_update` 要访问网络，境内可能一路等到超时（原 120s / RPC 150s）。
+   * 而 `busy` 是**全页共享**的（所有按钮 `:loading="busy"`），于是用户点一下
+   * 「检查更新」，整页按钮跟着转两分半 —— 看起来像「点什么都卡死」。
+   *
+   * 更新检查是**只读、可等待、与启停无关**的操作，本就不该锁住其他按钮。
+   * 故它自成一套 `updateBusy`；全局 `busy` 只服务毫秒级的启停与设置。
+   */
   async function checkUpdate() {
-    busy.value = true;
+    updateBusy.value = true;
     error.value = null;
     try {
       update.value = await api.checkUpdate();
@@ -121,11 +134,16 @@ export const useAgentStore = defineStore("agent", () => {
       error.value = e instanceof Error ? e.message : String(e);
       return null;
     } finally {
-      busy.value = false;
+      updateBusy.value = false;
     }
   }
 
-  /** 应用更新（仅更新本机被控端；控制台自身需重新下载安装包）。 */
+  /**
+   * 应用更新（仅更新本机被控端；控制台自身需重新下载安装包）。
+   *
+   * 同样走 `updateBusy` 而非全局 `busy`：下载更新的 RPC 超时是 330s，
+   * 若占用全局 busy，用户会看到「下载更新时整页按钮全部转圈五分钟」。
+   */
   async function applyUpdate(): Promise<ApplyUpdateResult | null> {
     const u = update.value;
     const url = u?.agent?.url;
@@ -134,9 +152,19 @@ export const useAgentStore = defineStore("agent", () => {
       error.value = "最新版本信息不完整（缺少下载地址或哈希），无法更新";
       return null;
     }
-    const r = await run(() => api.applyUpdate(url, sha, u.latest_version));
-    if (r) await checkUpdate();
-    return r;
+    updateBusy.value = true;
+    error.value = null;
+    try {
+      const r = await api.applyUpdate(url, sha, u.latest_version);
+      await refresh();
+      if (r) await checkUpdate();
+      return r;
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : String(e);
+      return null;
+    } finally {
+      updateBusy.value = false;
+    }
   }
 
   /** 一键连接本机被控端（用配置里的地址与密钥）。 */
@@ -152,6 +180,7 @@ export const useAgentStore = defineStore("agent", () => {
     sysInfo,
     update,
     busy,
+    updateBusy,
     error,
     process,
     state,
