@@ -37,6 +37,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: pnpm/action-setup@v4
+        with:
+          # 与本仓库其他工作流保持一致（console-windows.yml / rust.yml / windows-e2e.yml 均为 12）
+          version: 12
 
       - uses: actions/setup-node@v4
         with:
@@ -59,6 +62,9 @@ jobs:
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
+        with:
+          # 与本仓库其他工作流保持一致（console-windows.yml / rust.yml / windows-e2e.yml 均为 12）
+          version: 12
 
       - uses: actions/setup-node@v4
         with:
