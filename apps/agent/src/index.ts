@@ -144,7 +144,7 @@ async function main(): Promise<void> {
   });
   // v6：Hub 模式下不监听本地端口，改为主动外连 Hub（穿 NAT）
   const useHub = config.hub?.enabled === true;
-  const tls = !useHub && config.tls ? ensureCert() : null;
+  const tls = !useHub && config.tls ? await ensureCert() : null;
   const server = useHub ? null : await createAgentServer(config, tls);
 
   let hubClient: HubClient | null = null;

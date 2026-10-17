@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@nodeagent/protocol": "workspace:*",
-    "selfsigned": "^2.4.1",
+    "selfsigned": "^5.5.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

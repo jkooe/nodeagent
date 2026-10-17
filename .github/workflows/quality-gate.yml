@@ -49,7 +49,11 @@ jobs:
 
       # 依赖漏洞：High 及以上阻断
       - name: 依赖漏洞扫描（SCA）
-        run: pnpm audit --audit-level=high
+        # ⚠️ 必须显式指定公共 registry（2026-10-17）
+        # 仓库 `.npmrc` 指向 registry.npmmirror.com（镜像加速），但**镜像不实现
+        # audit 接口**，`pnpm audit` 会直接报 ERR_PNPM_AUDIT_ENDPOINT_NOT_EXISTS。
+        # 结果就是这道门禁从加上那天起**一直是红的**，等于没有门禁。
+        run: pnpm audit --audit-level=high --registry=https://registry.npmjs.org
 
   # ② 质量门禁：类型 + 覆盖率
   gate:
@@ -71,6 +75,15 @@ jobs:
           node-version: 22
 
       - run: pnpm install --frozen-lockfile
+
+      # ⚠️ 必须先构建 `@nodeagent/protocol` 再查类型（2026-10-17）
+      # 各包 import 的是 `@nodeagent/protocol` 的**类型产物**（dist/*.d.ts）。
+      # CI 里全新检出、没有 dist，直接 typecheck 会集体报
+      # `TS2307: Cannot find module '@nodeagent/protocol'` —— 而本地因为 dist 还在，
+      # 看不出问题（典型的「本地绿 / CI 红」）。
+      # 只构建 protocol 而不跑全量 build：够用且快，全量 build 留给下一步。
+      - name: 构建 protocol 类型产物
+        run: pnpm --filter @nodeagent/protocol build
 
       - run: pnpm typecheck
 

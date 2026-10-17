@@ -13,7 +13,7 @@ export interface TlsMaterial {
  * 确保自签证书存在（首次生成并缓存到 ~/.nodeagent/certs/）。
  * v1 用自签证书做传输加密；控制端可校验证书指纹或临时跳过校验。
  */
-export function ensureCert(): TlsMaterial {
+export async function ensureCert(): Promise<TlsMaterial> {
   const dir = join(agentDir(), 'certs');
   const certPath = join(dir, 'cert.pem');
   const keyPath = join(dir, 'key.pem');
@@ -23,8 +23,16 @@ export function ensureCert(): TlsMaterial {
   }
 
   mkdirSync(dir, { recursive: true });
-  const pems = selfsigned.generate([{ name: 'commonName', value: 'nodeagent' }], {
-    days: 3650,
+  // selfsigned 5.x：`generate` 改为**异步**（旧版同步返回）。
+  // 升级动因不是追新，而是安全：2.x 依赖 node-forge 1.4.0，
+  // 该版本有 high 级 advisory 且**上游无修复版本**（patched_versions: None）；
+  // 5.x 已整体换成 @peculiar/x509 + pkijs，node-forge 被彻底移除。
+  // v5 把 `days` 换成了 `notAfterDate`（绝对时间），语义相同但必须换算 ——
+  // 这是升级时的**静默不兼容点**：老写法编译期报 TS2353，能拦住；
+  // 但若只改类型不改值，就会签出一个有效期不对的证书，运行期才暴露。
+  const notAfterDate = new Date(Date.now() + 3650 * 24 * 60 * 60 * 1000);
+  const pems = await selfsigned.generate([{ name: 'commonName', value: 'nodeagent' }], {
+    notAfterDate,
     keySize: 2048,
     algorithm: 'sha256',
   });
