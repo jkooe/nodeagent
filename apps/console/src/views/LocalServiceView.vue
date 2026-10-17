@@ -106,6 +106,11 @@ async function doConnectLocal() {
 
 onMounted(async () => {
   await agent.bind();
+  // `bind()` 内部有 `bound` 守卫：第二次进入本页会直接 return，**不会刷新**。
+  // 而 `na-agent-state` 推送可能在前端监听就绪前就发出（WebView 尚未 ready），
+  // 于是状态会一直停在旧值（真机症状：后端已是 running，界面永远「启动中」）。
+  // 故每次进入本页都显式拉一次 —— 这是最便宜的状态自愈。
+  await agent.refresh();
   await logs.bind();
 });
 

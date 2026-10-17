@@ -58,12 +58,21 @@ export const useAgentStore = defineStore("agent", () => {
     error.value = null;
     try {
       const r = await fn();
-      await refresh();
       return r;
     } catch (e) {
       error.value = e instanceof Error ? e.message : String(e);
       return null;
     } finally {
+      // ⚠️ 刷新必须放在 finally（2026-10-17 真机缺陷）：
+      // 原来 `await refresh()` 写在 try 里，一旦动作**抛错**就被跳过，
+      // 界面状态会永远停在动作发生前的旧值。
+      //
+      // 真机症状：点「启动」→ 后端答「被控端已在运行」（说明它其实是 running）
+      // → 界面却一直显示「启动中」，「停止 / 重启」永久灰着，用户无从操作。
+      // 根因就是那次 start 抛了错，refresh 被跳过；而 `na-agent-state` 推送
+      // 在 WebView 就绪前发出，前端没收到 —— 两条更新通道同时失效。
+      // refresh() 自身已 try/catch，放这里不会掩盖原始错误。
+      await refresh();
       busy.value = false;
     }
   }

@@ -443,7 +443,32 @@ impl AgentManager {
 
     /// 当前状态快照（不探测端口，纯读内存 + 已记录的路径）。
     pub async fn snapshot(&self) -> Value {
-        let inner = self.inner.lock().await;
+        let mut inner = self.inner.lock().await;
+
+        // ── 状态自愈（2026-10-17 真机缺陷）────────────────────────────
+        // 真机现象：被控端明明已在监听、验收全通，界面却一直停在「启动中」，
+        // 「停止 / 重启」按钮因此永久禁用（它们依赖 running），用户无从操作。
+        //
+        // 成因：`start()` 里 `set_state(STARTING)` 与 `set_state(RUNNING)` 之间
+        // 有多处 `.await`（拿锁、spawn、日志泵），并发调用或事件丢失会让
+        // 状态停在中间态。与其继续猜是哪一次 `.await` 被吞掉，
+        // **不如按客观事实校正**：只要已经拿到 PID、且距启动时刻超过 2 秒，
+        // 它就不可能还在「启动中」—— 这是进程已经起来的硬证据。
+        //
+        // 为什么用 2 秒而不是立即：给正常的 set_state(RUNNING) 留出执行窗口，
+        // 避免和它抢（正常路径仍由 start() 自己置位）。
+        if inner.state == state::STARTING {
+            if let (Some(t), Some(_)) = (inner.started_at, inner.pid) {
+                if now_ms().saturating_sub(t) > 2_000 {
+                    inner.state = state::RUNNING.to_string();
+                }
+            }
+        }
+        // 反向同理：STOPPING 但已无 pid，说明停完了却没收尾
+        if inner.state == state::STOPPING && inner.pid.is_none() {
+            inner.state = state::STOPPED.to_string();
+        }
+
         let paths = self.paths.lock().unwrap().clone();
         let (node, script, data_dir) = match paths {
             Some((n, s, d)) => (
@@ -882,6 +907,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// 状态自愈：真机上曾出现「进程已起、界面永远显示启动中」，
+    /// 导致停止/重启按钮永久禁用。这条钉住校正逻辑，防止被"顺手简化"掉。
+    #[tokio::test]
+    async fn 启动中但已有pid且超两秒应自愈为running() {
+        let m = AgentManager::new(Arc::new(|_| {}));
+        {
+            let mut inner = m.inner.lock().await;
+            inner.state = state::STARTING.to_string();
+            inner.pid = Some(12345);
+            inner.started_at = Some(now_ms().saturating_sub(5_000)); // 5 秒前
+        }
+        assert_eq!(
+            m.snapshot().await["state"],
+            json!(state::RUNNING),
+            "拿得到 PID 且已过 2 秒，就不该还停在启动中"
+        );
+    }
+
+    /// 反向守卫：刚启动（<2 秒）时**不要**抢在正常路径前面置位，
+    /// 否则真实启动失败会被掩盖成「运行中」。
+    #[tokio::test]
+    async fn 刚启动不足两秒不得提前自愈() {
+        let m = AgentManager::new(Arc::new(|_| {}));
+        {
+            let mut inner = m.inner.lock().await;
+            inner.state = state::STARTING.to_string();
+            inner.pid = Some(12345);
+            inner.started_at = Some(now_ms()); // 刚刚
+        }
+        assert_eq!(
+            m.snapshot().await["state"],
+            json!(state::STARTING),
+            "刚启动的窗口期内应由 start() 自己置位，自愈不得抢先"
+        );
+    }
+
+    /// 没有 PID 的「启动中」不满足自愈条件（进程根本没起来）。
+    #[tokio::test]
+    async fn 启动中但无pid不得自愈() {
+        let m = AgentManager::new(Arc::new(|_| {}));
+        {
+            let mut inner = m.inner.lock().await;
+            inner.state = state::STARTING.to_string();
+            inner.pid = None;
+            inner.started_at = Some(now_ms().saturating_sub(9_000));
+        }
+        assert_eq!(
+            m.snapshot().await["state"],
+            json!(state::STARTING),
+            "没有 PID 说明没起来，不能伪装成 running"
+        );
     }
 
     #[tokio::test]
