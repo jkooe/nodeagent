@@ -151,6 +151,11 @@ function openRelease() {
               <n-text v-if="proc?.restarts" depth="3" style="font-size: 12px">
                 · 自动重启 {{ proc.restarts }} 次
               </n-text>
+              <!-- 复用来的实例（退出控制台时选择「保留」留下的孤儿）：可直接用，
+                   但控制权不在本控制台 —— 点「重启」即收归托管 -->
+              <n-tag v-if="proc?.external" type="warning" size="small" round>
+                已复用外部实例
+              </n-tag>
             </n-space>
 
             <n-space style="margin-bottom: 14px">

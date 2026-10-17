@@ -2,6 +2,7 @@
 import { watchEffect } from "vue";
 import { NConfigProvider, NMessageProvider, NDialogProvider, zhCN, dateZhCN } from "naive-ui";
 import AppShell from "./components/AppShell.vue";
+import QuitGuard from "./components/QuitGuard.vue";
 import { cssVars } from "./theme";
 import { useThemeStore } from "./stores/theme";
 
@@ -37,6 +38,8 @@ watchEffect(() => {
   >
     <n-message-provider>
       <n-dialog-provider>
+        <!-- 必须在 dialog-provider 内部：它要用 useDialog() 弹退出确认 -->
+        <quit-guard />
         <app-shell />
       </n-dialog-provider>
     </n-message-provider>

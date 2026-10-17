@@ -233,6 +233,107 @@ pub fn port_in_use(port: u16) -> bool {
     TcpStream::connect_timeout(&addr, Duration::from_millis(400)).is_ok()
 }
 
+/// 查「谁在监听这个端口」，返回其 PID。
+///
+/// ## 为什么需要它（2026-10-17 「复用」需求）
+/// 用户退出控制台时若选择**保留被控端**，那个被控端就成了孤儿进程继续监听。
+/// 下次启动控制台时，端口已被占 —— 原实现直接报「端口已被占用」，于是
+/// 用户明明有个健康的被控端在跑，界面上却只能看到一句错误、无法复用。
+///
+/// 有了 PID 才能：① 判断占用者是不是**我们自己的**被控端；② 接管它（复用）：
+/// ③ 需要真正托管时用 taskkill 收掉再自己 spawn。
+///
+/// 本函数只负责取 PID，**不判断它是不是 nodeagent** —— 那个判断在
+/// `looks_like_agent()` 里单独做，便于各自测试。
+pub fn port_owner_pid(port: u16) -> Option<u32> {
+    if cfg!(windows) {
+        // netstat 在所有 Windows 上都有；`-ano` 给出 PID。
+        // 输出形如：  TCP    0.0.0.0:8765    0.0.0.0:0    LISTENING    26348
+        let out = std::process::Command::new("netstat")
+            .args(["-ano", "-p", "TCP"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let needle = format!(":{port}");
+        for line in text.lines() {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            // 需要 ≥5 列；第 2 列是本地地址，最后一列是 PID，且状态为 LISTENING
+            if cols.len() < 5 || !cols[1].ends_with(&needle) {
+                continue;
+            }
+            if !line.contains("LISTENING") {
+                continue;
+            }
+            if let Ok(pid) = cols[cols.len() - 1].parse::<u32>() {
+                if pid != 0 {
+                    return Some(pid);
+                }
+            }
+        }
+        None
+    } else {
+        // macOS / Linux：lsof 比 ss 更普遍可预期
+        let out = std::process::Command::new("lsof")
+            .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-t"])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|l| l.trim().parse::<u32>().ok())
+    }
+}
+
+/// 按 PID 结束一个**非本进程派生**的进程（复用来的外部实例）。
+///
+/// 复用实例没有 `Child` 句柄（不是我们 spawn 的），`kill()/wait()` 都用不了，
+/// 只能用系统工具。失败时返回 false 由调用方如实上报 —— 不假装成功。
+pub async fn stop_pid(pid: u32) -> bool {
+    if cfg!(windows) {
+        // /T 连子进程树一起收：被控端可能拉起 PowerShell 助手等子进程
+        let out = tokio::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .output()
+            .await;
+        matches!(out, Ok(o) if o.status.success())
+    } else {
+        let out = tokio::process::Command::new("kill").args(["-TERM", &pid.to_string()]).output().await;
+        matches!(out, Ok(o) if o.status.success())
+    }
+}
+
+/// 该 PID 看起来是不是一个 nodeagent 被控端（命令行含 `agent.mjs`）。
+///
+/// 这层校验是**安全边界**：端口上跑的可能是任何东西（用户自己的服务、
+/// 另一个应用）。只有确认是自家被控端才允许「复用」，
+/// 否则必须继续报「端口被占用」—— 绝不能把别人的进程当成自己的接管。
+pub fn looks_like_agent(pid: u32) -> bool {
+    if cfg!(windows) {
+        let script = format!(
+            "(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction SilentlyContinue).CommandLine"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .ok();
+        match out {
+            Some(o) => {
+                let s = String::from_utf8_lossy(&o.stdout).to_lowercase();
+                s.contains("agent.mjs")
+            }
+            None => false,
+        }
+    } else {
+        let out = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .ok();
+        match out {
+            Some(o) => String::from_utf8_lossy(&o.stdout).contains("agent.mjs"),
+            None => false,
+        }
+    }
+}
+
 /// 读被控端配置（`<数据目录>/agent.json`）里与控制台有关的部分。
 ///
 /// 只读、不创建 —— 配置由被控端自己在首次启动时生成（含随机密钥）。
@@ -276,6 +377,9 @@ struct Inner {
     started_at: Option<u64>,
     restarts: u32,
     last_exit: Option<String>,
+    /// true = 复用了一个**非本控制台启动**的被控端（孤儿实例）。
+    /// 此时 `child` 为 None（拿不到 Child 句柄），停止要靠 PID + taskkill。
+    external: bool,
 }
 
 /// 本机被控端管理器。
@@ -300,6 +404,7 @@ impl AgentManager {
                 started_at: None,
                 restarts: 0,
                 last_exit: None,
+                external: false,
             }),
             logs: Arc::new(Mutex::new(VecDeque::with_capacity(LOG_CAP))),
             seq: Arc::new(AtomicU64::new(1)),
@@ -355,6 +460,8 @@ impl AgentManager {
             "uptime_ms": inner.started_at.map(|t| now_ms().saturating_sub(t)),
             "restarts": inner.restarts,
             "last_exit": inner.last_exit,
+            // 复用标记：前端据此显示「已复用外部被控端」并提示可「接管」
+            "external": inner.external,
             "node": node,
             "script": script,
             "data_dir": data_dir,
@@ -406,6 +513,43 @@ impl AgentManager {
         let cfg = read_agent_config(data_dir);
         let port = cfg.get("port").and_then(Value::as_u64).unwrap_or(8765) as u16;
         if port_in_use(port) {
+            // 2026-10-17「复用」需求：端口被占时**先判断占用者是不是自家被控端**。
+            //
+            // 背景：用户退出控制台时若选择「保留被控端」，那个进程会成为孤儿继续监听。
+            // 下次开控制台，端口已被自己家那个健康实例占着 —— 原实现直接报
+            // 「端口已被占用」，用户明明有可用被控端却只能看到一个错误。
+            //
+            // 故这里分两种：
+            //   - 占用者确实是 nodeagent 被控端（命令行含 agent.mjs）→ **复用**：
+            //     记 PID、置 RUNNING，`external=true`（无 Child 句柄，停止走 taskkill）
+            //   - 否则（用户自己的服务 / 别的应用）→ 仍然报错，绝不误接管
+            if let Some(pid) = port_owner_pid(port).filter(|p| looks_like_agent(*p)) {
+                {
+                    let mut inner = self.inner.lock().await;
+                    inner.child = None;
+                    inner.pid = Some(pid);
+                    inner.external = true;
+                    // 复用来的实例拿不到真实启动时间；置 None 而不是编一个，避免 UI 显示假 uptime
+                    inner.started_at = None;
+                    inner.last_exit = None;
+                }
+                *self.paths.lock().unwrap() = Some((node.to_path_buf(), script.to_path_buf(), data_dir.to_path_buf()));
+                self.set_state(state::RUNNING).await;
+                self.push_log(
+                    "system",
+                    format!(
+                        "已复用正在运行的被控端（PID {pid}，非本控制台启动）—— \
+                         可点「连接本机」直接使用；点「重启」可收归本控制台完全托管"
+                    ),
+                );
+                return Ok(json!({
+                    "pid": pid,
+                    "state": state::RUNNING,
+                    "adopted": true,
+                    "note": "复用了已在运行的被控端（未新起进程）",
+                }));
+            }
+
             let hint = if cfg!(windows) {
                 format!(
                     "netstat -ano | findstr :{port}  找到 PID，再 tasklist /FI \"PID eq <PID>\" 看是谁"
@@ -414,8 +558,7 @@ impl AgentManager {
                 format!("lsof -nP -iTCP:{port} -sTCP:LISTEN")
             };
             return Err(format!(
-                "端口 {port} 已被占用 —— 已有另一个被控端在监听（手工安装的、计划任务拉起的，\
-                 或另一个控制台实例）。\n\
+                "端口 {port} 已被占用，且占用者**不是** nodeagent 被控端（无法复用）。\n\
                  排查占用者：{hint}\n\
                  处理：先停掉它；或把 {} 里的 port 改成别的端口后重启本机服务。",
                 data_dir.join("agent.json").display()
@@ -503,14 +646,54 @@ impl AgentManager {
     /// 停止被控端（幂等）。
     pub async fn stop(&self) -> Result<Value, String> {
         self.set_state(state::STOPPING).await;
-        let child = {
+        // 分离两种所有权：
+        //  - `child`：本控制台 spawn 的，有句柄，可 wait/kill
+        //  - `ext_pid`：复用来的外部实例，只有 PID，只能 taskkill
+        let (child, ext_pid) = {
             let mut inner = self.inner.lock().await;
-            inner.child.take()
+            let ext = if inner.external { inner.pid } else { None };
+            let c = inner.child.take();
+            inner.external = false;
+            (c, ext)
         };
-        let Some(mut child) = child else {
+
+        // 复用的外部实例：按 PID 结束
+        if child.is_none() {
+            if let Some(p) = ext_pid {
+                self.push_log("system", format!("停止被复用的被控端（PID {p}，外部实例）…"));
+                let killed = stop_pid(p).await;
+                {
+                    let mut inner = self.inner.lock().await;
+                    inner.pid = None;
+                    inner.started_at = None;
+                    inner.external = false;
+                    inner.last_exit =
+                        Some(if killed { "external instance stopped by console".into() } else { "stop failed".into() });
+                }
+                // ⚠️ 必须等端口真正释放再返回：`restart()` 是 stop → 600ms → start，
+                // 若端口还挂着，start 会走进「复用」分支、把刚杀掉的东西当成还活着，
+                // 表现为「点了重启但还是复用同一个 PID」。
+                // 用一个块把 MutexGuard 收掉 —— 持有 std::sync::Mutex 守卫跨 await
+                // 不是 Send，会直接编译失败
+                let dir = {
+                    let guard = self.paths.lock().unwrap();
+                    guard.as_ref().map(|(_, _, d)| d.clone()).unwrap_or_else(agent_data_dir)
+                };
+                let port = read_agent_config(&dir).get("port").and_then(Value::as_u64).unwrap_or(8765) as u16;
+                for _ in 0..12 {
+                    if !port_in_use(port) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                }
+                self.set_state(state::STOPPED).await;
+                self.push_log("system", "被控端已停止（外部实例）");
+                return Ok(json!({ "state": state::STOPPED, "external": true, "killed": killed }));
+            }
             self.set_state(state::STOPPED).await;
             return Ok(json!({ "state": state::STOPPED, "note": "本来就未运行" }));
-        };
+        }
+        let mut child = child.expect("上面已确认 Some");
         let pid = child.id();
         self.push_log("system", format!("停止被控端（pid {}）…", pid.map(|p| p.to_string()).unwrap_or_else(|| "?".into())));
 

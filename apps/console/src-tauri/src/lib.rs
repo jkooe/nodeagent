@@ -314,6 +314,26 @@ async fn agent_stop(state: State<'_, AppState>) -> Result<Value, String> {
     state.agent()?.stop().await
 }
 
+/// 退出控制台 —— 由前端在用户确认后调用。
+///
+/// `keep_agent`：
+///  - `true`  保留被控端继续运行（它将成为孤儿进程；下次启动会被「复用」逻辑接管）
+///  - `false` 先停掉被控端再退出（退出后不留任何后台进程）
+///
+/// 为什么不直接在托盘菜单里 exit：退出是有**副作用**的决定（留不留下一个
+/// 正在监听端口的后台进程），必须让用户明确选择，而不是替用户猜。
+#[tauri::command]
+async fn quit_app(app: AppHandle, state: State<'_, AppState>, keep_agent: bool) -> Result<(), String> {
+    if !keep_agent {
+        // 尽力而为：停不掉也要让用户能退出，否则控制台会卡在确认框后面出不来
+        if let Ok(mgr) = state.agent() {
+            let _ = mgr.stop().await;
+        }
+    }
+    app.exit(0);
+    Ok(())
+}
+
 /// 重启本机被控端。
 #[tauri::command]
 async fn agent_restart(
@@ -603,7 +623,22 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                         }
                     });
                 }
-                "quit" => app.exit(0),
+                // 2026-10-17「退出前确认」需求：
+                // 原实现直接 `app.exit(0)`，而 `kill_on_drop(false)` 会让被控端**成为孤儿
+                // 继续监听** —— 用户以为关了控制台就干净了，实际还有个看不见的进程在跑。
+                //
+                // 现在改为**先问一句**：发事件给前端，由它弹三选一
+                // （保留被控端退出 / 停止被控端退出 / 取消），再回调 `quit_app`。
+                // 之所以走前端而不是加 tauri-plugin-dialog：前端已有 n-dialog-provider，
+                // 不加依赖、风格统一，且能复用既有的 message 视觉。
+                "quit" => {
+                    let _ = tauri::Emitter::emit(app, "na-quit-requested", ());
+                    // 把窗口唤出来，否则用户在最小化状态下看不到确认框
+                    if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
+                }
                 _ => {}
             }
         })
@@ -742,6 +777,12 @@ pub fn run() {
                     if let Ok(mgr) = state.agent() {
                         mgr.push_log("system", "窗口已隐藏到托盘（被控端继续运行；从托盘菜单可退出）");
                     }
+                } else {
+                    // 用户关掉了「最小化到托盘」→ 点 X 等于退出应用。
+                    // 这条路同样会留下孤儿被控端，故**也必须问一句**，
+                    // 否则「退出确认」只在托盘菜单生效，从 X 走就绕过去了。
+                    api.prevent_close();
+                    let _ = tauri::Emitter::emit(window.app_handle(), "na-quit-requested", ());
                 }
             }
         })
@@ -756,6 +797,7 @@ pub fn run() {
             agent_status,
             agent_start,
             agent_stop,
+            quit_app,
             agent_restart,
             agent_logs,
             agent_logs_clear,

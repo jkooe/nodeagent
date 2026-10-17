@@ -123,6 +123,16 @@ export function agentRestart(autoRestart?: boolean) {
   return invoke<AgentActionResult>("agent_restart", { autoRestart });
 }
 
+/**
+ * 退出控制台（由前端的确认框调用）。
+ *
+ * `keepAgent = true` 保留被控端继续运行 —— 它将成为孤儿进程，
+ * 下次启动控制台时会被「复用」逻辑接管；`false` 则先停掉再退出。
+ */
+export function quitApp(keepAgent: boolean) {
+  return invoke<void>("quit_app", { keepAgent });
+}
+
 /** 增量取日志（传上次拿到的最大 seq）。 */
 export function agentLogs(since = 0) {
   return invoke<AgentLogPage>("agent_logs", { since });

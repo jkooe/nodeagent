@@ -295,6 +295,13 @@ export interface AgentProcess {
   /** 实际运行的那份 agent.mjs（在数据目录里，不在 app 包内） */
   script?: string;
   data_dir?: string;
+  /**
+   * true = 复用了**非本控制台启动**的被控端（退出控制台时选择「保留」而留下的孤儿）。
+   *
+   * 此时它已在监听、可直接「连接本机」使用；但拿不到子进程句柄，
+   * 故「重启」会先按 PID 收掉再自己拉起（即把控制权收回本控制台）。
+   */
+  external?: boolean;
 }
 
 /** 被控端配置（读自 `<数据目录>/agent.json`）。 */
