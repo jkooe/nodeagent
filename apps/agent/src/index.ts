@@ -69,6 +69,64 @@ process.on('unhandledRejection', (reason: unknown) => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// stdout / stderr 断管容错（2026-10-17 真机两次踩到）
+// ---------------------------------------------------------------------------
+//
+// ## 现象
+// 端口仍然 `OPEN`，但**所有** RPC 都超时（握手都不回）。持续数分钟不自愈，
+// 只能靠重开控制台恢复。
+//
+// ## 根因
+// 被控端由控制台 spawn 时，stdout/stderr 是**管道**而非终端。用户退出控制台
+// （尤其选「保留被控端」）后，管道**读端消失**，而 agent 仍在往这个死管道写日志：
+//   - Node 对未监听 'error' 的 stream 会把 `EPIPE` **抛成未捕获异常** → 进程退出；
+//   - 更糟的是写端在无读者时可能**阻塞**，把事件循环一起卡住 ——
+//     于是端口保住了（OS 层 socket 还在），但 JS 再也不执行了。
+// 这解释了为什么「退出控制台后被控端还在，却谁都连不上」：它活着，但哑了。
+//
+// ## 做法
+//   ① 监听 'error' 吞掉 EPIPE，不让它升级成未捕获异常；
+//   ② 一旦判定通道已断，就**短路后续写**，不再往死管道里堆字节。
+//
+// 日志不会因此丢失：审计走文件（`audit.log`），控制台在时照常收到管道输出。
+// 宁可少一行 stdout，也不能让常驻服务因为「没人看日志」而假死。
+let stdoutDead = false;
+let stderrDead = false;
+
+function markDead(e: NodeJS.ErrnoException, isErr: boolean): void {
+  if (e.code === 'EPIPE' || e.code === 'ERR_STREAM_DESTROYED' || e.code === 'ERR_STREAM_WRITE_AFTER_END') {
+    if (isErr) stderrDead = true;
+    else stdoutDead = true;
+    return;
+  }
+  // 其他写错误也一律吞掉：日志通道的故障不该打死被控端
+  if (isErr) stderrDead = true;
+  else stdoutDead = true;
+}
+
+process.stdout.on('error', (e: NodeJS.ErrnoException) => markDead(e, false));
+process.stderr.on('error', (e: NodeJS.ErrnoException) => markDead(e, true));
+
+const rawLog = console.log.bind(console);
+const rawErr = console.error.bind(console);
+console.log = (...a: unknown[]): void => {
+  if (stdoutDead) return;
+  try {
+    rawLog(...a);
+  } catch {
+    stdoutDead = true;
+  }
+};
+console.error = (...a: unknown[]): void => {
+  if (stderrDead) return;
+  try {
+    rawErr(...a);
+  } catch {
+    stderrDead = true;
+  }
+};
+
 process.on('uncaughtException', (err: unknown) => {
   reportProcessError(
     '未捕获异常',
