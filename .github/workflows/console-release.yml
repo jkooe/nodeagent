@@ -1,0 +1,28 @@
+name: Console Release
+
+# 控制台发布工作流（tag 触发）。
+#
+# 为什么不把 `tags` 直接写进 console-windows.yml 的 push 里
+# ------------------------------------------------
+# 那个工作流带 `paths` 过滤。`paths` 与 `tags` 同时出现时，tag 推送会被
+# 路径判定挡掉而**静默不触发** —— 这是 GitHub Actions 的经典坑，
+# 且失败形态是「什么都没发生」，最难察觉。
+# 故拆成：日常验证走 console-windows（分支 + paths），发布走本工作流（只认 tag）。
+#
+# 交付物去向：本工作流构建两台架构的安装包，再由 console-windows 里的
+# `publish` job 补挂到 `scripts/release.mjs` 创建的那个 Release 上。
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# 发布需要写 Release
+permissions:
+  contents: write
+
+jobs:
+  console:
+    uses: ./.github/workflows/console-windows.yml
+    permissions:
+      contents: write
