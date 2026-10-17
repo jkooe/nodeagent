@@ -306,30 +306,35 @@ pub async fn stop_pid(pid: u32) -> bool {
 /// 这层校验是**安全边界**：端口上跑的可能是任何东西（用户自己的服务、
 /// 另一个应用）。只有确认是自家被控端才允许「复用」，
 /// 否则必须继续报「端口被占用」—— 绝不能把别人的进程当成自己的接管。
-pub fn looks_like_agent(pid: u32) -> bool {
+///
+/// ## ⚠️ 必须异步 + 带超时（2026-10-17 真机踩到）
+/// 初版用的是 `std::process::Command::output()`：**同步阻塞**且**无超时**。
+/// 在这台机器上 `Get-ScheduledTask` 要 2s、CIM 查询偶发卡死（实测有一次 30s 超时），
+/// 于是 `start()` 被永久阻塞 —— 表现为**界面三个按钮一直转圈、PID 不再更新**，
+/// 只能重开控制台。异步调用 + 3 秒超时后，最坏情况只是「放弃复用、照常报端口冲突」。
+///
+/// 超时/查询失败一律**判为「不是被控端」**（拒绝接管）：宁可让用户看到
+/// 「端口被占用」去手工排查，也不能误杀别人的进程。
+pub async fn looks_like_agent(pid: u32) -> bool {
     if cfg!(windows) {
         let script = format!(
             "(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\" -ErrorAction SilentlyContinue).CommandLine"
         );
-        let out = std::process::Command::new("powershell")
+        let fut = tokio::process::Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-            .output()
-            .ok();
-        match out {
-            Some(o) => {
-                let s = String::from_utf8_lossy(&o.stdout).to_lowercase();
-                s.contains("agent.mjs")
-            }
-            None => false,
+            .output();
+        match tokio::time::timeout(Duration::from_secs(3), fut).await {
+            Ok(Ok(o)) => String::from_utf8_lossy(&o.stdout).to_lowercase().contains("agent.mjs"),
+            // 超时或执行失败：无法确认，判为不是（安全优先）
+            _ => false,
         }
     } else {
-        let out = std::process::Command::new("ps")
+        let fut = tokio::process::Command::new("ps")
             .args(["-p", &pid.to_string(), "-o", "command="])
-            .output()
-            .ok();
-        match out {
-            Some(o) => String::from_utf8_lossy(&o.stdout).contains("agent.mjs"),
-            None => false,
+            .output();
+        match tokio::time::timeout(Duration::from_secs(3), fut).await {
+            Ok(Ok(o)) => String::from_utf8_lossy(&o.stdout).contains("agent.mjs"),
+            _ => false,
         }
     }
 }
@@ -548,7 +553,13 @@ impl AgentManager {
             //   - 占用者确实是 nodeagent 被控端（命令行含 agent.mjs）→ **复用**：
             //     记 PID、置 RUNNING，`external=true`（无 Child 句柄，停止走 taskkill）
             //   - 否则（用户自己的服务 / 别的应用）→ 仍然报错，绝不误接管
-            if let Some(pid) = port_owner_pid(port).filter(|p| looks_like_agent(*p)) {
+            if let Some(pid) = {
+                // 先取占用者 PID，再**异步**确认它是不是自家被控端（带 3s 超时）
+                match port_owner_pid(port) {
+                    Some(p) if looks_like_agent(p).await => Some(p),
+                    _ => None,
+                }
+            } {
                 {
                     let mut inner = self.inner.lock().await;
                     inner.child = None;

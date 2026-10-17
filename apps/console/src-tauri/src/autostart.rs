@@ -189,7 +189,16 @@ fn run_powershell(script: &str) -> Result<String, String> {
 }
 
 /// 自启是否已启用。
-pub fn is_enabled() -> bool {
+///
+/// ## 为什么要缓存（2026-10-17 真机）
+/// Windows 上 `schtasks /Query` 实测**约 2 秒**（`Get-ScheduledTask` 同样 2s），
+/// 而这个函数每次 `agent_status` 都会被调用 —— 于是每刷新一次界面就白等 2 秒，
+/// 叠加多次刷新后表现为「按钮转圈不结束、PID 不再更新」。
+///
+/// 自启开关是低频状态（用户手动切换才会变），故缓存 5 秒即可：
+/// 切换自启后紧接着的那次 `status()` 可能读到旧值，但 `set_autostart` 本身
+/// 会把结果写回缓存（见 `invalidate_cache`），界面不会看到错的状态。
+fn is_enabled_uncached() -> bool {
     if cfg!(target_os = "macos") {
         macos_plist_path().map(|p| p.exists()).unwrap_or(false)
     } else if cfg!(windows) {
@@ -201,6 +210,34 @@ pub fn is_enabled() -> bool {
     } else {
         false
     }
+}
+
+/// 自启状态缓存：`(取值时刻 ms, 值)`。0 表示从未查过。
+static AUTOSTART_CACHE: std::sync::Mutex<(u64, bool)> = std::sync::Mutex::new((0, false));
+const AUTOSTART_TTL_MS: u64 = 5_000;
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+pub fn is_enabled() -> bool {
+    {
+        let c = AUTOSTART_CACHE.lock().unwrap();
+        if c.0 != 0 && now_ms().saturating_sub(c.0) < AUTOSTART_TTL_MS {
+            return c.1;
+        }
+    }
+    let v = is_enabled_uncached();
+    *AUTOSTART_CACHE.lock().unwrap() = (now_ms(), v);
+    v
+}
+
+/// 切换自启后立刻让缓存失效 —— 否则用户点完开关，界面会显示 5 秒前的旧值。
+pub fn invalidate_cache() {
+    *AUTOSTART_CACHE.lock().unwrap() = (0, false);
 }
 
 /// 读取自启状态的完整快照（供界面展示）。
@@ -252,6 +289,9 @@ pub fn set(enabled: bool) -> Result<Value, String> {
     } else {
         windows_schtasks(&exe, enabled)?
     };
+
+    // 刚改过自启状态，缓存必然过期 —— 不清就会把 5 秒前的旧值回给界面
+    invalidate_cache();
 
     let mut snap = status();
     snap["detail"] = json!(detail);
